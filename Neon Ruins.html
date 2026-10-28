@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Neon Ruins</title>
+<style>
+:root{
+  --bg:#0b0d17; --panel:#12162a; --grid:#1a2038; --wall:#2e3a63;
+  --neon:#7df9ff; --portal:#b967ff; --enemy:#ff3b5c; --coin:#ffd23f; --shield:#3ef2ff;
+  --text:#e8ecff; --muted:#8b93c4; --ok:#3ef2a1;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+html{scroll-padding-top:env(safe-area-inset-top,0px); height:100%;}
+*{box-sizing:border-box;}
+body{
+  margin:0; height:100%; background:var(--bg); color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  display:flex; flex-direction:column; align-items:center; gap:10px;
+  padding:14px; overflow-x:hidden;
+}
+h1{font-size:1.05rem; letter-spacing:.12em; margin:4px 0 0; color:var(--neon); text-transform:uppercase; font-weight:700; text-shadow:0 0 12px rgba(125,249,255,.5);}
+.sub{font-size:.72rem; color:var(--muted); margin-bottom:2px; text-align:center; max-width:420px;}
+#hud{
+  display:flex; gap:14px; background:var(--panel); padding:8px 16px; border-radius:12px;
+  font-size:.85rem; border:1px solid var(--wall); flex-wrap:wrap; justify-content:center;
+}
+#hud span b{color:var(--neon);}
+#hud span.sh b{color:var(--shield);}
+#wrap{position:relative; width:100%; max-width:420px; aspect-ratio:11/9;}
+canvas{width:100%; height:100%; display:block; background:var(--grid); border-radius:10px; border:1px solid var(--wall);}
+#msg{
+  position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column;
+  background:rgba(11,13,23,.94); border-radius:10px; text-align:center; padding:16px; gap:10px;
+}
+#msg h2{margin:0; color:var(--portal); font-size:1.2rem;}
+#msg p{margin:0; color:var(--muted); font-size:.85rem;}
+button{
+  background:var(--neon); color:#06131a; border:none; border-radius:8px; padding:10px 18px;
+  font-weight:700; font-size:.85rem; cursor:pointer; transition:transform .1s;
+}
+button:active{transform:scale(.94);}
+#pad{display:grid; grid-template-columns:repeat(3,52px); grid-template-rows:repeat(3,52px); gap:6px; margin-top:4px;}
+#pad button.dpad{background:var(--panel); color:var(--text); border:1px solid var(--wall); font-size:1.1rem;}
+#pad .empty{background:transparent; border:none;}
+#jump{background:var(--shield); color:#062a2f; margin-top:6px;}
+#restart{background:var(--muted); color:#0b0d17;}
+.row{display:flex; gap:8px; align-items:center;}
+#toast{position:absolute; top:6px; left:50%; transform:translateX(-50%); font-size:.7rem; color:var(--muted); opacity:0; transition:opacity .3s; pointer-events:none;}
+#flash{position:absolute; inset:0; background:radial-gradient(circle,#fff,#b967ff 70%); opacity:0; pointer-events:none; transition:opacity .18s; border-radius:10px; mix-blend-mode:screen;}
+canvas.zoom{animation:zoomPulse .5s ease;}
+@keyframes zoomPulse{0%{transform:scale(1);}30%{transform:scale(1.07);}100%{transform:scale(1);}}
+#hud span.rec b{color:#ffd23f;}
+#muteBtn{background:transparent; border:1px solid var(--wall); color:var(--text); border-radius:8px; padding:2px 8px; font-size:.9rem; cursor:pointer;}
+.stars{display:flex; gap:4px; justify-content:center; margin:6px 0;}
+.star{font-size:1.7rem; opacity:0; transform:scale(0) rotate(-30deg); animation:starPop .45s ease forwards; color:#333a5c;}
+.star.filled{color:#ffd23f; text-shadow:0 0 10px rgba(255,210,63,.85);}
+@keyframes starPop{0%{opacity:0; transform:scale(0) rotate(-30deg);}60%{opacity:1; transform:scale(1.25) rotate(8deg);}100%{opacity:1; transform:scale(1) rotate(0);}}
+.badge{display:inline-block; margin-top:4px; padding:3px 10px; border-radius:20px; background:rgba(62,242,255,.15); color:var(--shield); font-size:.72rem; border:1px solid rgba(62,242,255,.4);}
+</style>
+</head>
+<body>
+<h1>Neon Ruins</h1>
+<div class="sub">Chega ao portal roxo. Vê as setas vermelhas — mostram o próximo passo dos inimigos.</div>
+<div id="hud">
+  <span>Andar <b id="floorNo">1</b></span>
+  <span>💰 <b id="coinCount">0</b></span>
+  <span class="sh">🛡️ <b id="charges">0</b></span>
+  <span class="rec">🏆 <b id="bestCount">0</b></span>
+  <span class="rec">💎 <b id="coresCount">0</b></span>
+  <button id="muteBtn" title="Som">🔊</button>
+</div>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="flash"></div>
+  <div id="toast"></div>
+  <div id="msg">
+    <h2 id="msgTitle"></h2>
+    <div class="stars" id="msgStars"></div>
+    <div id="msgBody"></div>
+    <button id="msgBtn">Continuar</button>
+  </div>
+</div>
+<div class="row">
+  <div id="pad">
+    <div class="empty"></div><button class="dpad" data-d="up">▲</button><div class="empty"></div>
+    <button class="dpad" data-d="left">◀</button><button class="dpad" data-d="wait">•</button><button class="dpad" data-d="right">▶</button>
+    <div class="empty"></div><button class="dpad" data-d="down">▼</button><div class="empty"></div>
+  </div>
+</div>
+<button id="jump">SALTO (Space)</button>
+<button id="restart">Reiniciar</button>
+
+<script>
+const COLS=11, ROWS=9;
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let TS=32, t=0, shake=0;
+function resize(){
+  const wrap=document.getElementById('wrap');
+  TS=Math.floor(Math.min(wrap.clientWidth/COLS, wrap.clientHeight/ROWS));
+  canvas.width=TS*COLS; canvas.height=TS*ROWS;
+}
+window.addEventListener('resize',resize);
+
+let grid,player,enemies,shields,coins,portal,charges,coinCount,floor,facing,gameOver,particles,hitsTakenThisFloor;
+let movesThisFloor=0, jumpsUsedThisFloor=0, currentChallenge=null, challengeDone=false;
+let floorCoinsTotal=0, floorCoinsCollected=0, floorStarsHistory=[];
+let best=0, cores=0, tokens=0, muted=false;
+try{
+  best=parseInt(localStorage.getItem('nr_best')||'0',10)||0;
+  cores=parseInt(localStorage.getItem('nr_cores')||'0',10)||0;
+  tokens=parseInt(localStorage.getItem('nr_tokens')||'0',10)||0;
+  muted=localStorage.getItem('nr_muted')==='1';
+}catch(e){}
+const CHALLENGES=[
+  {text:'🎯 Desafio: não uses o Salto neste andar', check:()=>jumpsUsedThisFloor===0},
+  {text:'🎯 Desafio: não sofras dano neste andar', check:()=>hitsTakenThisFloor===0},
+  {text:'🎯 Desafio: chega ao portal em poucos passos', check:()=>movesThisFloor<=14},
+];
+const REWARD_TABLE=[0,5,15,30,75,100];
+
+function emptyGrid(){
+  const g=[];
+  for(let y=0;y<ROWS;y++){const row=[]; for(let x=0;x<COLS;x++){row.push(Math.random()<0.18?1:0);} g.push(row);}
+  return g;
+}
+function inb(x,y){return x>=0&&y>=0&&x<COLS&&y<ROWS;}
+function bfsPath(g,sx,sy,tx,ty){
+  const seen=Array.from({length:ROWS},()=>Array(COLS).fill(false));
+  const q=[[sx,sy]]; seen[sy][sx]=true;
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]];
+  while(q.length){
+    const [x,y]=q.shift();
+    if(x===tx&&y===ty) return true;
+    for(const [dx,dy] of dirs){
+      const nx=x+dx, ny=y+dy;
+      if(inb(nx,ny)&&!seen[ny][nx]&&g[ny][nx]===0){ seen[ny][nx]=true; q.push([nx,ny]); }
+    }
+  }
+  return false;
+}
+function freeSides(g,x,y){
+  const dirs=[[1,0],[-1,0],[0,1],[0,-1]]; let f=0;
+  for(const [dx,dy] of dirs){const nx=x+dx,ny=y+dy; if(inb(nx,ny)&&g[ny][nx]===0) f++;}
+  return f;
+}
+function randEmpty(g,exclude){
+  let tries=0;
+  while(tries++<500){
+    const x=Math.floor(Math.random()*COLS), y=Math.floor(Math.random()*ROWS);
+    if(g[y][x]===0 && freeSides(g,x,y)>=1 && !exclude.some(p=>p.x===x&&p.y===y)) return {x,y,rx:x,ry:y};
+  }
+  return {x:1,y:1,rx:1,ry:1};
+}
+function pickShieldCount(){
+  const r=Math.random();
+  if(r<0.55) return 1;
+  if(r<0.9) return 2;
+  return 3;
+}
+function genFloor(n){
+  let g, px,py, pox,poy, ok=false, attempts=0;
+  while(!ok && attempts++<80){
+    g=emptyGrid();
+    px=0; py=Math.floor(ROWS/2); g[py][px]=0;
+    pox=COLS-1; poy=Math.floor(Math.random()*ROWS); g[poy][pox]=0;
+    if(freeSides(g,px,py)>=2 && freeSides(g,pox,poy)>=1 && bfsPath(g,px,py,pox,poy)) ok=true;
+  }
+  grid=g;
+  player={x:px,y:py,rx:px,ry:py};
+  portal={x:pox,y:poy};
+  const enemyN=Math.min(1+Math.ceil(n/2),5);
+  enemies=[];
+  for(let i=0;i<enemyN;i++){
+    const spot=randEmpty(grid,[player,portal,...enemies]);
+    if(Math.abs(spot.x-player.x)+Math.abs(spot.y-player.y)>=3){ spot.nextDir=null; enemies.push(spot); }
+  }
+  shields=[];
+  const shieldN=pickShieldCount();
+  for(let i=0;i<shieldN;i++) shields.push(randEmpty(grid,[player,portal,...enemies,...shields]));
+  coins=[];
+  for(let i=0;i<7;i++) coins.push(randEmpty(grid,[player,portal,...enemies,...shields,...coins]));
+  hitsTakenThisFloor=0; movesThisFloor=0; jumpsUsedThisFloor=0; challengeDone=false;
+  floorCoinsTotal=coins.length; floorCoinsCollected=0;
+  currentChallenge=CHALLENGES[Math.floor(Math.random()*CHALLENGES.length)];
+  updateIntents();
+  document.getElementById('floorNo').textContent=n;
+  updateHud();
+  setTimeout(()=>toast(currentChallenge.text,2200),250);
+}
+function updateHud(){
+  document.getElementById('coinCount').textContent=coinCount;
+  document.getElementById('charges').textContent=charges;
+  document.getElementById('bestCount').textContent=best;
+  document.getElementById('coresCount').textContent=cores;
+}
+function starsForFloor(){
+  if(floorCoinsTotal<=0) return 1;
+  const pct=floorCoinsCollected/floorCoinsTotal;
+  if(pct>=1) return 5;
+  if(pct>=0.75) return 4;
+  if(pct>=0.5) return 3;
+  if(pct>=0.25) return 2;
+  return 1;
+}
+function renderStars(n){
+  const el=document.getElementById('msgStars'); el.innerHTML='';
+  for(let i=0;i<5;i++){
+    const s=document.createElement('span');
+    s.className='star'+(i<n?' filled':''); s.textContent='★';
+    s.style.animationDelay=(i*0.12)+'s';
+    el.appendChild(s);
+  }
+}
+function toast(text,ms){
+  const el=document.getElementById('toast'); el.textContent=text; el.style.opacity=1;
+  clearTimeout(toast._t); toast._t=setTimeout(()=>el.style.opacity=0,ms||1100);
+}
+function startGame(){
+  floor=1; charges=0; coinCount=0; facing='right'; gameOver=false; particles=[]; hitsTakenThisFloor=0; floorStarsHistory=[];
+  genFloor(floor); hideMsg();
+}
+function showMsg(title,bodyHtml,btnText,onBtn,starsCount){
+  document.getElementById('msgTitle').textContent=title;
+  document.getElementById('msgBody').innerHTML=bodyHtml;
+  renderStars(starsCount===undefined?-1:starsCount);
+  const btn=document.getElementById('msgBtn'); btn.textContent=btnText;
+  document.getElementById('msg').style.display='flex';
+  btn.onclick=onBtn;
+}
+function hideMsg(){document.getElementById('msg').style.display='none';}
+
+function spawnBurst(cx,cy,color,n){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2, sp=1+Math.random()*2.2;
+    particles.push({x:cx,y:cy,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,color});
+  }
+}
+function updateIntents(){
+  for(const e of enemies){
+    let best=null, bestDist=Infinity;
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=e.x+dx, ny=e.y+dy;
+      if(inb(nx,ny) && grid[ny][nx]===0 && !enemies.some(o=>o!==e&&o.x===nx&&o.y===ny)){
+        const dist=Math.abs(nx-player.x)+Math.abs(ny-player.y);
+        if(dist<bestDist){bestDist=dist; best={x:nx,y:ny};}
+      }
+    }
+    e.nextDir=best;
+  }
+  if(enemies.some(e=>e.nextDir && e.nextDir.x===player.x && e.nextDir.y===player.y)) sndDanger();
+}
+function tryMove(dx,dy){
+  if(gameOver) return;
+  if(dx!==0||dy!==0) facing = dx===1?'right':dx===-1?'left':dy===1?'down':'up';
+  const nx=player.x+dx, ny=player.y+dy;
+  if(inb(nx,ny) && grid[ny][nx]===0){ player.x=nx; player.y=ny; movesThisFloor++; sndStep(); }
+  afterPlayerAction();
+}
+function tryJump(){
+  if(gameOver) return;
+  const d={up:[0,-1],down:[0,1],left:[-1,0],right:[1,0]}[facing];
+  const mx=player.x+d[0], my=player.y+d[1];
+  const jx=player.x+d[0]*2, jy=player.y+d[1]*2;
+  if(charges>0 && inb(jx,jy) && grid[my][mx]===0 && grid[jy][jx]===0){
+    charges--; jumpsUsedThisFloor++; movesThisFloor++; updateHud(); sndJump();
+    spawnBurst(player.rx*TS+TS/2,player.ry*TS+TS/2,'#7df9ff',10);
+    player.x=jx; player.y=jy;
+    afterPlayerAction();
+  } else if(charges<=0){ toast('Sem escudos para saltar'); }
+}
+function afterPlayerAction(){
+  collectPickups();
+  moveEnemies();
+  checkCollision();
+  checkPortal();
+}
+function collectPickups(){
+  const ci=coins.findIndex(c=>c.x===player.x&&c.y===player.y);
+  if(ci>=0){ const c=coins.splice(ci,1)[0]; coinCount++; floorCoinsCollected++; updateHud(); spawnBurst(c.x*TS+TS/2,c.y*TS+TS/2,'#ffd23f',8); sndCoin(); }
+  const si=shields.findIndex(s=>s.x===player.x&&s.y===player.y);
+  if(si>=0){ const s=shields.splice(si,1)[0]; charges++; updateHud(); spawnBurst(s.x*TS+TS/2,s.y*TS+TS/2,'#3ef2ff',14); toast('+1 escudo'); sndShield(); }
+}
+function moveEnemies(){
+  for(const e of enemies){ if(e.nextDir){ e.x=e.nextDir.x; e.y=e.nextDir.y; } }
+  updateIntents();
+}
+function checkCollision(){
+  if(enemies.some(e=>e.x===player.x&&e.y===player.y)){
+    shake=10;
+    spawnBurst(player.rx*TS+TS/2,player.ry*TS+TS/2,'#ff3b5c',16);
+    if(charges>0){ charges--; hitsTakenThisFloor++; updateHud(); toast('Escudo absorveu o golpe!'); sndHit(); }
+    else {
+      sndGameOver();
+      gameOver=true;
+      const st = floorStarsHistory.length ? Math.round(floorStarsHistory.reduce((a,b)=>a+b,0)/floorStarsHistory.length) : 0;
+      const isRecord = coinCount>best;
+      if(isRecord){ best=coinCount; try{ localStorage.setItem('nr_best',best); }catch(e){} }
+      const earnedCores=REWARD_TABLE[st];
+      cores+=earnedCores;
+      let tokenMsg='';
+      if(st>=5){ tokens++; tokenMsg='<div class="badge">⚡ +1 Power Token</div>'; try{ localStorage.setItem('nr_tokens',tokens); }catch(e){} }
+      try{ localStorage.setItem('nr_cores',cores); }catch(e){}
+      showMsg('Fim de jogo',
+        'Sem escudos por perto. Chegaste ao andar '+floor+' com '+coinCount+' moedas.'+
+        '<div class="badge">💎 +'+earnedCores+' Núcleos (total: '+cores+')</div>'+
+        tokenMsg+
+        (isRecord?'<div class="badge">🏆 Novo recorde!</div>':'<div class="badge">Recorde: '+best+' moedas</div>'),
+        'Tentar outra vez',startGame,st);
+      updateHud();
+    }
+  }
+}
+function checkPortal(){
+  if(player.x===portal.x && player.y===portal.y && !gameOver){
+    spawnBurst(portal.x*TS+TS/2,portal.y*TS+TS/2,'#b967ff',36);
+    sndPortal();
+    const flash=document.getElementById('flash');
+    flash.style.opacity=1; setTimeout(()=>flash.style.opacity=0,180);
+    canvas.classList.remove('zoom'); void canvas.offsetWidth; canvas.classList.add('zoom');
+    const perfect = hitsTakenThisFloor===0;
+    const challengeOk = currentChallenge && currentChallenge.check();
+    if(challengeOk && !challengeDone){ challengeDone=true; coinCount+=5; updateHud(); sndBadge(); }
+    const st=starsForFloor();
+    floorStarsHistory.push(st);
+    const isRecord = coinCount>best;
+    if(isRecord){ best=coinCount; try{ localStorage.setItem('nr_best',best); }catch(e){} }
+    const nextFloor=floor+1;
+    setTimeout(()=>{
+      showMsg('Andar '+floor+' completo!',
+        'Moedas do andar: '+floorCoinsCollected+'/'+floorCoinsTotal+' · Total: '+coinCount+' · Escudos: '+charges+
+        (challengeOk?'<div class="badge">🎯 Desafio cumprido! +5 moedas</div>':'')+
+        (perfect?'<div class="badge">✨ Perfeito — sem dano!</div>':'')+
+        (isRecord?'<div class="badge">🏆 Novo recorde!</div>':''),
+        'Avançar para o andar '+nextFloor,
+        ()=>{ floor=nextFloor; genFloor(floor); hideMsg(); },
+        st);
+      updateHud();
+    },160);
+  }
+}
+
+let actx=null;
+function ensureAudio(){
+  if(muted) return null;
+  try{
+    if(!actx) actx=new (window.AudioContext||window.webkitAudioContext)();
+    if(actx.state==='suspended') actx.resume();
+    return actx;
+  }catch(e){ return null; }
+}
+function tone(freq,dur,type,vol,delay,glideTo,vibHz,vibDepth){
+  const a=ensureAudio(); if(!a) return;
+  try{
+    const o=a.createOscillator(), g=a.createGain();
+    o.type=type||'sine'; o.frequency.value=freq;
+    const t0=a.currentTime+(delay||0);
+    if(glideTo) o.frequency.exponentialRampToValueAtTime(glideTo,t0+dur);
+    if(vibHz){
+      const lfo=a.createOscillator(), lg=a.createGain();
+      lfo.frequency.value=vibHz; lg.gain.value=vibDepth||10;
+      lfo.connect(lg); lg.connect(o.frequency); lfo.start(t0); lfo.stop(t0+dur+0.05);
+    }
+    g.gain.setValueAtTime(0.0001,t0);
+    g.gain.linearRampToValueAtTime(vol||0.18,t0+0.008);
+    g.gain.exponentialRampToValueAtTime(0.001,t0+dur);
+    o.connect(g); g.connect(a.destination);
+    o.start(t0); o.stop(t0+dur+0.05);
+  }catch(e){}
+}
+function playNoise(dur,vol,fStart,fEnd,delay,type){
+  const a=ensureAudio(); if(!a) return;
+  try{
+    const len=Math.max(1,Math.floor(a.sampleRate*dur));
+    const buf=a.createBuffer(1,len,a.sampleRate); const d=buf.getChannelData(0);
+    for(let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    const src=a.createBufferSource(); src.buffer=buf;
+    const filt=a.createBiquadFilter(); filt.type=type||'bandpass'; filt.frequency.setValueAtTime(fStart,a.currentTime+(delay||0));
+    const g=a.createGain();
+    const t0=a.currentTime+(delay||0);
+    if(fEnd) filt.frequency.exponentialRampToValueAtTime(fEnd,t0+dur);
+    g.gain.setValueAtTime(vol,t0);
+    g.gain.exponentialRampToValueAtTime(0.001,t0+dur);
+    src.connect(filt); filt.connect(g); g.connect(a.destination);
+    src.start(t0); src.stop(t0+dur+0.02);
+  }catch(e){}
+}
+function buzz(pattern){ try{ if(!muted && navigator.vibrate) navigator.vibrate(pattern); }catch(e){} }
+// tom "chip" — quadrada filtrada, o timbre clássico de moeda de arcade (Mario/Sonic)
+function chipTone(freq,dur,delay,vol,filterFreq){
+  const a=ensureAudio(); if(!a) return;
+  try{
+    const o=a.createOscillator(), f=a.createBiquadFilter(), g=a.createGain();
+    o.type='square'; o.frequency.value=freq;
+    f.type='lowpass'; f.frequency.value=filterFreq||6500;
+    const t0=a.currentTime+(delay||0);
+    g.gain.setValueAtTime(0.0001,t0);
+    g.gain.linearRampToValueAtTime(vol,t0+0.005);
+    g.gain.exponentialRampToValueAtTime(0.001,t0+dur);
+    o.connect(f); f.connect(g); g.connect(a.destination);
+    o.start(t0); o.stop(t0+dur+0.02);
+  }catch(e){}
+}
+// moeda: "bing-bing" clássico + brilho agudo — reluz como no Mario
+function sndCoin(){ chipTone(988,0.05,0,0.16); chipTone(1568,0.11,0.045,0.19); tone(2600,0.04,'sine',0.05,0.08); }
+// estrela/badge: igual à moeda mas melhor — arpejo de 4 notas + brilho final maior (tipo Sonic ring)
+function sndBadge(){
+  chipTone(988,0.045,0,0.14); chipTone(1244,0.045,0.04,0.15); chipTone(1568,0.05,0.08,0.16); chipTone(2093,0.16,0.13,0.2);
+  tone(3100,0.07,'sine',0.07,0.16);
+}
+// escudo: sabre de luz — crack de ignição + hum grave com vibrato
+function sndShield(){
+  playNoise(0.05,0.11,3200,1000,0,'highpass');
+  tone(92,0.24,'sawtooth',0.13,0.02,155,25,20);
+  tone(95,0.2,'square',0.045,0.03,140,22,14);
+}
+// salto: whoosh curto
+function sndJump(){ playNoise(0.12,0.1,1600,300,0); tone(500,0.1,'sawtooth',0.07,0,200); }
+// passo: clique suave de encaixe
+function sndStep(){ playNoise(0.02,0.045,2600,1700,0,'bandpass'); tone(280+Math.random()*30,0.025,'sine',0.03,0); }
+// aviso de perigo: sirene grave, lenta e sombria (wobble)
+function sndDanger(){ tone(260,0.7,'sine',0.08,0,215,3.2,70); }
+// dano: impacto seco
+function sndHit(){ tone(120,0.15,'square',0.16,0,55); playNoise(0.09,0.12,900,200,0); buzz(45); }
+// portal: buraco negro cinematográfico — sucção de ruído + rumble grave + cauda
+function sndPortal(){
+  playNoise(0.6,0.15,6000,120,0,'bandpass');
+  tone(360,0.85,'sine',0.14,0,30);
+  tone(720,0.35,'triangle',0.05,0.04,45);
+  tone(40,0.35,'sine',0.18,0.48);
+  buzz(30);
+}
+function sndGameOver(){ tone(300,0.18,'sawtooth',0.15,0,150); tone(200,0.22,'sawtooth',0.15,0.18,100); playNoise(0.3,0.07,500,60,0.15); buzz([50,40,50]); }
+
+// ===== Trilha sonora ambiente gerativa: pads épicos (Skyrim) + arpejo sintetizado (cyberpunk/Sonic) + reverb sintética (gelo/neon) =====
+let musicBus=null, musicPlaying=false, musicSchedTimer=null, musicNextTime=0, musicChordIdx=0, musicStepIdx=0;
+function makeReverbBuffer(a,dur,decay){
+  const len=Math.floor(a.sampleRate*dur);
+  const buf=a.createBuffer(2,len,a.sampleRate);
+  for(let ch=0;ch<2;ch++){ const d=buf.getChannelData(ch); for(let i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,decay); }
+  return buf;
+}
+function setupMusicBus(a){
+  if(musicBus) return musicBus;
+  const conv=a.createConvolver(); conv.buffer=makeReverbBuffer(a,3.2,2.1);
+  const wet=a.createGain(); wet.gain.value=0.4;
+  const dry=a.createGain(); dry.gain.value=0.85;
+  const master=a.createGain(); master.gain.value=0.55;
+  conv.connect(wet); wet.connect(master); dry.connect(master); master.connect(a.destination);
+  musicBus={conv,dry,master};
+  return musicBus;
+}
+function musicNote(freq,dur,type,vol,delay,filterHz){
+  const a=ensureAudio(); if(!a) return; const bus=setupMusicBus(a);
+  try{
+    const o=a.createOscillator(), f=a.createBiquadFilter(), g=a.createGain();
+    o.type=type; o.frequency.value=freq;
+    f.type='lowpass'; f.frequency.value=filterHz||2200;
+    const t0=a.currentTime+Math.max(0,delay);
+    g.gain.setValueAtTime(0.0001,t0);
+    g.gain.linearRampToValueAtTime(vol,t0+Math.min(0.05,dur*0.2));
+    g.gain.exponentialRampToValueAtTime(0.001,t0+dur);
+    o.connect(f); f.connect(g); g.connect(bus.dry); g.connect(bus.conv);
+    o.start(t0); o.stop(t0+dur+0.05);
+  }catch(e){}
+}
+function musicKick(delay){
+  const a=ensureAudio(); if(!a) return; const bus=setupMusicBus(a);
+  try{
+    const o=a.createOscillator(), g=a.createGain();
+    o.type='sine'; const t0=a.currentTime+Math.max(0,delay);
+    o.frequency.setValueAtTime(120,t0); o.frequency.exponentialRampToValueAtTime(42,t0+0.15);
+    g.gain.setValueAtTime(0.18,t0); g.gain.exponentialRampToValueAtTime(0.001,t0+0.16);
+    o.connect(g); g.connect(bus.dry);
+    o.start(t0); o.stop(t0+0.2);
+  }catch(e){}
+}
+const MUSIC_CHORDS=[
+  {pad:[110,164.81,220],      arp:[220,261.63,329.63,220,164.81,220]},
+  {pad:[87.31,130.81,174.61], arp:[174.61,207.65,261.63,174.61,130.81,174.61]},
+  {pad:[98,146.83,196],       arp:[196,233.08,293.66,196,146.83,196]},
+  {pad:[73.42,110,146.83],    arp:[146.83,174.61,220,146.83,110,146.83]},
+];
+const MUSIC_STEP=0.21, MUSIC_CHORD_STEPS=20;
+function scheduleMusic(){
+  const a=ensureAudio(); if(!a) return;
+  while(musicNextTime < a.currentTime+0.6){
+    const chord=MUSIC_CHORDS[musicChordIdx%MUSIC_CHORDS.length];
+    const delay=musicNextTime-a.currentTime;
+    if(musicStepIdx===0) chord.pad.forEach(f=>musicNote(f,MUSIC_STEP*MUSIC_CHORD_STEPS*0.95,'sine',0.045,delay,850));
+    musicNote(chord.arp[musicStepIdx%chord.arp.length],MUSIC_STEP*0.85,'sawtooth',0.04,delay,2400);
+    if(musicStepIdx%4===0) musicKick(delay);
+    musicStepIdx++; musicNextTime+=MUSIC_STEP;
+    if(musicStepIdx>=MUSIC_CHORD_STEPS){ musicStepIdx=0; musicChordIdx++; }
+  }
+}
+function startMusic(){
+  if(musicPlaying||muted) return;
+  const a=ensureAudio(); if(!a) return;
+  musicPlaying=true; musicNextTime=a.currentTime+0.1; musicChordIdx=0; musicStepIdx=0;
+  musicSchedTimer=setInterval(scheduleMusic,150);
+}
+function stopMusic(){ musicPlaying=false; if(musicSchedTimer) clearInterval(musicSchedTimer); }
+
+function lerp(a,b,k){return a+(b-a)*k;}
+function drawArrow(cx,cy,dx,dy,color){
+  const len=TS*0.32;
+  ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+dx*len,cy+dy*len); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(cx+dx*len,cy+dy*len);
+  ctx.lineTo(cx+dx*len-dy*5-dx*4, cy+dy*len+dx*5-dy*4);
+  ctx.lineTo(cx+dx*len+dy*5-dx*4, cy+dy*len-dx*5-dy*4);
+  ctx.closePath(); ctx.fill();
+}
+function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+function frame(){
+  t+=1;
+  player.rx=lerp(player.rx,player.x,.35); player.ry=lerp(player.ry,player.y,.35);
+  for(const e of enemies){ e.rx=lerp(e.rx,e.x,.28); e.ry=lerp(e.ry,e.y,.28); }
+  if(shake>0){ shake*=0.82; if(shake<.3) shake=0; }
+  const sx=(Math.random()-.5)*shake, sy=(Math.random()-.5)*shake;
+
+  ctx.save();
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.translate(sx,sy);
+
+  for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++){
+    ctx.fillStyle = grid[y][x]===1 ? '#2e3a63' : (((x+y)%2===0)?'#141a30':'#12162a');
+    ctx.fillRect(x*TS,y*TS,TS,TS);
+  }
+  // portal pulse
+  const pulse=4+Math.sin(t*0.08)*3;
+  ctx.save();
+  ctx.shadowColor='#b967ff'; ctx.shadowBlur=14+pulse;
+  ctx.fillStyle='#b967ff';
+  roundRect(portal.x*TS+6,portal.y*TS+6,TS-12,TS-12,6); ctx.fill();
+  ctx.restore();
+
+  // shields
+  for(const s of shields){
+    const bob=Math.sin(t*0.1+s.x)*2;
+    ctx.save(); ctx.shadowColor='#3ef2ff'; ctx.shadowBlur=10;
+    ctx.fillStyle='#3ef2ff';
+    ctx.beginPath();
+    const cx=s.x*TS+TS/2, cy=s.y*TS+TS/2+bob;
+    ctx.moveTo(cx,cy-TS*0.22); ctx.lineTo(cx+TS*0.18,cy-TS*0.06); ctx.lineTo(cx+TS*0.14,cy+TS*0.18);
+    ctx.lineTo(cx,cy+TS*0.24); ctx.lineTo(cx-TS*0.14,cy+TS*0.18); ctx.lineTo(cx-TS*0.18,cy-TS*0.06);
+    ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+  // coins
+  for(const c of coins){
+    const bob=Math.sin(t*0.12+c.x*2)*2;
+    ctx.fillStyle='#ffd23f'; ctx.beginPath();
+    ctx.arc(c.x*TS+TS/2,c.y*TS+TS/2+bob,TS*0.16,0,7); ctx.fill();
+  }
+  // enemy intents (telegraph)
+  for(const e of enemies){
+    if(e.nextDir){
+      const dx=e.nextDir.x-e.x, dy=e.nextDir.y-e.y;
+      drawArrow(e.rx*TS+TS/2,e.ry*TS+TS/2,dx,dy,'rgba(255,59,92,.55)');
+      if(e.nextDir.x===player.x && e.nextDir.y===player.y){
+        ctx.save(); ctx.strokeStyle='rgba(255,59,92,'+(0.4+Math.sin(t*0.3)*0.3)+')'; ctx.lineWidth=3;
+        ctx.beginPath(); ctx.arc(player.rx*TS+TS/2,player.ry*TS+TS/2,TS*0.42,0,7); ctx.stroke(); ctx.restore();
+      }
+    }
+  }
+  // enemies
+  for(const e of enemies){
+    ctx.save(); ctx.shadowColor='#ff3b5c'; ctx.shadowBlur=8; ctx.fillStyle='#ff3b5c';
+    roundRect(e.rx*TS+6,e.ry*TS+6,TS-12,TS-12,5); ctx.fill(); ctx.restore();
+  }
+  // player + shield ring
+  ctx.save(); ctx.shadowColor='#7df9ff'; ctx.shadowBlur=12; ctx.fillStyle='#7df9ff';
+  ctx.beginPath(); ctx.arc(player.rx*TS+TS/2,player.ry*TS+TS/2,TS*0.3,0,7); ctx.fill(); ctx.restore();
+  if(charges>0){
+    ctx.strokeStyle='rgba(62,242,255,.6)'; ctx.lineWidth=2;
+    for(let i=0;i<Math.min(charges,4);i++){
+      ctx.beginPath(); ctx.arc(player.rx*TS+TS/2,player.ry*TS+TS/2,TS*0.42+i*3,0,7); ctx.stroke();
+    }
+  }
+  // particles
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.vx*=0.94; p.vy*=0.94; p.life-=0.045;
+    if(p.life<=0){ particles.splice(i,1); continue; }
+    ctx.globalAlpha=Math.max(p.life,0); ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,3*p.life+1,0,7); ctx.fill(); ctx.globalAlpha=1;
+  }
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+
+document.addEventListener('keydown',e=>{
+  const k=e.key.toLowerCase();
+  if(['arrowup','w'].includes(k)){e.preventDefault(); tryMove(0,-1);}
+  else if(['arrowdown','s'].includes(k)){e.preventDefault(); tryMove(0,1);}
+  else if(['arrowleft','a'].includes(k)){e.preventDefault(); tryMove(-1,0);}
+  else if(['arrowright','d'].includes(k)){e.preventDefault(); tryMove(1,0);}
+  else if(k===' '){ e.preventDefault(); tryJump(); }
+});
+document.querySelectorAll('.dpad').forEach(b=>{
+  b.addEventListener('click',()=>{
+    const d=b.dataset.d;
+    if(d==='up') tryMove(0,-1);
+    else if(d==='down') tryMove(0,1);
+    else if(d==='left') tryMove(-1,0);
+    else if(d==='right') tryMove(1,0);
+    else afterPlayerAction();
+  });
+});
+document.getElementById('jump').addEventListener('click',tryJump);
+document.getElementById('restart').addEventListener('click',startGame);
+const muteBtn=document.getElementById('muteBtn');
+muteBtn.textContent=muted?'🔇':'🔊';
+muteBtn.addEventListener('click',()=>{
+  muted=!muted;
+  muteBtn.textContent=muted?'🔇':'🔊';
+  try{ localStorage.setItem('nr_muted',muted?'1':'0'); }catch(e){}
+  if(!muted){ ensureAudio(); startMusic(); } else { stopMusic(); }
+});
+['keydown','pointerdown'].forEach(ev=>document.addEventListener(ev,()=>{ ensureAudio(); if(!muted) startMusic(); },{once:true}));
+
+resize();
+startGame();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
