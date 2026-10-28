@@ -1,6 +1,9 @@
 extends Node2D
 
 const CELL := 56.0
+const TILE_FLOOR := 0
+const TILE_WALL := 1
+const TILE_BORDER := 2
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
 const CHALLENGES := [
 	"Atravesse sem saltar",
@@ -8,10 +11,14 @@ const CHALLENGES := [
 	"Escape em ate 14 movimentos",
 ]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
+const CAPTURE_POP_TIME := 0.92
+const CAPTURE_END_TIME := 1.95
 const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
+const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
+const SideScrollStage = preload("res://side_scroll_stage.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -24,6 +31,7 @@ var portal_position := Vector2i.ZERO
 var portal_open := true
 var enemies: Array[Dictionary] = []
 var shields: Array[Vector2i] = []
+var breakers: Array[Vector2i] = []
 var coins: Array[Vector2i] = []
 var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
@@ -33,11 +41,16 @@ var particles: Array[Dictionary] = []
 var camera: Camera2D
 var hud: Control
 var audio: Node
+var side_stage = null
+var game_mode := "top_down"
+var capture_overlay: ColorRect
+var capture_material: ShaderMaterial
 var generator = Generator.new()
 var rng := RandomNumberGenerator.new()
 var active_seed := 0
 var generation_report := ""
 var charges := 0
+var breach_charges := 0
 var total_coins := 0
 var floor_number := 1
 var turn_number := 0
@@ -63,6 +76,14 @@ var floor_history: Array[int] = []
 var animation_clock := 0.0
 var shake_time := 0.0
 var shake_strength := 0.0
+var capture_time := 0.0
+var capture_darkness := 0.0
+var capture_flash := 0.0
+var capture_origin := Vector2.ZERO
+var capture_popped := false
+var capture_puddle_active := false
+var capture_puddle_points := PackedVector2Array()
+var capture_splats: Array[Dictionary] = []
 var font: Font
 
 
@@ -84,6 +105,17 @@ func _ready() -> void:
 	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hud.game = self
 	hud_layer.add_child(hud)
+	var capture_layer := CanvasLayer.new()
+	capture_layer.name = "CaptureOverlay"
+	capture_layer.layer = 1
+	add_child(capture_layer)
+	capture_overlay = ColorRect.new()
+	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	capture_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	capture_material = ShaderMaterial.new()
+	capture_material.shader = CaptureOverlayShader
+	capture_overlay.material = capture_material
+	capture_layer.add_child(capture_overlay)
 	audio = AudioScript.new()
 	add_child(audio)
 	_load_profile()
@@ -95,6 +127,12 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	if side_stage != null and is_instance_valid(side_stage):
+		side_stage.queue_free()
+	side_stage = null
+	game_mode = "top_down"
+	if camera != null:
+		camera.enabled = true
 	if seed_value >= 0:
 		active_seed = seed_value
 	else:
@@ -103,12 +141,23 @@ func new_game(seed_value: int = -1) -> void:
 	floor_history.clear()
 	floor_number = 1
 	charges = 0
+	breach_charges = 0
 	total_coins = 0
+	capture_time = 0.0
+	capture_darkness = 0.0
+	capture_flash = 0.0
+	capture_popped = false
+	capture_puddle_active = false
+	capture_puddle_points.clear()
+	capture_splats.clear()
 	game_state = "playing"
+	if audio != null and audio.has_method("reset_cinematic_mix"):
+		audio.reset_cinematic_mix()
 	generate_floor(1)
 
 
 func generate_floor(number: int) -> void:
+	game_mode = "top_down"
 	floor_number = number
 	world_size = MAP_SIZES[mini(number - 1, MAP_SIZES.size() - 1)]
 	var level_seed := active_seed + number * 7919
@@ -128,13 +177,13 @@ func generate_floor(number: int) -> void:
 		portal_position = Vector2i(world_size.x - 2, rng.randi_range(1, world_size.y - 2))
 		generation_report += "; fallback: %s" % result.reason
 	for x in world_size.x:
-		grid[0][x] = 1
-		grid[world_size.y - 1][x] = 1
+		grid[0][x] = TILE_BORDER
+		grid[world_size.y - 1][x] = TILE_BORDER
 	for y in world_size.y:
-		grid[y][0] = 1
-		grid[y][world_size.x - 1] = 1
-	grid[player_position.y][player_position.x] = 0
-	grid[portal_position.y][portal_position.x] = 0
+		grid[y][0] = TILE_BORDER
+		grid[y][world_size.x - 1] = TILE_BORDER
+	grid[player_position.y][player_position.x] = TILE_FLOOR
+	grid[portal_position.y][portal_position.x] = TILE_FLOOR
 	if not result.ok:
 		_carve_route(player_position, portal_position)
 	player_from = _cell_center(player_position)
@@ -142,6 +191,7 @@ func generate_floor(number: int) -> void:
 	player_anim = 1.0
 	enemies.clear()
 	shields.clear()
+	breakers.clear()
 	coins.clear()
 	switches.clear()
 	traps.clear()
@@ -177,6 +227,11 @@ func generate_floor(number: int) -> void:
 		if position != Vector2i(-1, -1):
 			shields.append(position)
 			occupied.append(position)
+	if number >= 3 and number % 2 == 1:
+		var breaker_position: Vector2i = _pick_spaced(walkable, occupied, 8)
+		if breaker_position != Vector2i(-1, -1):
+			breakers.append(breaker_position)
+			occupied.append(breaker_position)
 	for i in 8 + number:
 		var position: Vector2i = _pick_spaced(walkable, occupied, 1)
 		if position != Vector2i(-1, -1):
@@ -363,7 +418,7 @@ func try_jump() -> void:
 		return
 	var middle := player_position + facing
 	var landing := player_position + facing * 2
-	if not _inside(middle) or not _inside(landing) or grid[middle.y][middle.x] == 1 or grid[landing.y][landing.x] == 1:
+	if not _inside(middle) or not _inside(landing) or grid[middle.y][middle.x] != TILE_FLOOR or grid[landing.y][landing.x] != TILE_FLOOR:
 		last_notice = "Precisas de duas casas livres para saltar"
 		notice_timer = 1.5
 		shake_time = 0.12
@@ -377,6 +432,44 @@ func try_jump() -> void:
 	_begin_player_move(landing)
 	_spawn_burst(_cell_center(player_position), Color("6bf4ff"), 14, 115.0)
 	audio.play("jump")
+	_take_turn()
+
+
+func try_break_wall() -> void:
+	if game_state != "playing":
+		return
+	var target := player_position + facing
+	if not _inside(target) or grid[target.y][target.x] == TILE_BORDER:
+		last_notice = "A FRONTEIRA DAS RUINAS NAO CEDE"
+		notice_timer = 1.2
+		shake_time = 0.1
+		shake_strength = 4.0
+		audio.play("blocked")
+		queue_redraw()
+		return
+	if grid[target.y][target.x] != TILE_WALL:
+		last_notice = "NAO HA PAREDE PARA DEMOLIR"
+		notice_timer = 1.0
+		audio.play("blocked")
+		queue_redraw()
+		return
+	if breach_charges <= 0:
+		last_notice = "CARGA DE DEMOLICAO EM FALTA"
+		notice_timer = 1.4
+		audio.play("blocked")
+		queue_redraw()
+		return
+	breach_charges -= 1
+	grid[target.y][target.x] = TILE_FLOOR
+	moves_this_floor += 1
+	shake_time = 0.22
+	shake_strength = 10.0
+	flash_time = 0.08
+	flash_color = Color("ffb365")
+	last_notice = "PAREDE ABERTA — OS PERSEGUIDORES AVANCAM"
+	notice_timer = 1.7
+	_spawn_burst(_cell_center(target), Color("ff9f59"), 32, 180.0)
+	audio.play("break_wall")
 	_take_turn()
 
 
@@ -421,6 +514,13 @@ func _collect_pickups() -> void:
 		notice_timer = 2.2
 		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
 		audio.play("shield")
+	if breakers.has(player_position):
+		breakers.erase(player_position)
+		breach_charges += 1
+		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
+		notice_timer = 2.6
+		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
+		audio.play("breaker")
 
 
 func _audio_coin() -> void:
@@ -485,7 +585,7 @@ func _stagger_warden(index: int) -> void:
 	var best_distance := _manhattan(enemy.pos, player_position)
 	for direction in FOUR_WAY:
 		var candidate: Vector2i = enemy.pos + direction
-		if not _inside(candidate) or grid[candidate.y][candidate.x] == 1 or _enemy_at(candidate, enemy):
+		if not _inside(candidate) or grid[candidate.y][candidate.x] != TILE_FLOOR or _enemy_at(candidate, enemy):
 			continue
 		var distance := _manhattan(candidate, player_position)
 		if distance > best_distance:
@@ -523,12 +623,111 @@ func _apply_damage(message: String, color: Color) -> void:
 		notice_timer = 2.0
 		audio.play("hit")
 	else:
-		game_state = "game_over"
-		last_notice = message + " — R PARA TENTAR DE NOVO"
-		notice_timer = 999.0
-		audio.play("explosion")
-		flash_time = 0.42
-		flash_color = Color("ff234f")
+		_begin_capture(message, color)
+
+
+func _begin_capture(message: String, color: Color) -> void:
+	game_state = "captured"
+	capture_time = 0.0
+	capture_darkness = 0.0
+	capture_flash = 0.0
+	capture_origin = _player_visual_position()
+	capture_popped = false
+	capture_puddle_active = false
+	capture_puddle_points.clear()
+	capture_splats.clear()
+	player_from = capture_origin
+	player_to = capture_origin
+	player_anim = 1.0
+	last_notice = message
+	shake_time = 0.18
+	shake_strength = 5.0
+	flash_time = 0.13
+	flash_color = color
+	audio.play("inflate")
+	_update_capture_overlay()
+
+
+func _trigger_capture_burst() -> void:
+	if capture_popped:
+		return
+	capture_popped = true
+	capture_puddle_active = true
+	capture_puddle_points = _make_puddle_outline()
+	capture_splats.clear()
+	for i in 15:
+		var angle := TAU * float(i) / 15.0 + rng.randf_range(-0.2, 0.2)
+		var radius := rng.randf_range(CELL * 0.72, CELL * 1.52)
+		var offset := Vector2(cos(angle) * radius * 1.03, sin(angle) * radius * 0.86)
+		capture_splats.append({"pos": capture_origin + offset, "radius": rng.randf_range(2.5, 8.0)})
+	_spawn_blood_burst(capture_origin)
+	audio.play("balloon_pop")
+	shake_time = 0.48
+	shake_strength = 18.0
+	flash_time = 0.26
+	flash_color = Color("ff224d")
+	capture_flash = 1.0
+
+
+func _make_puddle_outline() -> PackedVector2Array:
+	var outline := PackedVector2Array()
+	var points := 28
+	for i in points:
+		var angle := TAU * float(i) / points
+		var roughness := rng.randf_range(0.955, 1.045)
+		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.68 * roughness, sin(angle) * CELL * 1.48 * roughness))
+	return outline
+
+
+func _spawn_blood_burst(origin: Vector2) -> void:
+	for i in 64:
+		var angle := TAU * float(i) / 64.0 + rng.randf_range(-0.16, 0.16)
+		var speed := rng.randf_range(72.0, 245.0)
+		var color := Color("ff3154") if i % 4 == 0 else Color("b60d31") if i % 3 == 0 else Color("e81e43")
+		particles.append({"kind": "blood", "pos": origin, "velocity": Vector2(cos(angle), sin(angle)) * speed, "life": rng.randf_range(0.48, 1.05), "max_life": 1.05, "color": color, "size": rng.randf_range(2.8, 6.2), "gravity": rng.randf_range(175.0, 330.0)})
+	for i in 18:
+		var offset := Vector2(rng.randf_range(-CELL * 0.56, CELL * 0.56), rng.randf_range(-CELL * 0.48, CELL * 0.48))
+		particles.append({"kind": "blood", "pos": origin + offset, "velocity": Vector2(rng.randf_range(-42.0, 42.0), rng.randf_range(-52.0, 28.0)), "life": rng.randf_range(0.3, 0.62), "max_life": 0.62, "color": Color("ff5b70"), "size": rng.randf_range(1.6, 3.4), "gravity": 120.0})
+
+
+func _update_capture_sequence(delta: float) -> void:
+	if game_state == "captured":
+		capture_time += delta
+		if capture_time < CAPTURE_POP_TIME:
+			var progress := clampf(capture_time / CAPTURE_POP_TIME, 0.0, 1.0)
+			capture_darkness = lerpf(0.0, 0.44, progress * progress)
+			capture_flash = 0.035 + absf(sin(capture_time * 36.0)) * 0.11 if progress > 0.28 else 0.0
+		else:
+			if not capture_popped:
+				_trigger_capture_burst()
+			var aftermath := clampf((capture_time - CAPTURE_POP_TIME) / (CAPTURE_END_TIME - CAPTURE_POP_TIME), 0.0, 1.0)
+			capture_darkness = lerpf(0.44, 0.91, smoothstep(0.0, 1.0, aftermath))
+			capture_flash = maxf(0.0, 1.0 - (capture_time - CAPTURE_POP_TIME) / 0.22)
+		if capture_time >= CAPTURE_END_TIME:
+			game_state = "game_over"
+			capture_darkness = 0.91
+			capture_flash = 0.0
+			last_notice = "FOSTE CAPTURADO — R PARA TENTAR DE NOVO"
+	elif game_state == "game_over":
+		capture_darkness = 0.91
+		capture_flash = 0.0
+	_update_capture_overlay()
+
+
+func _update_capture_overlay() -> void:
+	if audio != null and audio.has_method("set_capture_mix"):
+		audio.set_capture_mix(capture_darkness)
+	if capture_material == null:
+		return
+	var focus := Vector2(0.5, 0.5)
+	var viewport := get_viewport_rect().size
+	var focus_camera = side_stage.camera if game_mode == "side_scroll" and side_stage != null else camera
+	if focus_camera != null and viewport.x > 0.0 and viewport.y > 0.0:
+		var screen_offset: Vector2 = capture_origin - focus_camera.global_position
+		focus += Vector2(screen_offset.x / viewport.x, screen_offset.y / viewport.y)
+	capture_material.set_shader_parameter("darkness", capture_darkness)
+	capture_material.set_shader_parameter("red_flash", capture_flash)
+	capture_material.set_shader_parameter("focus_uv", focus)
 
 
 func _check_portal() -> void:
@@ -570,8 +769,50 @@ func _check_portal() -> void:
 
 func advance_floor() -> void:
 	if game_state == "floor_clear":
+		if floor_number == 3:
+			_begin_side_scroll_interlude()
+			return
 		generate_floor(floor_number + 1)
 		game_state = "playing"
+
+
+func _begin_side_scroll_interlude() -> void:
+	floor_number = 4
+	game_mode = "side_scroll"
+	game_state = "side_scroll"
+	objective_type = "fragments"
+	enemies.clear()
+	particles.clear()
+	if camera != null:
+		camera.enabled = false
+	side_stage = SideScrollStage.new()
+	side_stage.name = "FourthFloorSideScroll"
+	side_stage.host = self
+	add_child(side_stage)
+	last_notice = "RUPTURA DE PERSPECTIVA — RECOLHE 3 FRAGMENTOS"
+	notice_timer = 999.0
+	audio.play("portal")
+
+
+func _finish_side_scroll(fragment_count: int) -> void:
+	game_mode = "top_down"
+	if side_stage != null and is_instance_valid(side_stage):
+		side_stage.queue_free()
+	side_stage = null
+	if camera != null:
+		camera.enabled = true
+	stars_last_floor = mini(5, 2 + fragment_count)
+	floor_history.append(stars_last_floor)
+	floor_reward = stars_last_floor * 2 + fragment_count * 2
+	total_coins += floor_reward
+	if total_coins > best_score:
+		best_score = total_coins
+	game_state = "floor_clear"
+	last_notice = "RUPTURA CONCLUIDA — ENTER PARA O ANDAR FINAL"
+	notice_timer = 999.0
+	_spawn_burst(_cell_center(portal_position), Color("71eaf8"), 42, 235.0)
+	audio.play("portal")
+	_save_profile()
 
 
 func _stars_for_floor() -> int:
@@ -584,6 +825,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if game_mode == "side_scroll" and side_stage != null:
+		return "FRAGMENTOS %d/3   /   ALCANCA O PORTAL" % side_stage.collected_fragments
 	if objective_type == "switches":
 		return "INTERRUPTORES %d/%d   /   %s" % [_active_switches(), switches.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if game_state == "rescued":
@@ -616,7 +859,11 @@ func _process(delta: float) -> void:
 		var particle: Dictionary = particles[i]
 		particle.life -= delta
 		particle.pos += particle.velocity * delta
-		particle.velocity *= pow(0.08, delta)
+		if particle.get("kind", "") == "blood":
+			particle.velocity += Vector2(0.0, float(particle.get("gravity", 220.0))) * delta
+			particle.velocity *= pow(0.38, delta)
+		else:
+			particle.velocity *= pow(0.08, delta)
 		if particle.life <= 0.0:
 			particles.remove_at(i)
 		else:
@@ -628,12 +875,30 @@ func _process(delta: float) -> void:
 	flash_time = maxf(0.0, flash_time - delta)
 	if shake_time > 0.0:
 		shake_time = maxf(0.0, shake_time - delta)
+	_update_capture_sequence(delta)
+	if audio != null and audio.has_method("set_threat"):
+		audio.set_threat(_current_threat_level())
 	_update_camera(delta)
 	queue_redraw()
 
 
+func _current_threat_level() -> float:
+	if game_mode == "side_scroll" and side_stage != null:
+		return side_stage.get_threat_level()
+	if game_state != "playing":
+		return 0.0
+	var intensity := 0.0
+	for enemy in enemies:
+		var distance := _manhattan(enemy.pos, player_position)
+		if distance <= 8:
+			intensity = maxf(intensity, 1.0 - float(distance) / 10.0)
+		if enemy.get("role", "") == "warden":
+			intensity = maxf(intensity, 0.72)
+	return intensity
+
+
 func _update_camera(delta: float) -> void:
-	if camera == null:
+	if camera == null or game_mode == "side_scroll":
 		return
 	var viewport := get_viewport_rect().size
 	var world_pixels := Vector2(world_size) * CELL
@@ -654,6 +919,8 @@ func _update_camera(delta: float) -> void:
 
 
 func _player_visual_position() -> Vector2:
+	if game_mode == "side_scroll" and side_stage != null:
+		return side_stage.player_position
 	var t := clampf(player_anim, 0.0, 1.0)
 	t = t * t * (3.0 - 2.0 * t)
 	return player_from.lerp(player_to, t)
@@ -671,7 +938,16 @@ func _spawn_burst(position: Vector2, color: Color, count: int, speed: float) -> 
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not event is InputEventKey or not event.pressed or event.echo:
+	if not event is InputEventKey:
+		return
+	if game_mode == "side_scroll" and side_stage != null:
+		side_stage.handle_key(event)
+		return
+	if not event.pressed or event.echo:
+		return
+	if game_state == "captured":
+		if event.keycode == KEY_R:
+			new_game()
 		return
 	match event.keycode:
 		KEY_UP, KEY_W:
@@ -687,13 +963,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			facing = Vector2i.RIGHT
 			try_move(1, 0)
 		KEY_SPACE: try_jump()
+		KEY_B: try_break_wall()
 		KEY_ENTER, KEY_KP_ENTER: advance_floor()
 		KEY_R: new_game()
 		KEY_M: audio.toggle_music()
 
 
 func _draw() -> void:
-	if world_size == Vector2i.ZERO:
+	if game_mode == "side_scroll" or world_size == Vector2i.ZERO:
 		return
 	var shake := Vector2.ZERO
 	if shake_time > 0.0:
@@ -706,7 +983,8 @@ func _draw() -> void:
 	var last_y := mini(world_size.y - 1, int(ceil((camera.global_position.y + half_view.y) / CELL)) + 1)
 	for y in range(first_y, last_y + 1):
 		for x in range(first_x, last_x + 1):
-			_draw_cell(Vector2i(x, y), grid[y][x] == 1)
+			_draw_cell(Vector2i(x, y), grid[y][x])
+	_draw_blood_puddle()
 	for trap in traps:
 		_draw_trap(trap)
 	for item in switches:
@@ -715,6 +993,8 @@ func _draw() -> void:
 		_draw_coin(position)
 	for position in shields:
 		_draw_shield(position)
+	for position in breakers:
+		_draw_breaker(position)
 	_draw_portal()
 	for enemy in enemies:
 		_draw_enemy(enemy)
@@ -723,14 +1003,22 @@ func _draw() -> void:
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_cell(point: Vector2i, wall: bool) -> void:
+func _draw_cell(point: Vector2i, tile_type: int) -> void:
 	var top_left := Vector2(point) * CELL
 	var rect := Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0))
-	if wall:
-		draw_rect(rect, Color("202947"), true)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 8)), Color("30395d"), true)
-		draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 8, 2)), Color("6573a0", 0.36), true)
-		draw_rect(Rect2(top_left + Vector2(4, CELL - 5), Vector2(CELL - 9, 1)), Color("11172d", 0.78), true)
+	if tile_type != TILE_FLOOR:
+		var border := tile_type == TILE_BORDER
+		var frame_color := Color("252e47") if not border else Color("11172a")
+		var face_color := Color("384260") if not border else Color("1b2237")
+		draw_rect(rect, frame_color, true)
+		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 8)), face_color, true)
+		draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 8, 2)), Color("8290ad", 0.32 if not border else 0.16), true)
+		draw_rect(Rect2(top_left + Vector2(4, CELL - 5), Vector2(CELL - 9, 1)), Color("11172d", 0.82), true)
+		if not border:
+			var crack := Color("a9b3c7", 0.22)
+			draw_line(top_left + Vector2(15, 16), top_left + Vector2(22, 22), crack, 1.0, true)
+			draw_line(top_left + Vector2(22, 22), top_left + Vector2(19, 29), crack, 1.0, true)
+			draw_line(top_left + Vector2(19, 29), top_left + Vector2(28, 34), crack, 1.0, true)
 	else:
 		var base := Color("11182c") if (point.x + point.y) % 2 == 0 else Color("141d33")
 		draw_rect(rect, base, true)
@@ -757,6 +1045,16 @@ func _draw_shield(point: Vector2i) -> void:
 	var outline := PackedVector2Array([center + Vector2(0, -14 + bob), center + Vector2(12, -5 + bob), center + Vector2(9, 9 + bob), center + Vector2(0, 16 + bob), center + Vector2(-9, 9 + bob), center + Vector2(-12, -5 + bob)])
 	draw_colored_polygon(outline, Color("40ddf0"))
 	draw_polyline(PackedVector2Array([outline[0], outline[1], outline[2], outline[3], outline[4], outline[5], outline[0]]), Color("d1fcff"), 1.4, true)
+
+
+func _draw_breaker(point: Vector2i) -> void:
+	var center := _cell_center(point)
+	var bob := sin(animation_clock * 3.8 + point.y) * 2.2
+	draw_circle(center + Vector2(0, bob), 22.0, Color("ff9b5a", 0.11))
+	draw_arc(center + Vector2(0, bob), 15.0, animation_clock * 1.4, animation_clock * 1.4 + TAU * 0.78, 32, Color("ffd3a3", 0.72), 1.6, true)
+	draw_line(center + Vector2(-5, 7 + bob), center + Vector2(6, -6 + bob), Color("ffc276"), 4.2, true)
+	draw_line(center + Vector2(-6, -9 + bob), center + Vector2(7, -9 + bob), Color("fff0ca"), 4.0, true)
+	draw_line(center + Vector2(-6, -9 + bob), center + Vector2(-10, -3 + bob), Color("fff0ca"), 3.0, true)
 
 
 func _draw_portal() -> void:
@@ -803,40 +1101,120 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	var t: float = enemy.t
 	t = t * t * (3.0 - 2.0 * t)
 	var center: Vector2 = enemy.from.lerp(enemy.to, t)
-	var bounce := sin(animation_clock * 4.0 + center.x * 0.01) * 1.4
-	center.y += bounce
+	var bob := sin(animation_clock * 4.0 + center.x * 0.01) * 1.3
+	center.y += bob
 	var role: String = enemy.get("role", "hunter")
-	var scale := 1.35 if role == "warden" else 1.0
+	var size_scale := 1.42 if role == "warden" else 1.0
 	var color := Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("ff526f")
-	draw_circle(center + Vector2(0, 3), 21.0 * scale, Color(color, 0.11))
-	draw_rect(Rect2(center - Vector2(15, 15) * scale, Vector2(30, 30) * scale), color.darkened(0.48), true)
-	draw_rect(Rect2(center - Vector2(12, 13) * scale, Vector2(24, 23) * scale), color, true)
-	draw_rect(Rect2(center + Vector2(-7, -3), Vector2(4, 5)), Color("fff2e8"), true)
-	draw_rect(Rect2(center + Vector2(4, -3), Vector2(4, 5)), Color("fff2e8"), true)
-	draw_rect(Rect2(center + Vector2(-5, 7), Vector2(10, 2)), Color("78243f"), true)
+	var face_direction := signi(player_position.x - enemy.pos.x)
+	if role == "wisp":
+		draw_circle(center + Vector2(0, 3), 23.0, Color("b985ff", 0.12))
+		var ghost := PackedVector2Array([Vector2(0, -17), Vector2(11, -12), Vector2(15, -3), Vector2(13, 6), Vector2(8, 11), Vector2(4, 7), Vector2(0, 12), Vector2(-5, 7), Vector2(-10, 11), Vector2(-14, 5), Vector2(-15, -4), Vector2(-11, -12)])
+		_draw_player_polygon(center + Vector2(0, bob), ghost, 1.0, Color("9673e8", 0.84))
+		draw_arc(center, 18.0, animation_clock * 1.4, animation_clock * 1.4 + TAU * 0.7, 28, Color("d7b5ff", 0.7), 1.4, true)
+		draw_circle(center + Vector2(-5 + face_direction, -3), 2.1, Color("fff4ff"))
+		draw_circle(center + Vector2(5 + face_direction, -3), 2.1, Color("fff4ff"))
+		draw_circle(center + Vector2(-5 + face_direction, -3), 0.9, Color("472365"))
+		draw_circle(center + Vector2(5 + face_direction, -3), 0.9, Color("472365"))
+		return
+	draw_circle(center + Vector2(0, 12), 15.0 * size_scale, Color("020611", 0.44))
+	draw_circle(center, 22.0 * size_scale, Color(color, 0.13))
+	var cloak := PackedVector2Array([Vector2(0, -16), Vector2(9, -13), Vector2(14, -4), Vector2(12, 7), Vector2(17, 13), Vector2(8, 11), Vector2(2, 16), Vector2(-3, 11), Vector2(-13, 14), Vector2(-11, 5), Vector2(-15, -3), Vector2(-10, -12)])
+	_draw_player_polygon(center + Vector2(0, bob), cloak, size_scale, color.darkened(0.38))
+	var armor := PackedVector2Array([Vector2(-9, -9), Vector2(-4, -13), Vector2(5, -13), Vector2(10, -8), Vector2(8, 4), Vector2(4, 10), Vector2(-5, 10), Vector2(-9, 4)])
+	_draw_player_polygon(center + Vector2(0, bob), armor, size_scale, color)
+	var eye_y := -4.0 + bob
+	var eye_offset := Vector2(float(face_direction) * 2.5, 0.0)
+	draw_circle(center + Vector2(-5, eye_y) * size_scale + eye_offset, 2.8 * size_scale, Color("ffe9ce"))
+	draw_circle(center + Vector2(5, eye_y) * size_scale + eye_offset, 2.8 * size_scale, Color("ffe9ce"))
+	draw_circle(center + Vector2(-5, eye_y) * size_scale + eye_offset, 1.35 * size_scale, Color("371a2b"))
+	draw_circle(center + Vector2(5, eye_y) * size_scale + eye_offset, 1.35 * size_scale, Color("371a2b"))
+	if role == "sentry":
+		var helm := PackedVector2Array([Vector2(-13, -5), Vector2(-11, -14), Vector2(-5, -19), Vector2(0, -14), Vector2(6, -19), Vector2(12, -12), Vector2(13, -4), Vector2(6, -8), Vector2(-7, -8)])
+		_draw_player_polygon(center + Vector2(0, bob), helm, size_scale, Color("ffd17a"))
+		draw_line(center + Vector2(13, 7), center + Vector2(19, -15), Color("ffe2a4"), 2.4, true)
+		draw_circle(center + Vector2(-13, 5), 5.2, Color("ff8b58"))
+	elif role == "warden":
+		var crown := PackedVector2Array([Vector2(-14, -9), Vector2(-18, -20), Vector2(-8, -15), Vector2(0, -23), Vector2(7, -15), Vector2(18, -20), Vector2(14, -8)])
+		_draw_player_polygon(center + Vector2(0, bob), crown, size_scale, Color("e8bcff"))
+		draw_circle(center + Vector2(0, 6), 5.0 * size_scale, Color("f0caff", 0.9))
+		draw_circle(center + Vector2(0, 6), 2.3 * size_scale, Color("ffffff"))
+		draw_arc(center + Vector2(0, 4), 15.0 * size_scale, 0.2, PI - 0.2, 20, Color("f1c5ff", 0.86), 2.0, true)
+	else:
+		draw_circle(center + Vector2(-13, 5), 4.4, Color("ff8b58"))
+		draw_circle(center + Vector2(13, 5), 4.4, Color("ff8b58"))
+		draw_line(center + Vector2(-4, 8), center + Vector2(4, 8), Color("5f1835"), 1.8, true)
 
 
 func _draw_player() -> void:
+	if capture_popped and game_state in ["captured", "game_over"]:
+		return
 	var center := _player_visual_position()
-	var bob := sin(animation_clock * 9.0) * 1.2
+	var bob := sin(animation_clock * 9.0) * 1.1
 	var frightened := _player_is_frightened()
-	draw_circle(center + Vector2(0, 13), 13.0, Color("00040d", 0.48))
+	var size_scale := 1.0
+	var visibility := 1.0
+	if game_state == "captured":
+		var inflation := clampf(capture_time / CAPTURE_POP_TIME, 0.0, 1.0)
+		size_scale = 1.0 + 0.78 * smoothstep(0.0, 1.0, inflation)
+		if inflation > 0.3 and int(capture_time * 26.0) % 2 == 0:
+			visibility = 0.3
+	var shadow := Color("00040d", 0.42 * visibility)
+	draw_circle(center + Vector2(0, 13.0 * size_scale), 12.0 * size_scale, shadow)
 	if charges > 0:
 		for i in mini(charges, 3):
-			var radius := 19.0 + i * 4.0 + sin(animation_clock * 5.0 + i) * 1.5
-			draw_arc(center, radius, animation_clock * (0.9 + i * 0.1), animation_clock * (0.9 + i * 0.1) + TAU * 0.77, 32, Color("63eeff", 0.43 - i * 0.08), 1.7, true)
-	var skin := Color("ffb67a") if frightened else Color("54e9f6")
-	draw_circle(center, 18.0, Color("ff7c66", 0.14) if frightened else Color("45eafa", 0.11))
-	draw_circle(center + Vector2(0, bob), 12.0, skin)
-	draw_circle(center + Vector2(-2, -2 + bob), 8.0, Color("ffe2c0") if frightened else Color("a7fbff"))
-	var eye_offset := Vector2(facing) * 3.0
-	var eye_color := Color("692b31") if frightened else Color("173646")
-	var eye_size := 2.2 if frightened else 1.7
-	draw_circle(center + Vector2(-2, -2) + eye_offset, eye_size, eye_color)
-	draw_circle(center + Vector2(3, -2) + eye_offset, eye_size, eye_color)
+			var radius := (19.0 + i * 4.0 + sin(animation_clock * 5.0 + i) * 1.5) * size_scale
+			draw_arc(center, radius, animation_clock * (0.9 + i * 0.1), animation_clock * (0.9 + i * 0.1) + TAU * 0.77, 32, Color("63eeff", (0.43 - i * 0.08) * visibility), 1.7 * size_scale, true)
+	var suit := Color("ff667d") if game_state == "captured" else Color("1b7890")
+	if game_state != "captured":
+		suit = Color("265b83")
+	var skin := Color("ffbd83") if frightened else Color("e9ad83")
+	var eye_color := Color("582734") if frightened else Color("172b3e")
+	var torso := PackedVector2Array([Vector2(-7, -2), Vector2(-11, 1), Vector2(-10, 7), Vector2(-7, 8), Vector2(-6, 15), Vector2(6, 15), Vector2(7, 8), Vector2(10, 7), Vector2(11, 1), Vector2(7, -2), Vector2(4, 0), Vector2(-4, 0)])
+	var fade_suit := suit
+	fade_suit.a *= visibility
+	_draw_player_polygon(center + Vector2(0, bob * size_scale), torso, size_scale, fade_suit)
+	var arm_color := suit.darkened(0.22)
+	arm_color.a *= visibility
+	draw_circle(center + Vector2(-9, 5) * size_scale, 3.2 * size_scale, arm_color)
+	draw_circle(center + Vector2(9, 5) * size_scale, 3.2 * size_scale, arm_color)
+	draw_rect(Rect2(center + Vector2(-6.5, 13) * size_scale, Vector2(4.5, 7) * size_scale), Color("132c48", visibility))
+	draw_rect(Rect2(center + Vector2(2, 13) * size_scale, Vector2(4.5, 7) * size_scale), Color("132c48", visibility))
+	draw_circle(center + Vector2(-4, 20) * size_scale, 3.2 * size_scale, Color("101e35", visibility))
+	draw_circle(center + Vector2(5, 20) * size_scale, 3.2 * size_scale, Color("101e35", visibility))
+	draw_circle(center + Vector2(0, -7 + bob) * size_scale, 8.0 * size_scale, Color("f4c59a", visibility))
+	draw_arc(center + Vector2(0, -8 + bob) * size_scale, 8.1 * size_scale, PI + 0.12, TAU - 0.12, 16, Color("27314a", visibility), 3.2 * size_scale, true)
+	var eye_offset := Vector2(facing) * (2.3 * size_scale)
+	draw_circle(center + Vector2(-2.2, -8 + bob) * size_scale + eye_offset, (2.0 if frightened else 1.35) * size_scale, Color(eye_color, visibility))
+	draw_circle(center + Vector2(2.8, -8 + bob) * size_scale + eye_offset, (2.0 if frightened else 1.35) * size_scale, Color(eye_color, visibility))
 	if frightened:
-		draw_arc(center + Vector2(0, 5), 3.0, PI, TAU, 12, Color("7d3038"), 1.8, true)
-		draw_circle(center + Vector2(0, -23), 3.5 + sin(animation_clock * 10.0) * 0.8, Color("ff785e"))
+		draw_circle(center + Vector2(0.3, -3 + bob) * size_scale, 2.1 * size_scale, Color("592532", visibility))
+		draw_circle(center + Vector2(10, -16) * size_scale, (2.4 + sin(animation_clock * 10.0) * 0.5) * size_scale, Color("ff785e", visibility))
+	else:
+		draw_line(center + Vector2(-2, -3) * size_scale, center + Vector2(2, -3) * size_scale, Color("673f43", visibility), 1.2 * size_scale, true)
+
+
+func _draw_player_polygon(center: Vector2, shape: PackedVector2Array, scale: float, color: Color) -> void:
+	var points := PackedVector2Array()
+	for point in shape:
+		points.append(center + point * scale)
+	draw_colored_polygon(points, color)
+
+
+func _draw_blood_puddle() -> void:
+	if not capture_puddle_active or capture_puddle_points.size() < 3:
+		return
+	draw_colored_polygon(capture_puddle_points, Color("6f0922", 0.96))
+	var inset := PackedVector2Array()
+	for point in capture_puddle_points:
+		inset.append(capture_origin + (point - capture_origin) * 0.72)
+	draw_colored_polygon(inset, Color("a80d2d", 0.93))
+	var outline := capture_puddle_points.duplicate()
+	outline.append(capture_puddle_points[0])
+	draw_polyline(outline, Color("ff3a5c", 0.82), 2.2, true)
+	for splat in capture_splats:
+		draw_circle(splat.pos, splat.radius, Color("b90e31", 0.95))
+		draw_circle(splat.pos + Vector2(-splat.radius * 0.22, -splat.radius * 0.28), splat.radius * 0.28, Color("ff5268", 0.75))
 
 
 func _player_is_frightened() -> bool:
@@ -851,4 +1229,11 @@ func _draw_particles() -> void:
 		var strength: float = clampf(particle.life / particle.max_life, 0.0, 1.0)
 		var color: Color = particle.color
 		color.a *= strength
-		draw_circle(particle.pos, particle.size * strength, color)
+		var radius: float = particle.size * strength
+		if particle.get("kind", "") == "blood":
+			var velocity: Vector2 = particle.velocity
+			if velocity.length_squared() > 4.0:
+				draw_line(particle.pos, particle.pos - velocity.normalized() * radius * 2.2, color, maxf(1.0, radius * 0.72), true)
+			draw_circle(particle.pos, radius, color)
+		else:
+			draw_circle(particle.pos, radius, color)

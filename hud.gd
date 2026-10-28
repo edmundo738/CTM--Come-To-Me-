@@ -37,12 +37,15 @@ func _draw_header(screen: Vector2) -> void:
 		var color := Color("5638a4", 0.025 + (1.0 - progress) * 0.055).lerp(Color("27d9ee", 0.075), progress)
 		draw_line(Vector2(0, 83 + i * 0.075), Vector2(screen.x, 83 + i * 0.075), color, 1.0)
 	draw_string(font, Vector2(26, 36), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, -1, 24, Color("edfaff"))
-	draw_string(font, Vector2(28, 61), "NEON RUINS  /  RESGATE TATICO", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("6ceaf4"))
+	var chapter_label := "RUPTURA LATERAL  /  2D" if game.game_mode == "side_scroll" else "NEON RUINS  /  RESGATE TATICO"
+	draw_string(font, Vector2(28, 61), chapter_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color("6ceaf4"))
 	var central_x := screen.x * 0.33
 	var max_width := screen.x * 0.41
 	draw_string(font, Vector2(central_x, 34), "ANDAR %02d" % game.floor_number, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color("d9e4ff"))
 	draw_string(font, Vector2(central_x, 59), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, max_width, 12, Color("9eafcf"))
 	var right := screen.x - 28.0
+	_draw_breaker_icon(right - 245, 34)
+	draw_string(font, Vector2(right - 230, 39), "%d" % game.breach_charges, HORIZONTAL_ALIGNMENT_LEFT, 24, 16, Color("ffc276"))
 	_draw_coin_icon(right - 174, 34)
 	draw_string(font, Vector2(right - 159, 39), "%03d" % game.total_coins, HORIZONTAL_ALIGNMENT_LEFT, 46, 16, Color("ffe07b"))
 	_draw_shield_icon(right - 103, 34)
@@ -56,7 +59,8 @@ func _draw_header(screen: Vector2) -> void:
 func _draw_footer(screen: Vector2) -> void:
 	var footer_y := screen.y - 22.0
 	draw_rect(Rect2(Vector2(0, screen.y - 42.0), Vector2(screen.x, 42.0)), Color("080d1f", 0.76))
-	draw_string(font, Vector2(26, footer_y), "WASD / SETAS  MOVER     ESPACO  SALTAR     R  REINICIAR     M  MUSICA", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("9eafc9"))
+	var controls := "ESQ / DIR  CORRER     ESPACO / CIMA  SALTAR     BAIXO  AGACHAR     R  REINICIAR     M  MUSICA" if game.game_mode == "side_scroll" else "WASD / SETAS  MOVER     ESPACO  SALTAR     B  DEMOLIR     R  REINICIAR     M  MUSICA"
+	draw_string(font, Vector2(26, footer_y), controls, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color("9eafc9"))
 	if game.last_notice != "" and game.game_state == "playing":
 		var center := Vector2(screen.x * 0.5, screen.y - 68.0)
 		var width := minf(screen.x - 48.0, 690.0)
@@ -73,7 +77,7 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	draw_rect(Rect2(panel.position, Vector2(panel.size.x, 3)), Color("6de9f5", 0.85))
 	var title := "LIA ESTA AQUI" if rescued else "ANDAR %02d CONCLUIDO" % game.floor_number
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 50), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 27, Color("e8faff"))
-	var subtitle := "A TUA AMADA ESTA A SALVO. JUNTOS, VOCES SAEM DAS RUINAS." if rescued else "Rota limpa. O portal seguinte ja esta a chamar."
+	var subtitle := "A TUA AMADA ESTA A SALVO. JUNTOS, VOCES SAEM DAS RUINAS." if rescued else "Os tres fragmentos abriram caminho para o andar final." if game.floor_number == 4 else "Rota limpa. O portal seguinte ja esta a chamar."
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 78), subtitle, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 12, Color("9caecc"))
 	var star_y := panel.position.y + 145
 	for index in 5:
@@ -97,7 +101,7 @@ func _draw_game_over(screen: Vector2) -> void:
 	draw_rect(panel, Color("100d1c", 0.98))
 	draw_rect(Rect2(panel.position, Vector2(panel.size.x, 3)), Color("ff536f", 0.92))
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 65), "FOSTE CAPTURADO", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 30, Color("ffe7ec"))
-	draw_string(font, Vector2(panel.position.x + 36, panel.position.y + 105), "A BOLA REBENTOU. A CIDADE FICA EM SILENCIO.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 72, 13, Color("c89aa8"))
+	draw_string(font, Vector2(panel.position.x + 36, panel.position.y + 105), "O TEU ULTIMO SUSPIRO ECOA NAS RUINAS.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 72, 13, Color("c89aa8"))
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 165), "ANDARES  %02d       MOEDAS  %03d       RECORDE  %03d" % [game.floor_number, game.total_coins, game.best_score], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 14, Color("d9ccda"))
 	draw_rect(Rect2(panel.position.x + 112, panel.position.y + 215, panel.size.x - 224, 42), Color("3c1729"))
 	draw_string(font, Vector2(panel.position.x + 112, panel.position.y + 242), "R  TENTAR OUTRA VEZ", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 224, 15, Color("ffd9e0"))
@@ -125,6 +129,12 @@ func _draw_shield_icon(x: float, y: float) -> void:
 func _draw_switch_icon(x: float, y: float) -> void:
 	draw_rect(Rect2(Vector2(x - 8, y - 6), Vector2(16, 12)), Color("7dec9c"))
 	draw_circle(Vector2(x, y), 2.5, Color("f4fff0"))
+
+
+func _draw_breaker_icon(x: float, y: float) -> void:
+	draw_line(Vector2(x - 5, y + 7), Vector2(x + 5, y - 6), Color("ffc276"), 3.3, true)
+	draw_line(Vector2(x - 7, y - 8), Vector2(x + 7, y - 8), Color("fff0ca"), 3.3, true)
+	draw_line(Vector2(x - 7, y - 8), Vector2(x - 10, y - 2), Color("fff0ca"), 2.5, true)
 
 
 func _draw_star(center: Vector2, radius: float, color: Color) -> void:
