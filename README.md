@@ -1,19 +1,26 @@
 # Come To Me: Neon Ruins
 
-Ação tática 2D por turnos, feita em Godot 4.7.2. Um homem atravessa ruínas para encontrar Lia, a sua amada. Cada movimento avança os perseguidores; as salas, rotas alternativas, interruptores e tipos de inimigo mudam a decisão de cada andar.
+Jogo tatico 2D por turnos feito em Godot 4.7.2. O protagonista e uma bola vermelha que atravessa ruinas para encontrar Lia. Cada movimento tambem avanca os perseguidores; salas, rotas alternativas, objetivos e inimigos exigem decisoes diferentes em cada andar.
 
 ## Jogar
 
 - Abra `project.godot` no Godot 4.7.2 e pressione **F6/F5**.
-- A janela abre maximizada e ajusta o mapa e a interface ao espaço disponível no ecrã.
-- Mova com **WASD** ou as **setas**.
-- Recolha escudos ciano: cada escudo protege de um ataque ou permite um salto de duas casas com **Espaço**.
-- A partir do terceiro andar, procura cargas de demolição. **B** destrói uma parede adjacente e gasta um turno; os limites exteriores do mundo são indestrutíveis.
-- Em alguns andares, explore salas diferentes para encontrar os interruptores que abrem o portal. Não há setas que revelem o próximo passo dos inimigos.
-- Recolha moedas, evite armadilhas e alcance o portal roxo.
-- Conclua cinco andares para encontrar Lia. **Enter** avança ao próximo andar; **R** reinicia.
-- Se fores capturado, o personagem infla, pisca e rebenta; uma poça vermelha ocupa cerca de três a quatro casas, o som sobe até ao estalo e a imagem escurece antes do ecrã de derrota.
-- Depois do terceiro andar, o quarto muda para uma secção lateral: corre com **←/→** ou **A/D**, salta com **Espaço/↑**, agacha com **↓/S**, evita sentinelas e feixes e encontra três fragmentos para abrir o portal.
+- O menu permite continuar no andar guardado, iniciar uma campanha ou consultar o diario de andares.
+- Move com **WASD** ou as **setas**. Cada passo faz os perseguidores avancarem.
+- Recolhe escudos ciano: cada carga absorve um impacto ou permite saltar duas casas com **Espaco**.
+- A partir do terceiro andar, procura cargas de demolicao. **B** abre uma parede adjacente e gasta um turno; a fronteira do mundo nao pode ser destruida.
+- Em andares de busca, explora as salas para encontrar interruptores que abrem o portal. Os inimigos nao mostram linhas nem previsoes de movimento.
+- Recolhe moedas, evita armadilhas e chega ao portal. Os cinco andares tem biomas, paletas e estruturas de salas diferentes.
+- **Enter** continua depois de concluir um andar; **R** repete o andar atual; **N** comeca uma campanha nova; **L** abre o diario; **Esc** pausa; **M** alterna a musica.
+- Se fores capturado, a bola infla e pisca antes de rebentar, com som, particulas, tremor, clarão e uma poça menor antes do ecrã de derrota. A continuacao volta ao inicio do andar perdido, sem apagar as estrelas e os andares ja desbloqueados.
+
+## Progresso
+
+O diario guarda ate cinco estrelas por andar e desbloqueia o proximo quando o portal e alcancado. A derrota guarda o andar atual e o progresso acumulado dos andares concluidos. O perfil local fica em `user://come_to_me_profile.cfg`.
+
+## Geracao e biomas
+
+O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacencias e depois monta uma rede conectada de salas, corredores largos e ligacoes alternativas. Cada andar usa um perfil de salas e uma paleta propria. O quarto andar continua a vista de cima e usa interruptores, armadilhas e perseguidores; nao ha uma fase lateral no meio da campanha.
 
 ## Validar
 
@@ -23,18 +30,14 @@ No PowerShell, na pasta do projeto:
 & 'C:\Users\edmun\OneDrive\Documentos\Godot_v4.7.2-stable_win64.exe\Godot_v4.7.2-stable_win64_console.exe' --headless --path . --script res://tests/self_test.gd
 ```
 
-O autoteste imprime `SELFTEST_PASS` quando WFC, limites, salas, perseguidores, movimento, salto, demolição, interruptores, portal, música adaptativa, interlúdio lateral, progressão, resgate e a sequência completa de captura passam.
+O autoteste imprime `SELFTEST_PASS` quando WFC, cinco perfis de bioma, conectividade, perseguicao e visao dos inimigos, movimento, salto, demolicao, interruptores, portal, musica, resgate, estrelas, continuacao e sequencia de captura passam.
 
-## Referências analisadas
+## Referencias analisadas
 
-- `Neon Ruins.html` e `Neon Ruins (1).html` são cópias idênticas do jogo de grade por turnos.
-- `Neon Ruins (Copy).html` mantém o jogo, mas altera o título do documento.
-- `where.html` mantém o mesmo jogo com pequenas alterações no texto e na trilha gerada; não é um jogo separado.
-- O projeto `jogo-2d-codex-create-2d-bounce-puzzle-game` é outro protótipo, de bola vermelha, obstáculos e interruptores. Foi mantido como referência secundária.
-- `bounce_tales_future_240x320_164800.jar` e `godofwar32_cckmqw3u.jar` são referências J2ME com perspectiva lateral. Foram identificados pelo manifesto como Bounce Tales 2 e God of War: Betrayal; os seus recursos e bytecode são propriedade dos respetivos titulares e servem apenas para análise de alto nível, sem copiar código nem arte.
+- `Neon Ruins.html` e `Neon Ruins (1).html` sao copias do prototipo tatico de grade por turnos.
+- `Neon Ruins (Copy).html` mantem o jogo, com titulo diferente.
+- `where.html` mantem o mesmo jogo com pequenas mudancas no texto e na trilha gerada.
+- O projeto `jogo-2d-codex-create-2d-bounce-puzzle-game` e outro prototipo, de bola vermelha, obstaculos e interruptores.
+- `bounce_tales_future_240x320_164800.jar` e `godofwar32_cckmqw3u.jar` foram analisados como referencias J2ME de alto nivel. A direcao atual usa a silhueta de bola do jogador, sem copiar arte ou codigo desses jogos.
 
-## Direção de jogo
-
-A maioria dos andares continua estratégica e vista de cima. O quarto andar já é um interlúdio lateral jogável, com aceleração, salto, agachamento, fragmentos, feixes, espinhos, sentinelas e câmara horizontal. A captura tem uma sequência própria de inflação, clarão, partículas, poça e escurecimento; a música tem uma composição sintetizada de cerca de 39 segundos e uma camada de tensão sincronizada com a proximidade de inimigos.
-
-O título de trabalho combina o apelo emocional de **Come To Me** com o cenário de **Neon Ruins**. O nome ainda pode mudar junto com a história.
+O titulo combina o apelo emocional de **Come To Me** com o cenario de **Neon Ruins** e ainda pode mudar com a historia.

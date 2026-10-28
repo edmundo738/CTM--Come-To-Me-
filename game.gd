@@ -4,6 +4,7 @@ const CELL := 56.0
 const TILE_FLOOR := 0
 const TILE_WALL := 1
 const TILE_BORDER := 2
+const TILE_WATER := 3
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
 const CHALLENGES := [
 	"Atravesse sem saltar",
@@ -11,6 +12,7 @@ const CHALLENGES := [
 	"Escape em ate 14 movimentos",
 ]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
+const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA", "CATEDRAL DE GELO", "TRONO DO GUARDIAO"]
 const CAPTURE_POP_TIME := 0.92
 const CAPTURE_END_TIME := 1.95
 const Generator = preload("res://level_generator.gd")
@@ -18,7 +20,6 @@ const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
-const SideScrollStage = preload("res://side_scroll_stage.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -41,8 +42,6 @@ var particles: Array[Dictionary] = []
 var camera: Camera2D
 var hud: Control
 var audio: Node
-var side_stage = null
-var game_mode := "top_down"
 var capture_overlay: ColorRect
 var capture_material: ShaderMaterial
 var generator = Generator.new()
@@ -63,6 +62,16 @@ var stars_last_floor := 0
 var floor_reward := 0
 var best_score := 0
 var rescues_completed := 0
+var floor_stars: Dictionary = {}
+var furthest_floor := 1
+var has_resume := false
+var resume_floor := 1
+var resume_coins := 0
+var resume_seed := 0
+var resume_history: Array[int] = []
+var coins_at_floor_start := 0
+var persistence_enabled := true
+var profile_path := "user://come_to_me_profile.cfg"
 var flash_time := 0.0
 var flash_color := Color.WHITE
 var game_state := "ready"
@@ -93,29 +102,29 @@ func _ready() -> void:
 	background_layer.layer = -2
 	add_child(background_layer)
 	var background := ColorRect.new()
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var material := ShaderMaterial.new()
 	material.shader = BackgroundShader
 	background.material = material
 	background_layer.add_child(background)
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var hud_layer := CanvasLayer.new()
 	hud_layer.layer = 2
 	add_child(hud_layer)
 	hud = HudScript.new()
-	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	hud.game = self
 	hud_layer.add_child(hud)
+	hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var capture_layer := CanvasLayer.new()
 	capture_layer.name = "CaptureOverlay"
 	capture_layer.layer = 1
 	add_child(capture_layer)
 	capture_overlay = ColorRect.new()
-	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	capture_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	capture_material = ShaderMaterial.new()
 	capture_material.shader = CaptureOverlayShader
 	capture_overlay.material = capture_material
 	capture_layer.add_child(capture_overlay)
+	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	audio = AudioScript.new()
 	add_child(audio)
 	_load_profile()
@@ -123,14 +132,13 @@ func _ready() -> void:
 	camera.name = "Camera2D"
 	camera.enabled = true
 	add_child(camera)
-	new_game()
+	active_seed = int(Time.get_ticks_usec()) ^ randi()
+	rng.seed = active_seed
+	generate_floor(1)
+	game_state = "title"
 
 
 func new_game(seed_value: int = -1) -> void:
-	if side_stage != null and is_instance_valid(side_stage):
-		side_stage.queue_free()
-	side_stage = null
-	game_mode = "top_down"
 	if camera != null:
 		camera.enabled = true
 	if seed_value >= 0:
@@ -143,6 +151,12 @@ func new_game(seed_value: int = -1) -> void:
 	charges = 0
 	breach_charges = 0
 	total_coins = 0
+	coins_at_floor_start = 0
+	has_resume = false
+	resume_floor = 1
+	resume_coins = 0
+	resume_seed = active_seed
+	resume_history.clear()
 	capture_time = 0.0
 	capture_darkness = 0.0
 	capture_flash = 0.0
@@ -154,14 +168,105 @@ func new_game(seed_value: int = -1) -> void:
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
 	generate_floor(1)
+	_save_profile()
+
+
+func continue_game() -> void:
+	if not has_resume:
+		new_game()
+		return
+	active_seed = resume_seed
+	total_coins = resume_coins
+	floor_history = resume_history.duplicate()
+	charges = 0
+	breach_charges = 0
+	capture_time = 0.0
+	capture_darkness = 0.0
+	capture_flash = 0.0
+	capture_popped = false
+	capture_puddle_active = false
+	capture_puddle_points.clear()
+	capture_splats.clear()
+	if audio != null and audio.has_method("reset_cinematic_mix"):
+		audio.reset_cinematic_mix()
+	generate_floor(resume_floor)
+	game_state = "playing"
+
+
+func start_level(number: int) -> void:
+	if number < 1 or number > furthest_floor:
+		return
+	active_seed = int(Time.get_ticks_usec()) ^ randi()
+	rng.seed = active_seed
+	floor_history.clear()
+	total_coins = 0
+	charges = 0
+	breach_charges = 0
+	capture_time = 0.0
+	capture_darkness = 0.0
+	capture_flash = 0.0
+	capture_popped = false
+	capture_puddle_active = false
+	capture_puddle_points.clear()
+	capture_splats.clear()
+	if audio != null and audio.has_method("reset_cinematic_mix"):
+		audio.reset_cinematic_mix()
+	generate_floor(number)
+	game_state = "playing"
+
+
+func handle_hud_action(action: String) -> void:
+	if action == "new_run":
+		new_game()
+	elif action == "continue":
+		continue_game()
+	elif action == "levels":
+		open_level_select()
+	elif action == "menu":
+		capture_darkness = 0.0
+		capture_flash = 0.0
+		game_state = "title"
+	elif action == "resume":
+		game_state = "playing"
+	elif action == "pause":
+		game_state = "paused"
+	elif action == "next_floor":
+		advance_floor()
+	elif action == "restart_floor":
+		start_level(floor_number)
+	elif action == "music":
+		audio.toggle_music()
+	elif action.begins_with("floor:"):
+		start_level(int(action.trim_prefix("floor:")))
+	queue_redraw()
+
+
+func open_level_select() -> void:
+	capture_darkness = 0.0
+	capture_flash = 0.0
+	game_state = "level_select"
+
+
+func get_floor_name(number: int) -> String:
+	return FLOOR_NAMES[clampi(number - 1, 0, FLOOR_NAMES.size() - 1)]
+
+
+func _save_resume(number: int, coins: int) -> void:
+	has_resume = true
+	resume_floor = clampi(number, 1, MAP_SIZES.size())
+	resume_coins = maxi(0, coins)
+	resume_seed = active_seed
+	resume_history = floor_history.duplicate()
+	_save_profile()
 
 
 func generate_floor(number: int) -> void:
-	game_mode = "top_down"
-	floor_number = number
+	floor_number = clampi(number, 1, MAP_SIZES.size())
 	world_size = MAP_SIZES[mini(number - 1, MAP_SIZES.size() - 1)]
 	var level_seed := active_seed + number * 7919
-	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed)
+	rng.seed = level_seed
+	coins_at_floor_start = total_coins
+	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, mini(number - 1, 4))
 	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
 	if result.ok:
 		grid = result.grid
@@ -186,6 +291,7 @@ func generate_floor(number: int) -> void:
 	grid[portal_position.y][portal_position.x] = TILE_FLOOR
 	if not result.ok:
 		_carve_route(player_position, portal_position)
+	_add_biome_landmarks(number)
 	player_from = _cell_center(player_position)
 	player_to = player_from
 	player_anim = 1.0
@@ -196,7 +302,7 @@ func generate_floor(number: int) -> void:
 	switches.clear()
 	traps.clear()
 	var required_switches := 0
-	if number >= 2 and number % 3 != 1:
+	if number >= 2 and (number % 3 != 1 or number == 4):
 		required_switches = mini(1 + number / 2, 4)
 	objective_type = "switches" if required_switches > 0 else "escape"
 	portal_open = required_switches == 0
@@ -256,6 +362,52 @@ func generate_floor(number: int) -> void:
 	_update_enemy_intents()
 	_update_camera(1.0)
 	queue_redraw()
+
+
+func _add_biome_landmarks(number: int) -> void:
+	if number != 2 and number != 4:
+		return
+	var candidates: Array[Dictionary] = []
+	for room in rooms:
+		var rect: Rect2i = room.rect
+		if (number == 2 and rect.size.x >= 4 and rect.size.y >= 4) or (number == 4 and rect.size.x >= 6 and rect.size.y >= 5):
+			candidates.append(room)
+	var feature_count := mini(2 if number == 2 else 3, candidates.size())
+	for _index in feature_count:
+		if candidates.is_empty():
+			break
+		var room_index := rng.randi_range(0, candidates.size() - 1)
+		var rect: Rect2i = candidates[room_index].rect
+		candidates.remove_at(room_index)
+		var shape_rows: PackedStringArray = PackedStringArray(["011", "111", "011"]) if number == 2 else PackedStringArray(["0110", "1111", "1111", "0110"])
+		var feature_size := Vector2i(shape_rows[0].length(), shape_rows.size())
+		var low := rect.position
+		var high := rect.end - feature_size
+		if high.x < low.x or high.y < low.y:
+			continue
+		for _attempt in 18:
+			var top_left := Vector2i(rng.randi_range(low.x, high.x), rng.randi_range(low.y, high.y))
+			var patch: Array[Vector2i] = []
+			var clear_patch := true
+			for y in feature_size.y:
+				for x in feature_size.x:
+					if shape_rows[y].substr(x, 1) != "1":
+						continue
+					var point := top_left + Vector2i(x, y)
+					if point == player_position or point == portal_position or grid[point.y][point.x] != TILE_FLOOR:
+						clear_patch = false
+						break
+					patch.append(point)
+				if not clear_patch:
+					break
+			if not clear_patch:
+				continue
+			for point in patch:
+				grid[point.y][point.x] = TILE_WATER
+			if _reachable_cells(player_position).has(portal_position):
+				break
+			for point in patch:
+				grid[point.y][point.x] = TILE_FLOOR
 
 
 func _fallback_layout(width: int, height: int) -> Array:
@@ -338,10 +490,14 @@ func _update_enemy_intents() -> void:
 	for enemy in enemies:
 		var role: String = enemy.get("role", "hunter")
 		var phase: int = enemy.get("phase", 0)
+		var origin: Vector2i = enemy.pos
+		var face_vector: Vector2i = player_position - origin
+		if face_vector != Vector2i.ZERO:
+			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
+		enemy.alert = _enemy_sees_player(origin)
 		if role == "wisp" and (turn_number + phase) % 2 == 1:
 			enemy.next = enemy.pos
 			continue
-		var origin: Vector2i = enemy.pos
 		var best := origin
 		var target := player_position
 		if role == "sentry":
@@ -362,6 +518,31 @@ func _update_enemy_intents() -> void:
 		enemy.next = best
 		if best != origin:
 			reserved.append(best)
+
+
+func _enemy_sees_player(origin: Vector2i) -> bool:
+	if not _inside(origin) or not _inside(player_position):
+		return false
+	if Vector2(origin - player_position).length() > 7.0:
+		return false
+	var x := origin.x
+	var y := origin.y
+	var dx := absi(player_position.x - x)
+	var sx := 1 if x < player_position.x else -1
+	var dy := -absi(player_position.y - y)
+	var sy := 1 if y < player_position.y else -1
+	var error := dx + dy
+	while x != player_position.x or y != player_position.y:
+		var twice := 2 * error
+		if twice >= dy:
+			error += dy
+			x += sx
+		if twice <= dx:
+			error += dx
+			y += sy
+		if (x != player_position.x or y != player_position.y) and grid[y][x] != TILE_FLOOR:
+			return false
+	return true
 
 
 func _manhattan(first: Vector2i, second: Vector2i) -> int:
@@ -657,8 +838,8 @@ func _trigger_capture_burst() -> void:
 	capture_splats.clear()
 	for i in 15:
 		var angle := TAU * float(i) / 15.0 + rng.randf_range(-0.2, 0.2)
-		var radius := rng.randf_range(CELL * 0.72, CELL * 1.52)
-		var offset := Vector2(cos(angle) * radius * 1.03, sin(angle) * radius * 0.86)
+		var radius := rng.randf_range(CELL * 0.50, CELL * 1.10)
+		var offset := Vector2(cos(angle) * radius * 0.98, sin(angle) * radius * 0.84)
 		capture_splats.append({"pos": capture_origin + offset, "radius": rng.randf_range(2.5, 8.0)})
 	_spawn_blood_burst(capture_origin)
 	audio.play("balloon_pop")
@@ -675,7 +856,7 @@ func _make_puddle_outline() -> PackedVector2Array:
 	for i in points:
 		var angle := TAU * float(i) / points
 		var roughness := rng.randf_range(0.955, 1.045)
-		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.68 * roughness, sin(angle) * CELL * 1.48 * roughness))
+		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.30 * roughness, sin(angle) * CELL * 1.18 * roughness))
 	return outline
 
 
@@ -707,7 +888,8 @@ func _update_capture_sequence(delta: float) -> void:
 			game_state = "game_over"
 			capture_darkness = 0.91
 			capture_flash = 0.0
-			last_notice = "FOSTE CAPTURADO — R PARA TENTAR DE NOVO"
+			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
+			_save_resume(floor_number, coins_at_floor_start)
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
@@ -721,9 +903,8 @@ func _update_capture_overlay() -> void:
 		return
 	var focus := Vector2(0.5, 0.5)
 	var viewport := get_viewport_rect().size
-	var focus_camera = side_stage.camera if game_mode == "side_scroll" and side_stage != null else camera
-	if focus_camera != null and viewport.x > 0.0 and viewport.y > 0.0:
-		var screen_offset: Vector2 = capture_origin - focus_camera.global_position
+	if camera != null and viewport.x > 0.0 and viewport.y > 0.0:
+		var screen_offset: Vector2 = capture_origin - camera.global_position
 		focus += Vector2(screen_offset.x / viewport.x, screen_offset.y / viewport.y)
 	capture_material.set_shader_parameter("darkness", capture_darkness)
 	capture_material.set_shader_parameter("red_flash", capture_flash)
@@ -759,60 +940,28 @@ func _check_portal() -> void:
 	if floor_number >= 5:
 		game_state = "rescued"
 		rescues_completed += 1
+		furthest_floor = maxi(furthest_floor, 5)
+		has_resume = false
 		last_notice = "ENCONTRASTE LIA — JUNTOS, VOCES DEIXAM AS RUINAS"
 	else:
 		game_state = "floor_clear"
+		furthest_floor = maxi(furthest_floor, floor_number + 1)
+		resume_floor = floor_number + 1
+		resume_coins = total_coins
+		resume_seed = active_seed
+		resume_history = floor_history.duplicate()
+		has_resume = true
 		last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
+	var star_key := str(floor_number)
+	floor_stars[star_key] = maxi(int(floor_stars.get(star_key, 0)), stars_last_floor)
 	notice_timer = 999.0
 	_save_profile()
 
 
 func advance_floor() -> void:
 	if game_state == "floor_clear":
-		if floor_number == 3:
-			_begin_side_scroll_interlude()
-			return
 		generate_floor(floor_number + 1)
 		game_state = "playing"
-
-
-func _begin_side_scroll_interlude() -> void:
-	floor_number = 4
-	game_mode = "side_scroll"
-	game_state = "side_scroll"
-	objective_type = "fragments"
-	enemies.clear()
-	particles.clear()
-	if camera != null:
-		camera.enabled = false
-	side_stage = SideScrollStage.new()
-	side_stage.name = "FourthFloorSideScroll"
-	side_stage.host = self
-	add_child(side_stage)
-	last_notice = "RUPTURA DE PERSPECTIVA — RECOLHE 3 FRAGMENTOS"
-	notice_timer = 999.0
-	audio.play("portal")
-
-
-func _finish_side_scroll(fragment_count: int) -> void:
-	game_mode = "top_down"
-	if side_stage != null and is_instance_valid(side_stage):
-		side_stage.queue_free()
-	side_stage = null
-	if camera != null:
-		camera.enabled = true
-	stars_last_floor = mini(5, 2 + fragment_count)
-	floor_history.append(stars_last_floor)
-	floor_reward = stars_last_floor * 2 + fragment_count * 2
-	total_coins += floor_reward
-	if total_coins > best_score:
-		best_score = total_coins
-	game_state = "floor_clear"
-	last_notice = "RUPTURA CONCLUIDA — ENTER PARA O ANDAR FINAL"
-	notice_timer = 999.0
-	_spawn_burst(_cell_center(portal_position), Color("71eaf8"), 42, 235.0)
-	audio.play("portal")
-	_save_profile()
 
 
 func _stars_for_floor() -> int:
@@ -825,8 +974,6 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
-	if game_mode == "side_scroll" and side_stage != null:
-		return "FRAGMENTOS %d/3   /   ALCANCA O PORTAL" % side_stage.collected_fragments
 	if objective_type == "switches":
 		return "INTERRUPTORES %d/%d   /   %s" % [_active_switches(), switches.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if game_state == "rescued":
@@ -836,16 +983,36 @@ func get_objective_text() -> String:
 
 func _load_profile() -> void:
 	var profile := ConfigFile.new()
-	if profile.load("user://come_to_me_profile.cfg") == OK:
+	if profile.load(profile_path) == OK:
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
+		furthest_floor = clampi(int(profile.get_value("progress", "furthest_floor", 1)), 1, MAP_SIZES.size())
+		var stored_stars = profile.get_value("progress", "floor_stars", {})
+		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
+		has_resume = bool(profile.get_value("progress", "has_resume", false))
+		resume_floor = clampi(int(profile.get_value("progress", "resume_floor", 1)), 1, MAP_SIZES.size())
+		resume_coins = int(profile.get_value("progress", "resume_coins", 0))
+		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
+		var stored_history = profile.get_value("progress", "resume_history", [])
+		resume_history.clear()
+		for value in stored_history:
+			resume_history.append(int(value))
 
 
 func _save_profile() -> void:
+	if not persistence_enabled:
+		return
 	var profile := ConfigFile.new()
 	profile.set_value("progress", "best_score", best_score)
 	profile.set_value("progress", "rescues", rescues_completed)
-	profile.save("user://come_to_me_profile.cfg")
+	profile.set_value("progress", "furthest_floor", furthest_floor)
+	profile.set_value("progress", "floor_stars", floor_stars)
+	profile.set_value("progress", "has_resume", has_resume)
+	profile.set_value("progress", "resume_floor", resume_floor)
+	profile.set_value("progress", "resume_coins", resume_coins)
+	profile.set_value("progress", "resume_seed", resume_seed)
+	profile.set_value("progress", "resume_history", resume_history)
+	profile.save(profile_path)
 
 
 func _process(delta: float) -> void:
@@ -883,8 +1050,6 @@ func _process(delta: float) -> void:
 
 
 func _current_threat_level() -> float:
-	if game_mode == "side_scroll" and side_stage != null:
-		return side_stage.get_threat_level()
 	if game_state != "playing":
 		return 0.0
 	var intensity := 0.0
@@ -898,7 +1063,7 @@ func _current_threat_level() -> float:
 
 
 func _update_camera(delta: float) -> void:
-	if camera == null or game_mode == "side_scroll":
+	if camera == null:
 		return
 	var viewport := get_viewport_rect().size
 	var world_pixels := Vector2(world_size) * CELL
@@ -919,8 +1084,6 @@ func _update_camera(delta: float) -> void:
 
 
 func _player_visual_position() -> Vector2:
-	if game_mode == "side_scroll" and side_stage != null:
-		return side_stage.player_position
 	var t := clampf(player_anim, 0.0, 1.0)
 	t = t * t * (3.0 - 2.0 * t)
 	return player_from.lerp(player_to, t)
@@ -940,16 +1103,59 @@ func _spawn_burst(position: Vector2, color: Color, count: int, speed: float) -> 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
-	if game_mode == "side_scroll" and side_stage != null:
-		side_stage.handle_key(event)
-		return
 	if not event.pressed or event.echo:
 		return
 	if game_state == "captured":
-		if event.keycode == KEY_R:
+		return
+	if game_state == "title":
+		match event.keycode:
+			KEY_ENTER, KEY_KP_ENTER:
+				if has_resume:
+					continue_game()
+				else:
+					new_game()
+			KEY_N: new_game()
+			KEY_L: open_level_select()
+			KEY_M: audio.toggle_music()
+		return
+	if game_state == "level_select":
+		if event.keycode == KEY_ESCAPE:
+			game_state = "title"
+		elif event.keycode >= KEY_1 and event.keycode <= KEY_5:
+			start_level(event.keycode - KEY_0)
+		return
+	if game_state == "paused":
+		if event.keycode in [KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER]:
+			game_state = "playing"
+		elif event.keycode == KEY_L:
+			open_level_select()
+		elif event.keycode == KEY_M:
+			audio.toggle_music()
+		return
+	if game_state == "game_over":
+		if event.keycode in [KEY_R, KEY_ENTER, KEY_KP_ENTER]:
+			continue_game()
+		elif event.keycode == KEY_L:
+			open_level_select()
+		elif event.keycode == KEY_ESCAPE:
+			capture_darkness = 0.0
+			capture_flash = 0.0
+			game_state = "title"
+		return
+	if game_state == "floor_clear":
+		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+			advance_floor()
+		elif event.keycode == KEY_ESCAPE:
+			game_state = "title"
+		return
+	if game_state == "rescued":
+		if event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_N]:
 			new_game()
+		elif event.keycode == KEY_ESCAPE:
+			game_state = "title"
 		return
 	match event.keycode:
+		KEY_ESCAPE: game_state = "paused"
 		KEY_UP, KEY_W:
 			facing = Vector2i.UP
 			try_move(0, -1)
@@ -964,13 +1170,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			try_move(1, 0)
 		KEY_SPACE: try_jump()
 		KEY_B: try_break_wall()
-		KEY_ENTER, KEY_KP_ENTER: advance_floor()
-		KEY_R: new_game()
+		KEY_R: start_level(floor_number)
+		KEY_N: new_game()
+		KEY_L: open_level_select()
 		KEY_M: audio.toggle_music()
 
 
 func _draw() -> void:
-	if game_mode == "side_scroll" or world_size == Vector2i.ZERO:
+	if world_size == Vector2i.ZERO:
 		return
 	var shake := Vector2.ZERO
 	if shake_time > 0.0:
@@ -1006,24 +1213,81 @@ func _draw() -> void:
 func _draw_cell(point: Vector2i, tile_type: int) -> void:
 	var top_left := Vector2(point) * CELL
 	var rect := Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0))
+	var floor_a := Color("11182c")
+	var floor_b := Color("141d33")
+	var floor_glint := Color("6a80bd", 0.075)
+	var wall_frame := Color("252e47")
+	var wall_face := Color("384260")
+	var wall_glint := Color("8290ad", 0.32)
+	match floor_number:
+		2:
+			floor_a = Color("10242a"); floor_b = Color("132c31"); floor_glint = Color("77d9c8", 0.075)
+			wall_frame = Color("243d43"); wall_face = Color("35545a"); wall_glint = Color("9ae2d3", 0.28)
+		3:
+			floor_a = Color("241a2d"); floor_b = Color("2b1e32"); floor_glint = Color("e68a87", 0.075)
+			wall_frame = Color("493044"); wall_face = Color("60404a"); wall_glint = Color("f0a08e", 0.28)
+		4:
+			floor_a = Color("132239"); floor_b = Color("172941"); floor_glint = Color("71d9ee", 0.08)
+			wall_frame = Color("263956"); wall_face = Color("374b6b"); wall_glint = Color("a8d8ef", 0.3)
+		5:
+			floor_a = Color("211934"); floor_b = Color("2a1d3c"); floor_glint = Color("e8bf72", 0.08)
+			wall_frame = Color("43304c"); wall_face = Color("5c415e"); wall_glint = Color("e9bd7c", 0.3)
+	if tile_type == TILE_WATER:
+		_draw_water_tile(point, top_left)
+		return
 	if tile_type != TILE_FLOOR:
 		var border := tile_type == TILE_BORDER
-		var frame_color := Color("252e47") if not border else Color("11172a")
-		var face_color := Color("384260") if not border else Color("1b2237")
+		var frame_color := wall_frame if not border else floor_a.darkened(0.12)
+		var face_color := wall_face if not border else floor_b.darkened(0.15)
+		var top_glint := wall_glint
+		top_glint.a *= 0.16 if border else 1.0
+		var side_glint := wall_glint
+		side_glint.a *= 0.09
 		draw_rect(rect, frame_color, true)
 		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 8)), face_color, true)
-		draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 8, 2)), Color("8290ad", 0.32 if not border else 0.16), true)
+		draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 8, 2)), top_glint, true)
 		draw_rect(Rect2(top_left + Vector2(4, CELL - 5), Vector2(CELL - 9, 1)), Color("11172d", 0.82), true)
 		if not border:
-			var crack := Color("a9b3c7", 0.22)
-			draw_line(top_left + Vector2(15, 16), top_left + Vector2(22, 22), crack, 1.0, true)
-			draw_line(top_left + Vector2(22, 22), top_left + Vector2(19, 29), crack, 1.0, true)
-			draw_line(top_left + Vector2(19, 29), top_left + Vector2(28, 34), crack, 1.0, true)
+			draw_rect(Rect2(top_left + Vector2(4, 7), Vector2(1, CELL - 14)), side_glint, true)
 	else:
-		var base := Color("11182c") if (point.x + point.y) % 2 == 0 else Color("141d33")
+		var base := floor_a if (point.x + point.y) % 2 == 0 else floor_b
 		draw_rect(rect, base, true)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 1)), Color("6a80bd", 0.075), true)
-		draw_rect(Rect2(top_left + Vector2(CELL - 4, 4), Vector2(1, CELL - 8)), Color("7a6bab", 0.055), true)
+		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 1)), floor_glint, true)
+		var side_glint := floor_glint
+		side_glint.a *= 0.65
+		draw_rect(Rect2(top_left + Vector2(CELL - 4, 4), Vector2(1, CELL - 8)), side_glint, true)
+
+
+func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
+	var deep := Color("0d3b45") if floor_number == 2 else Color("173d59")
+	var water := Color("176570") if floor_number == 2 else Color("347b9a")
+	var ripple := Color("8be8d7", 0.34) if floor_number == 2 else Color("b5f2ff", 0.36)
+	var shore := Color("b7ddad", 0.62) if floor_number == 2 else Color("b8e9f4", 0.6)
+	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
+	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 6)), water, true)
+	var phase := animation_clock * 1.15 + point.x * 0.73 + point.y * 0.49
+	var ripple_y := 17.0 + sin(phase) * 2.4
+	draw_line(top_left + Vector2(9, ripple_y), top_left + Vector2(22, ripple_y + 1.5), ripple, 1.4, true)
+	draw_line(top_left + Vector2(31, ripple_y + 13.0), top_left + Vector2(45, ripple_y + 11.5), ripple, 1.2, true)
+	for direction in FOUR_WAY:
+		var neighbor: Vector2i = point + direction
+		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER:
+			continue
+		var start := Vector2.ZERO
+		var finish := Vector2.ZERO
+		if direction == Vector2i.UP:
+			start = top_left + Vector2(4, 2)
+			finish = top_left + Vector2(CELL - 5, 2)
+		elif direction == Vector2i.DOWN:
+			start = top_left + Vector2(4, CELL - 4)
+			finish = top_left + Vector2(CELL - 5, CELL - 4)
+		elif direction == Vector2i.LEFT:
+			start = top_left + Vector2(2, 4)
+			finish = top_left + Vector2(2, CELL - 5)
+		else:
+			start = top_left + Vector2(CELL - 4, 4)
+			finish = top_left + Vector2(CELL - 4, CELL - 5)
+		draw_line(start, finish, shore, 1.8, true)
 
 
 func _draw_coin(point: Vector2i) -> void:
@@ -1101,104 +1365,120 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	var t: float = enemy.t
 	t = t * t * (3.0 - 2.0 * t)
 	var center: Vector2 = enemy.from.lerp(enemy.to, t)
-	var bob := sin(animation_clock * 4.0 + center.x * 0.01) * 1.3
-	center.y += bob
 	var role: String = enemy.get("role", "hunter")
-	var size_scale := 1.42 if role == "warden" else 1.0
-	var color := Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("ff526f")
-	var face_direction := signi(player_position.x - enemy.pos.x)
-	if role == "wisp":
-		draw_circle(center + Vector2(0, 3), 23.0, Color("b985ff", 0.12))
-		var ghost := PackedVector2Array([Vector2(0, -17), Vector2(11, -12), Vector2(15, -3), Vector2(13, 6), Vector2(8, 11), Vector2(4, 7), Vector2(0, 12), Vector2(-5, 7), Vector2(-10, 11), Vector2(-14, 5), Vector2(-15, -4), Vector2(-11, -12)])
-		_draw_player_polygon(center + Vector2(0, bob), ghost, 1.0, Color("9673e8", 0.84))
-		draw_arc(center, 18.0, animation_clock * 1.4, animation_clock * 1.4 + TAU * 0.7, 28, Color("d7b5ff", 0.7), 1.4, true)
-		draw_circle(center + Vector2(-5 + face_direction, -3), 2.1, Color("fff4ff"))
-		draw_circle(center + Vector2(5 + face_direction, -3), 2.1, Color("fff4ff"))
-		draw_circle(center + Vector2(-5 + face_direction, -3), 0.9, Color("472365"))
-		draw_circle(center + Vector2(5 + face_direction, -3), 0.9, Color("472365"))
-		return
-	draw_circle(center + Vector2(0, 12), 15.0 * size_scale, Color("020611", 0.44))
-	draw_circle(center, 22.0 * size_scale, Color(color, 0.13))
-	var cloak := PackedVector2Array([Vector2(0, -16), Vector2(9, -13), Vector2(14, -4), Vector2(12, 7), Vector2(17, 13), Vector2(8, 11), Vector2(2, 16), Vector2(-3, 11), Vector2(-13, 14), Vector2(-11, 5), Vector2(-15, -3), Vector2(-10, -12)])
-	_draw_player_polygon(center + Vector2(0, bob), cloak, size_scale, color.darkened(0.38))
-	var armor := PackedVector2Array([Vector2(-9, -9), Vector2(-4, -13), Vector2(5, -13), Vector2(10, -8), Vector2(8, 4), Vector2(4, 10), Vector2(-5, 10), Vector2(-9, 4)])
-	_draw_player_polygon(center + Vector2(0, bob), armor, size_scale, color)
-	var eye_y := -4.0 + bob
-	var eye_offset := Vector2(float(face_direction) * 2.5, 0.0)
-	draw_circle(center + Vector2(-5, eye_y) * size_scale + eye_offset, 2.8 * size_scale, Color("ffe9ce"))
-	draw_circle(center + Vector2(5, eye_y) * size_scale + eye_offset, 2.8 * size_scale, Color("ffe9ce"))
-	draw_circle(center + Vector2(-5, eye_y) * size_scale + eye_offset, 1.35 * size_scale, Color("371a2b"))
-	draw_circle(center + Vector2(5, eye_y) * size_scale + eye_offset, 1.35 * size_scale, Color("371a2b"))
-	if role == "sentry":
-		var helm := PackedVector2Array([Vector2(-13, -5), Vector2(-11, -14), Vector2(-5, -19), Vector2(0, -14), Vector2(6, -19), Vector2(12, -12), Vector2(13, -4), Vector2(6, -8), Vector2(-7, -8)])
-		_draw_player_polygon(center + Vector2(0, bob), helm, size_scale, Color("ffd17a"))
-		draw_line(center + Vector2(13, 7), center + Vector2(19, -15), Color("ffe2a4"), 2.4, true)
-		draw_circle(center + Vector2(-13, 5), 5.2, Color("ff8b58"))
-	elif role == "warden":
-		var crown := PackedVector2Array([Vector2(-14, -9), Vector2(-18, -20), Vector2(-8, -15), Vector2(0, -23), Vector2(7, -15), Vector2(18, -20), Vector2(14, -8)])
-		_draw_player_polygon(center + Vector2(0, bob), crown, size_scale, Color("e8bcff"))
-		draw_circle(center + Vector2(0, 6), 5.0 * size_scale, Color("f0caff", 0.9))
-		draw_circle(center + Vector2(0, 6), 2.3 * size_scale, Color("ffffff"))
-		draw_arc(center + Vector2(0, 4), 15.0 * size_scale, 0.2, PI - 0.2, 20, Color("f1c5ff", 0.86), 2.0, true)
+	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
+	var size_scale := 1.24 if role == "warden" else 0.86 if role == "wisp" else 1.0
+	var bob := sin(animation_clock * (5.2 if alert else 2.8) + center.x * 0.013) * (2.2 if role == "wisp" else 1.2)
+	center.y += bob
+	var color := Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("c65bff") if role == "warden" else Color("ff526f")
+	var face: Vector2i = enemy.get("face", Vector2i(signi(player_position.x - enemy.pos.x), signi(player_position.y - enemy.pos.y)))
+	var face_offset := Vector2(face) * (1.8 if alert else 0.7)
+	var half_size := 15.4 * size_scale
+	var shell_alpha := 0.83 if role == "wisp" else 1.0
+	var glow := Color(color, 0.22 if alert else 0.075)
+	draw_circle(center + Vector2(0, 10), half_size * 1.05, Color("020611", 0.35))
+	draw_circle(center, half_size * (1.43 if alert else 1.25), glow)
+	var shell := _chamfered_square_points(center + Vector2(0, bob * 0.18), half_size, half_size * 0.20)
+	var shell_color := color.darkened(0.33)
+	shell_color.a *= shell_alpha
+	draw_colored_polygon(shell, shell_color)
+	var face_points := _chamfered_square_points(center + Vector2(-0.6, -1.4 + bob * 0.18), half_size * 0.84, half_size * 0.18)
+	var face_color := color
+	face_color.a *= shell_alpha
+	draw_colored_polygon(face_points, face_color)
+	draw_line(center + Vector2(-half_size * 0.60, -half_size * 0.57), center + Vector2(half_size * 0.48, -half_size * 0.57), Color("fff1dc", 0.38 * shell_alpha), 1.4 * size_scale, true)
+	var eye_y := center.y - 2.0 * size_scale + face_offset.y
+	var left_eye := Vector2(center.x - 5.0 * size_scale + face_offset.x, eye_y)
+	var right_eye := Vector2(center.x + 5.0 * size_scale + face_offset.x, eye_y)
+	var eye_white := Color("fff2df", shell_alpha)
+	var pupil := Color("351b33", shell_alpha)
+	for eye in [left_eye, right_eye]:
+		draw_circle(eye, 3.2 * size_scale, eye_white)
+		draw_circle(eye + Vector2(face.x, face.y) * 1.0 * size_scale, 1.45 * size_scale, pupil)
+	if alert:
+		draw_line(left_eye + Vector2(-2.4, -4.2) * size_scale, left_eye + Vector2(2.1, -3.0) * size_scale, Color("481c38", shell_alpha), 2.0 * size_scale, true)
+		draw_line(right_eye + Vector2(-2.1, -3.0) * size_scale, right_eye + Vector2(2.4, -4.2) * size_scale, Color("481c38", shell_alpha), 2.0 * size_scale, true)
+		draw_rect(Rect2(center + Vector2(-3.0, 6.0) * size_scale, Vector2(6.0, 2.4) * size_scale), Color("481c38", shell_alpha), true)
 	else:
-		draw_circle(center + Vector2(-13, 5), 4.4, Color("ff8b58"))
-		draw_circle(center + Vector2(13, 5), 4.4, Color("ff8b58"))
-		draw_line(center + Vector2(-4, 8), center + Vector2(4, 8), Color("5f1835"), 1.8, true)
+		draw_arc(center + Vector2(0, 5.2) * size_scale, 3.5 * size_scale, 0.18, PI - 0.18, 16, Color("481c38", shell_alpha), 1.35 * size_scale, true)
+	if role == "sentry":
+		draw_line(center + Vector2(-9.0, 10.4) * size_scale, center + Vector2(9.0, 10.4) * size_scale, Color("ffe2a4", 0.88), 1.8 * size_scale, true)
+	elif role == "warden":
+		draw_circle(center + Vector2(0, 10.5) * size_scale, 2.6 * size_scale, Color("f6d6ff", 0.9))
+
+
+func _chamfered_square_points(center: Vector2, half_size: float, cut: float) -> PackedVector2Array:
+	return PackedVector2Array([
+		center + Vector2(-half_size + cut, -half_size), center + Vector2(half_size - cut, -half_size),
+		center + Vector2(half_size, -half_size + cut), center + Vector2(half_size, half_size - cut),
+		center + Vector2(half_size - cut, half_size), center + Vector2(-half_size + cut, half_size),
+		center + Vector2(-half_size, half_size - cut), center + Vector2(-half_size, -half_size + cut),
+	])
 
 
 func _draw_player() -> void:
 	if capture_popped and game_state in ["captured", "game_over"]:
 		return
 	var center := _player_visual_position()
-	var bob := sin(animation_clock * 9.0) * 1.1
 	var frightened := _player_is_frightened()
 	var size_scale := 1.0
+	var stretch := Vector2.ONE
 	var visibility := 1.0
+	var movement := clampf(1.0 - player_anim, 0.0, 1.0)
+	var travel := player_to - player_from
+	var roll := 0.0
+	if travel.length_squared() > 1.0:
+		roll = movement * travel.length() / 17.0 * (1.0 if travel.x * travel.y <= 0.0 else -1.0)
+	var hop := sin(movement * PI) * 4.0
 	if game_state == "captured":
 		var inflation := clampf(capture_time / CAPTURE_POP_TIME, 0.0, 1.0)
 		size_scale = 1.0 + 0.78 * smoothstep(0.0, 1.0, inflation)
+		stretch = Vector2(1.0 + inflation * 0.04, 1.0 - inflation * 0.025)
 		if inflation > 0.3 and int(capture_time * 26.0) % 2 == 0:
 			visibility = 0.3
-	var shadow := Color("00040d", 0.42 * visibility)
-	draw_circle(center + Vector2(0, 13.0 * size_scale), 12.0 * size_scale, shadow)
+	else:
+		var squash := sin(movement * PI)
+		stretch = Vector2(1.0 + squash * 0.09, 1.0 - squash * 0.07)
+		hop += sin(animation_clock * 7.0) * 0.8
+	var shadow_color := Color("00040d", 0.36 * visibility)
+	draw_set_transform(center + Vector2(0, 13.0), 0.0, Vector2(1.0 + movement * 0.08, 0.46))
+	draw_circle(Vector2.ZERO, 12.5 * size_scale, shadow_color)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if charges > 0:
 		for i in mini(charges, 3):
 			var radius := (19.0 + i * 4.0 + sin(animation_clock * 5.0 + i) * 1.5) * size_scale
 			draw_arc(center, radius, animation_clock * (0.9 + i * 0.1), animation_clock * (0.9 + i * 0.1) + TAU * 0.77, 32, Color("63eeff", (0.43 - i * 0.08) * visibility), 1.7 * size_scale, true)
-	var suit := Color("ff667d") if game_state == "captured" else Color("1b7890")
-	if game_state != "captured":
-		suit = Color("265b83")
-	var skin := Color("ffbd83") if frightened else Color("e9ad83")
-	var eye_color := Color("582734") if frightened else Color("172b3e")
-	var torso := PackedVector2Array([Vector2(-7, -2), Vector2(-11, 1), Vector2(-10, 7), Vector2(-7, 8), Vector2(-6, 15), Vector2(6, 15), Vector2(7, 8), Vector2(10, 7), Vector2(11, 1), Vector2(7, -2), Vector2(4, 0), Vector2(-4, 0)])
-	var fade_suit := suit
-	fade_suit.a *= visibility
-	_draw_player_polygon(center + Vector2(0, bob * size_scale), torso, size_scale, fade_suit)
-	var arm_color := suit.darkened(0.22)
-	arm_color.a *= visibility
-	draw_circle(center + Vector2(-9, 5) * size_scale, 3.2 * size_scale, arm_color)
-	draw_circle(center + Vector2(9, 5) * size_scale, 3.2 * size_scale, arm_color)
-	draw_rect(Rect2(center + Vector2(-6.5, 13) * size_scale, Vector2(4.5, 7) * size_scale), Color("132c48", visibility))
-	draw_rect(Rect2(center + Vector2(2, 13) * size_scale, Vector2(4.5, 7) * size_scale), Color("132c48", visibility))
-	draw_circle(center + Vector2(-4, 20) * size_scale, 3.2 * size_scale, Color("101e35", visibility))
-	draw_circle(center + Vector2(5, 20) * size_scale, 3.2 * size_scale, Color("101e35", visibility))
-	draw_circle(center + Vector2(0, -7 + bob) * size_scale, 8.0 * size_scale, Color("f4c59a", visibility))
-	draw_arc(center + Vector2(0, -8 + bob) * size_scale, 8.1 * size_scale, PI + 0.12, TAU - 0.12, 16, Color("27314a", visibility), 3.2 * size_scale, true)
-	var eye_offset := Vector2(facing) * (2.3 * size_scale)
-	draw_circle(center + Vector2(-2.2, -8 + bob) * size_scale + eye_offset, (2.0 if frightened else 1.35) * size_scale, Color(eye_color, visibility))
-	draw_circle(center + Vector2(2.8, -8 + bob) * size_scale + eye_offset, (2.0 if frightened else 1.35) * size_scale, Color(eye_color, visibility))
+	var bob := sin(animation_clock * 8.5) * 1.0
+	var shell_transform := center + Vector2(0, bob - hop)
+	draw_set_transform(shell_transform, roll, stretch * size_scale)
+	draw_circle(Vector2.ZERO, 17.2, Color("781c3b", visibility))
+	draw_circle(Vector2(-0.3, -0.7), 15.7, Color("ed4050", visibility))
+	draw_circle(Vector2(-1.7, 2.1), 12.6, Color("d82c49", 0.92 * visibility))
+	draw_arc(Vector2(-1.0, 0.0), 14.2, 0.20, 2.55, 28, Color("ff9a69", 0.84 * visibility), 2.1, true)
+	draw_arc(Vector2.ZERO, 17.1, 0.0, TAU, 40, Color("ffbd85", 0.52 * visibility), 1.1, true)
+	draw_circle(Vector2(-5.8, -7.0), 4.5, Color("fff1cb", 0.42 * visibility))
+	draw_circle(Vector2(-7.3, -8.3), 1.8, Color("ffffff", 0.76 * visibility))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	var eye_offset := Vector2(facing) * (2.0 * size_scale)
+	var eye_y := -2.6 - hop + bob
+	var eye_radius := 4.0 if frightened else 3.3
+	var eye_left := center + Vector2(-5.1, eye_y) * size_scale + eye_offset
+	var eye_right := center + Vector2(5.1, eye_y) * size_scale + eye_offset
+	var face_visibility := visibility
+	var sclera := Color("fff5e6", face_visibility)
+	var pupil := Color("35203a", face_visibility)
+	draw_circle(eye_left, eye_radius * size_scale, sclera)
+	draw_circle(eye_right, eye_radius * size_scale, sclera)
+	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
+	draw_circle(eye_left + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
+	draw_circle(eye_right + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
 	if frightened:
-		draw_circle(center + Vector2(0.3, -3 + bob) * size_scale, 2.1 * size_scale, Color("592532", visibility))
-		draw_circle(center + Vector2(10, -16) * size_scale, (2.4 + sin(animation_clock * 10.0) * 0.5) * size_scale, Color("ff785e", visibility))
+		draw_line(eye_left + Vector2(-2.0, -5.6) * size_scale, eye_left + Vector2(1.0, -6.4) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)
+		draw_line(eye_right + Vector2(-1.0, -6.4) * size_scale, eye_right + Vector2(2.0, -5.6) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)
+		draw_circle(center + Vector2(0.0, 6.0 - hop + bob) * size_scale, (2.3 + sin(animation_clock * 10.0) * 0.35) * size_scale, Color("70243f", visibility))
+		draw_circle(center + Vector2(0, 5.5 - hop + bob) * size_scale, 0.8 * size_scale, Color("ffb184", visibility))
 	else:
-		draw_line(center + Vector2(-2, -3) * size_scale, center + Vector2(2, -3) * size_scale, Color("673f43", visibility), 1.2 * size_scale, true)
-
-
-func _draw_player_polygon(center: Vector2, shape: PackedVector2Array, scale: float, color: Color) -> void:
-	var points := PackedVector2Array()
-	for point in shape:
-		points.append(center + point * scale)
-	draw_colored_polygon(points, color)
+		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
 
 
 func _draw_blood_puddle() -> void:
@@ -1219,7 +1499,7 @@ func _draw_blood_puddle() -> void:
 
 func _player_is_frightened() -> bool:
 	for enemy in enemies:
-		if _manhattan(enemy.pos, player_position) <= 4:
+		if _manhattan(enemy.pos, player_position) <= 4 and _enemy_sees_player(enemy.pos):
 			return true
 	return false
 

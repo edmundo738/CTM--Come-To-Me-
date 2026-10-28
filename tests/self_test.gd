@@ -10,8 +10,11 @@ func _initialize() -> void:
 
 func _run_tests() -> void:
 	_test_wfc()
+	_test_profile_roundtrip()
 	var game = GameScript.new()
 	root.add_child(game)
+	game.persistence_enabled = false
+	_expect(game.game_state == "title", "game opens on the cinematic title menu")
 	_expect(int(ProjectSettings.get_setting("display/window/size/mode")) == DisplayServer.WINDOW_MODE_MAXIMIZED, "game opens maximized for the available display")
 	_expect(game.world_size.x > 18 and game.world_size.y > 14, "world is larger than the old compact board")
 	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "portal remains reachable after WFC repair")
@@ -38,11 +41,11 @@ func _run_tests() -> void:
 	_test_collectibles_and_jumping(game)
 	_test_switch_level(game)
 	_test_large_camera_and_rescue(game)
-	_test_side_scroll_stage(game)
+	_test_progression(game)
 	_test_wall_destruction(game)
 	_test_capture_sequence(game)
 	if failures.is_empty():
-		print("SELFTEST_PASS: WFC, boundaries, camera maps, pursuit, movement, shield, jump, demolition, switches, portal, adaptive music, rescue, side-scroll interlude, crouch, capture inflation, balloon pop, blood pool, dark fade")
+		print("SELFTEST_PASS: WFC, biome rooms and water landmarks, boundaries, camera maps, alert expressions, pursuit, movement, shield, jump, demolition, switches, portal, adaptive music, rescue, level stars, continue checkpoint, capture inflation, balloon pop, smaller blood pool, dark fade")
 	else:
 		printerr("SELFTEST_FAIL: %d check(s): %s" % [failures.size(), "; ".join(failures)])
 	game.audio.stop_all()
@@ -73,6 +76,33 @@ func _test_wfc() -> void:
 			if y + 1 < 11:
 				var south: int = result_a.tiles[y + 1][x]
 				_expect(((tile & 4) != 0) == ((south & 1) != 0), "north-south WFC adjacency is reciprocal")
+	for profile_index in 5:
+		var profiled = Generator.new().generate(19, 15, 8050 + profile_index, profile_index)
+		_expect(profiled.ok and profiled.rooms.size() >= 4, "each biome profile produces connected tactical rooms")
+		if profiled.ok:
+			_expect(profiled.grid.size() == 15 and profiled.grid[0].size() == 19, "biome generation preserves requested world size")
+
+
+func _test_profile_roundtrip() -> void:
+	var path := "res://.godot/self_test_progress.cfg"
+	var writer = GameScript.new()
+	writer.profile_path = path
+	writer.furthest_floor = 4
+	writer.floor_stars = {"1": 5, "3": 2}
+	writer.has_resume = true
+	writer.resume_floor = 4
+	writer.resume_coins = 23
+	writer.resume_seed = 9001
+	writer.resume_history.append(5)
+	writer._save_profile()
+	var reader = GameScript.new()
+	reader.profile_path = path
+	reader._load_profile()
+	_expect(reader.furthest_floor == 4 and reader.floor_stars.get("1", 0) == 5 and reader.floor_stars.get("3", 0) == 2, "profile saves the unlocked campaign and best stars")
+	_expect(reader.has_resume and reader.resume_floor == 4 and reader.resume_coins == 23 and reader.resume_seed == 9001 and reader.resume_history == [5], "profile restores the continue checkpoint")
+	writer.free()
+	reader.free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 func _test_turn_loop(game: Node) -> void:
@@ -102,6 +132,12 @@ func _test_turn_loop(game: Node) -> void:
 	_expect(game.enemies[0].pos == Vector2i(3, 5), "enemy reacts with one tile of movement")
 	game.enemies[0].pos = Vector2i(6, 6)
 	_expect(game._player_is_frightened(), "nearby enemy changes the player's expression state")
+	game.player_position = Vector2i(7, 5)
+	game.enemies[0].pos = Vector2i(3, 5)
+	game.grid[5][5] = game.TILE_WALL
+	_expect(not game._enemy_sees_player(game.enemies[0].pos), "solid wall blocks enemy sight and alert face")
+	game.grid[5][5] = game.TILE_FLOOR
+	_expect(game._enemy_sees_player(game.enemies[0].pos), "enemy sees the player down a clear lane")
 	game.enemies[0].pos = Vector2i(3, 5)
 	var moves_before: int = game.moves_this_floor
 	game.player_position = Vector2i(0, 5)
@@ -139,9 +175,16 @@ func _test_collectibles_and_jumping(game: Node) -> void:
 
 
 func _test_switch_level(game: Node) -> void:
+	game.active_seed = 48211
 	game.generate_floor(2)
 	_expect(game.objective_type == "switches", "second floor can use a locked-portal objective")
 	_expect(game.switches.size() >= 2 and not game.portal_open, "switch requirement is configurable and closes the portal")
+	var water_cells := 0
+	for row in game.grid:
+		for tile in row:
+			if tile == game.TILE_WATER:
+				water_cells += 1
+	_expect(water_cells >= 6, "garden biome places broad water landmarks that create route choices")
 	var available: Array[Vector2i] = game._reachable_cells(game.player_position)
 	for item in game.switches:
 		_expect(available.has(item.pos), "required switch is reachable")
@@ -160,6 +203,14 @@ func _test_switch_level(game: Node) -> void:
 func _test_large_camera_and_rescue(game: Node) -> void:
 	game.generate_floor(4)
 	_expect(game.world_size.x >= 37 and game.world_size.y >= 23, "later floor expands beyond the visible area")
+	_expect(game.objective_type == "switches" and game.switches.size() >= 2, "fourth floor stays top-down and uses a switch-hunt objective")
+	var ice_water_cells := 0
+	for row in game.grid:
+		for tile in row:
+			if tile == game.TILE_WATER:
+				ice_water_cells += 1
+	_expect(ice_water_cells >= 12, "ice biome adds larger water landmarks without sealing the portal route")
+	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "natural landmarks preserve a route to the portal")
 	game.player_position = Vector2i(game.world_size.x - 1, game.world_size.y - 1)
 	game._update_camera(0.0)
 	var half: Vector2 = game.get_viewport_rect().size * 0.5
@@ -220,7 +271,7 @@ func _test_capture_sequence(game: Node) -> void:
 		min_x = minf(min_x, point.x)
 		max_x = maxf(max_x, point.x)
 	var puddle_width := max_x - min_x
-	_expect(puddle_width >= game.CELL * 3.0 and puddle_width <= game.CELL * 4.0, "blood pool spans three to four floor tiles")
+	_expect(puddle_width >= game.CELL * 2.3 and puddle_width <= game.CELL * 2.9, "blood pool is smaller than before while staying clearly visible")
 	game._process(1.0)
 	_expect(game.game_state == "game_over" and game.capture_darkness >= 0.9, "capture ends on the dark defeat screen")
 
@@ -263,53 +314,25 @@ func _test_wall_destruction(game: Node) -> void:
 	_expect(game.turn_number == turn_before + 1 and game.enemies[0].pos == Vector2i(9, 5), "breaking a wall costs a turn and the pursuer advances")
 
 
-func _test_side_scroll_stage(game: Node) -> void:
-	game.floor_number = 3
-	game.game_state = "floor_clear"
-	game.advance_floor()
-	_expect(game.game_mode == "side_scroll" and game.game_state == "side_scroll", "fourth floor shifts into a side-scrolling interlude")
-	if game.side_stage == null:
-		failures.append("side-scrolling stage was not created")
-		return
-	_expect(game.side_stage.platforms.size() >= 12 and game.side_stage.hazards.size() >= 6, "side-view stage has platforms and distinct hazards")
-	_expect(not game.camera.enabled, "top-down camera yields to the side-scrolling camera")
-	var stage = game.side_stage
-	stage.player_position = Vector2(500.0, stage.GROUND_Y - stage.STAND_HEIGHT * 0.5)
-	stage.grounded = true
-	var right_key := InputEventKey.new()
-	right_key.pressed = true
-	right_key.keycode = KEY_RIGHT
-	game._unhandled_key_input(right_key)
-	stage.step_simulation(0.1)
-	var moved_right: bool = stage.player_position.x > 500.0
-	var release_right := InputEventKey.new()
-	release_right.pressed = false
-	release_right.keycode = KEY_RIGHT
-	game._unhandled_key_input(release_right)
-	_expect(moved_right and not stage.move_right, "left-right input runs the side-view character")
-	var jump_key := InputEventKey.new()
-	jump_key.pressed = true
-	jump_key.keycode = KEY_SPACE
-	game._unhandled_key_input(jump_key)
-	stage.step_simulation(0.05)
-	_expect(stage.velocity.y < 0.0 and not stage.grounded, "side-view jump uses vertical physics")
-	stage.player_position = Vector2(1130.0, stage.GROUND_Y - stage.STAND_HEIGHT * 0.5)
-	stage.grounded = true
-	stage.crouched = false
-	var laser: Rect2 = stage.hazards[1].rect
-	var standing_hitbox: Rect2 = stage._body_rect()
-	stage.hold_crouch = true
-	stage._update_crouch()
-	var crouched_clear: bool = not stage._body_rect().intersects(laser)
-	_expect(standing_hitbox.intersects(laser) and stage.crouched and crouched_clear, "crouching fits beneath a low beam")
-	var crystals: Array[Vector2] = stage.crystals.duplicate()
-	for crystal in crystals:
-		stage.player_position = crystal
-		stage._collect_crystals()
-	_expect(stage.collected_fragments == 3 and stage.crystals.is_empty(), "side-view objective collects all three portal fragments")
-	stage.player_position = Vector2(stage.STAGE_WIDTH - 80.0, stage.GROUND_Y - stage.STAND_HEIGHT * 0.5)
-	stage._check_exit()
-	_expect(game.game_mode == "top_down" and game.game_state == "floor_clear" and game.floor_number == 4, "side-view portal returns the campaign to strategic progression")
-	_expect(game.camera.enabled, "top-down camera returns after the side-view interlude")
-	game.advance_floor()
-	_expect(game.floor_number == 5 and game.game_state == "playing", "campaign resumes at its final tactical floor")
+func _test_progression(game: Node) -> void:
+	var saved_state: String = game.game_state
+	var unlocked_before: int = game.furthest_floor
+	game.furthest_floor = 2
+	game.game_state = "level_select"
+	var floor_before: int = game.floor_number
+	game.start_level(3)
+	_expect(game.game_state == "level_select" and game.floor_number == floor_before, "locked floors cannot be selected")
+	game.furthest_floor = maxi(unlocked_before, 2)
+	game.active_seed = 48211
+	game.floor_history.clear()
+	game.floor_history.append(2)
+	game.floor_history.append(4)
+	game._save_resume(4, 19)
+	game.continue_game()
+	_expect(game.game_state == "playing" and game.floor_number == 4, "continue returns to the saved floor after defeat")
+	_expect(game.total_coins == 19 and game.active_seed == 48211, "continue preserves previous coins and deterministic level seed")
+	_expect(game.floor_history == [2, 4], "continue carries the completed star record through the run")
+	game.floor_stars["4"] = 3
+	_expect(game.floor_stars.get("4", 0) == 3 and game.furthest_floor >= 4, "level journal stores stars and unlock progress")
+	if saved_state == "paused":
+		game.game_state = "paused"

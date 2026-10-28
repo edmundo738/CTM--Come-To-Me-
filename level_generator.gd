@@ -7,6 +7,13 @@ const BITS := [1, 2, 4, 8]
 const OPPOSITE_BITS := [4, 8, 1, 2]
 const WEIGHTS := [0.85, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.20, 0.20]
 const MAX_RESTARTS := 5
+const ROOM_PROFILES := [
+	{"base": 3, "scale": 180.0, "min_rooms": 4, "max_rooms": 12, "min_w": 5, "max_w": 8, "min_h": 4, "max_h": 7, "min_link": 2, "max_link": 3, "loops": 0.16},
+	{"base": 5, "scale": 165.0, "min_rooms": 5, "max_rooms": 14, "min_w": 4, "max_w": 7, "min_h": 4, "max_h": 6, "min_link": 1, "max_link": 2, "loops": 0.23},
+	{"base": 2, "scale": 235.0, "min_rooms": 4, "max_rooms": 8, "min_w": 7, "max_w": 11, "min_h": 5, "max_h": 9, "min_link": 2, "max_link": 3, "loops": 0.14},
+	{"base": 4, "scale": 175.0, "min_rooms": 5, "max_rooms": 12, "min_w": 5, "max_w": 9, "min_h": 5, "max_h": 8, "min_link": 2, "max_link": 4, "loops": 0.22},
+	{"base": 3, "scale": 210.0, "min_rooms": 5, "max_rooms": 10, "min_w": 7, "max_w": 12, "min_h": 6, "max_h": 9, "min_link": 2, "max_link": 3, "loops": 0.25},
+]
 
 var rng := RandomNumberGenerator.new()
 var last_attempts := 0
@@ -14,8 +21,9 @@ var last_failure := ""
 var entropy_cache: Dictionary = {}
 
 
-func generate(width: int, height: int, seed_value: int) -> Dictionary:
+func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dictionary:
 	rng.seed = seed_value
+	profile = clampi(profile, 0, ROOM_PROFILES.size() - 1)
 	last_failure = ""
 	for attempt in MAX_RESTARTS:
 		last_attempts = attempt + 1
@@ -39,7 +47,7 @@ func generate(width: int, height: int, seed_value: int) -> Dictionary:
 					row.append(0 if tile == 0 else 1)
 				layout.append(row)
 				tile_map.append(tile_row)
-			var graph_layout := _construct_room_graph(layout, width, height)
+			var graph_layout := _construct_room_graph(layout, width, height, profile)
 			return {"ok": true, "grid": graph_layout.grid, "tiles": tile_map, "rooms": graph_layout.rooms, "edges": graph_layout.edges, "start": graph_layout.start, "goal": graph_layout.goal, "attempts": attempt + 1, "seed": seed_value}
 		last_failure = "Contradicao de adjacencia no intento %d" % (attempt + 1)
 	return {"ok": false, "grid": [], "attempts": MAX_RESTARTS, "seed": seed_value, "reason": last_failure}
@@ -163,7 +171,7 @@ func _single_tile(options: int) -> int:
 	return 0
 
 
-func _construct_room_graph(base_grid: Array, width: int, height: int) -> Dictionary:
+func _construct_room_graph(base_grid: Array, width: int, height: int, profile: int = 0) -> Dictionary:
 	var layout: Array = []
 	for row in base_grid:
 		layout.append(row.duplicate())
@@ -174,12 +182,18 @@ func _construct_room_graph(base_grid: Array, width: int, height: int) -> Diction
 		layout[y][0] = 1
 		layout[y][width - 1] = 1
 	var rooms: Array[Dictionary] = []
-	var desired := clampi(3 + int(float(width * height) / 180.0), 4, 12)
+	var shape: Dictionary = ROOM_PROFILES[clampi(profile, 0, ROOM_PROFILES.size() - 1)]
+	var desired := clampi(int(shape.base + float(width * height) / float(shape.scale)), int(shape.min_rooms), int(shape.max_rooms))
+	if profile == 4:
+		var arena_size := Vector2i(mini(int(shape.max_w), width - 8), mini(int(shape.max_h), height - 8))
+		var arena_position := Vector2i((width - arena_size.x) / 2, (height - arena_size.y) / 2)
+		var arena_rect := Rect2i(arena_position, arena_size)
+		rooms.append({"rect": arena_rect, "center": Vector2i(arena_rect.position.x + arena_rect.size.x / 2, arena_rect.position.y + arena_rect.size.y / 2)})
 	for attempt in desired * 100:
 		if rooms.size() >= desired:
 			break
-		var room_width := rng.randi_range(5, mini(8, width - 6))
-		var room_height := rng.randi_range(4, mini(7, height - 6))
+		var room_width := rng.randi_range(int(shape.min_w), mini(int(shape.max_w), width - 6))
+		var room_height := rng.randi_range(int(shape.min_h), mini(int(shape.max_h), height - 6))
 		var rect := Rect2i(rng.randi_range(2, width - room_width - 2), rng.randi_range(2, height - room_height - 2), room_width, room_height)
 		var overlaps := false
 		for room in rooms:
@@ -232,10 +246,10 @@ func _construct_room_graph(base_grid: Array, width: int, height: int) -> Diction
 		connected.append(best_to)
 		edge_keys[_edge_key(best_from, best_to)] = true
 		edges.append({"from": best_from, "to": best_to, "main": true})
-		_carve_corridor(layout, rooms[best_from].center, rooms[best_to].center, rng.randi_range(2, 3))
+		_carve_corridor(layout, rooms[best_from].center, rooms[best_to].center, rng.randi_range(int(shape.min_link), int(shape.max_link)))
 	for a in rooms.size():
 		for b in range(a + 1, rooms.size()):
-			if edge_keys.has(_edge_key(a, b)) or rng.randf() > 0.16:
+			if edge_keys.has(_edge_key(a, b)) or rng.randf() > float(shape.loops):
 				continue
 			edges.append({"from": a, "to": b, "main": false})
 			_carve_corridor(layout, rooms[a].center, rooms[b].center, 2)
