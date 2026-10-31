@@ -5,6 +5,10 @@ extends RefCounted
 const DIRS := [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT]
 const BITS := [1, 2, 4, 8]
 const OPPOSITE_BITS := [4, 8, 1, 2]
+# Bitsets of tiles with an open edge in each direction. A domain is itself a
+# 16-bit set of tile IDs, not a single tile's four-bit passage mask.
+const OPEN_TILE_MASKS := [0xAAAA, 0xCCCC, 0xF0F0, 0xFF00]
+const OPPOSITE_OPEN_TILE_MASKS := [0xF0F0, 0xFF00, 0xAAAA, 0xCCCC]
 const WEIGHTS := [0.85, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.20, 0.20]
 const MAX_RESTARTS := 5
 const ROOM_PROFILES := [
@@ -18,7 +22,12 @@ const ROOM_PROFILES := [
 var rng := RandomNumberGenerator.new()
 var last_attempts := 0
 var last_failure := ""
-var entropy_cache: Dictionary = {}
+var entropy_table := PackedFloat32Array()
+
+
+func _init() -> void:
+	entropy_table.resize(65536)
+	entropy_table.fill(-1.0)
 
 
 func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dictionary:
@@ -55,21 +64,42 @@ func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dic
 
 func _solve(domains: Array, width: int, height: int) -> bool:
 	var total := width * height
+	# One deterministic tie-break value per cell avoids drawing a new random
+	# number for every still-open cell on every collapse.
+	var noise := PackedFloat32Array()
+	noise.resize(total)
+	var open: Array[int] = []
+	for index in total:
+		noise[index] = rng.randf() * 0.0001
+		var options: int = domains[index]
+		if options == 0:
+			return false
+		if (options & (options - 1)) != 0:
+			open.append(index)
 	while true:
-		var chosen := -1
+		var chosen_slot := -1
 		var best_entropy := INF
-		for index in total:
+		var write := 0
+		for read in open.size():
+			var index: int = open[read]
 			var options: int = domains[index]
 			if options == 0:
 				return false
-			if _popcount(options) <= 1:
+			if (options & (options - 1)) == 0:
 				continue
-			var entropy := _entropy(options) + rng.randf() * 0.0001
+			open[write] = index
+			var entropy: float = entropy_table[options]
+			if entropy < 0.0:
+				entropy = _entropy(options)
+			entropy += noise[index]
 			if entropy < best_entropy:
 				best_entropy = entropy
-				chosen = index
-		if chosen == -1:
+				chosen_slot = write
+			write += 1
+		open.resize(write)
+		if chosen_slot == -1:
 			return true
+		var chosen: int = open[chosen_slot]
 		var collapsed := _weighted_choice(domains[chosen])
 		domains[chosen] = 1 << collapsed
 		if not _propagate(domains, width, height, chosen):
@@ -85,32 +115,34 @@ func _propagate(domains: Array, width: int, height: int, origin: int) -> bool:
 		head += 1
 		var x := index % width
 		var y := index / width
+		var source: int = domains[index]
 		for direction in 4:
 			var neighbor: Vector2i = Vector2i(x, y) + DIRS[direction]
 			if neighbor.x < 0 or neighbor.x >= width or neighbor.y < 0 or neighbor.y >= height:
 				continue
 			var neighbor_index: int = neighbor.y * width + neighbor.x
-			var source: int = domains[index]
 			var target: int = domains[neighbor_index]
-			var kept := 0
-			for target_tile in 16:
-				if (target & (1 << target_tile)) == 0:
-					continue
-				var supported := false
-				for source_tile in 16:
-					if (source & (1 << source_tile)) == 0:
-						continue
-					if _edges_match(source_tile, target_tile, direction):
-						supported = true
-						break
-				if supported:
-					kept |= 1 << target_tile
+			var kept: int = target & _support(direction, source)
 			if kept != target:
 				if kept == 0:
 					return false
 				domains[neighbor_index] = kept
 				queue.append(neighbor_index)
 	return true
+
+
+# All neighbour tiles compatible with at least one tile in the source domain.
+# Matching depends only on whether an edge is open, so this is O(1) rather
+# than checking all 16 x 16 pairs. An empty source correctly supports nothing.
+func _support(direction: int, source: int) -> int:
+	var source_open: int = OPEN_TILE_MASKS[direction]
+	var target_open: int = OPPOSITE_OPEN_TILE_MASKS[direction]
+	var supported := 0
+	if (source & source_open) != 0:
+		supported |= target_open
+	if (source & (0xFFFF ^ source_open)) != 0:
+		supported |= 0xFFFF ^ target_open
+	return supported
 
 
 func _edges_match(first: int, second: int, direction: int) -> bool:
@@ -126,8 +158,8 @@ func _fits_boundary(tile: int, x: int, y: int, width: int, height: int) -> bool:
 
 
 func _entropy(options: int) -> float:
-	if entropy_cache.has(options):
-		return entropy_cache[options]
+	if entropy_table[options] >= 0.0:
+		return entropy_table[options]
 	var sum_weights := 0.0
 	var sum_weight_logs := 0.0
 	for tile in 16:
@@ -137,8 +169,8 @@ func _entropy(options: int) -> float:
 		sum_weights += weight
 		sum_weight_logs += weight * log(weight)
 	var result := log(sum_weights) - sum_weight_logs / sum_weights
-	entropy_cache[options] = result
-	return result
+	entropy_table[options] = result
+	return entropy_table[options]
 
 
 func _weighted_choice(options: int) -> int:
@@ -154,14 +186,6 @@ func _weighted_choice(options: int) -> int:
 		if draw <= 0.0:
 			return tile
 	return _single_tile(options)
-
-
-func _popcount(options: int) -> int:
-	var result := 0
-	for tile in 16:
-		if (options & (1 << tile)) != 0:
-			result += 1
-	return result
 
 
 func _single_tile(options: int) -> int:

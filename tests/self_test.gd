@@ -12,8 +12,9 @@ func _run_tests() -> void:
 	_test_wfc()
 	_test_profile_roundtrip()
 	var game = GameScript.new()
-	root.add_child(game)
+	# Do not read or modify the player's real profile while testing.
 	game.persistence_enabled = false
+	root.add_child(game)
 	_expect(game.game_state == "title", "game opens on the cinematic title menu")
 	_expect(int(ProjectSettings.get_setting("display/window/size/mode")) == DisplayServer.WINDOW_MODE_MAXIMIZED, "game opens maximized for the available display")
 	_expect(game.world_size.x > 18 and game.world_size.y > 14, "world is larger than the old compact board")
@@ -43,9 +44,14 @@ func _run_tests() -> void:
 	_test_large_camera_and_rescue(game)
 	_test_progression(game)
 	_test_wall_destruction(game)
+	_test_challenges(game)
+	_test_score_saving(game)
+	_test_restart_and_checkpoints(game)
+	_test_turn_edge_cases(game)
+	_test_chess_bosses(game)
 	_test_capture_sequence(game)
 	if failures.is_empty():
-		print("SELFTEST_PASS: WFC, biome rooms and water landmarks, boundaries, camera maps, alert expressions, pursuit, movement, shield, jump, demolition, switches, portal, adaptive music, rescue, level stars, continue checkpoint, capture inflation, balloon pop, smaller blood pool, dark fade")
+		print("SELFTEST_PASS: WFC, biomas, desafios, recompensas, checkpoint, repeticao, turnos, danos, chefes de xadrez, demolicao, captura e audio")
 	else:
 		printerr("SELFTEST_FAIL: %d check(s): %s" % [failures.size(), "; ".join(failures)])
 	game.audio.stop_all()
@@ -66,6 +72,25 @@ func _test_wfc() -> void:
 	var result_b: Dictionary = second.generate(15, 11, 472)
 	_expect(result_a.ok and result_b.ok, "WFC solves a reproducible tile map")
 	_expect(result_a.tiles == result_b.tiles, "same WFC seed produces the same tile masks")
+	var warm: Dictionary = first.generate(15, 11, 472)
+	_expect(result_a.tiles == warm.tiles and result_a.grid == warm.grid, "warm entropy cache does not alter seeded layouts")
+	# Compare the optimized bitset support with the original pairwise rule.
+	var masks: Array[int] = [0, 65535, 43690, 21845, 3855, 42405]
+	for tile in 16:
+		masks.append(1 << tile)
+	var test_rng := RandomNumberGenerator.new()
+	test_rng.seed = 8094
+	for i in 100:
+		masks.append(test_rng.randi_range(0, 65535))
+	for direction in 4:
+		for source in masks:
+			var expected := 0
+			for target_tile in 16:
+				for source_tile in 16:
+					if (source & (1 << source_tile)) != 0 and first._edges_match(source_tile, target_tile, direction):
+						expected |= 1 << target_tile
+						break
+			_expect(first._support(direction, source) == expected, "optimized WFC support matches pairwise edges")
 	_expect(result_a.grid.size() == 11 and result_a.grid[0].size() == 15, "WFC respects requested dimensions")
 	for y in 11:
 		for x in 15:
@@ -92,6 +117,9 @@ func _test_profile_roundtrip() -> void:
 	writer.has_resume = true
 	writer.resume_floor = 4
 	writer.resume_coins = 23
+	writer.resume_charges = 2
+	writer.resume_breach_charges = 3
+	writer.resume_facing = Vector2i.UP
 	writer.resume_seed = 9001
 	writer.resume_history.append(5)
 	writer._save_profile()
@@ -100,6 +128,17 @@ func _test_profile_roundtrip() -> void:
 	reader._load_profile()
 	_expect(reader.furthest_floor == 4 and reader.floor_stars.get("1", 0) == 5 and reader.floor_stars.get("3", 0) == 2, "profile saves the unlocked campaign and best stars")
 	_expect(reader.has_resume and reader.resume_floor == 4 and reader.resume_coins == 23 and reader.resume_seed == 9001 and reader.resume_history == [5], "profile restores the continue checkpoint")
+	_expect(reader.resume_charges == 2 and reader.resume_breach_charges == 3 and reader.resume_facing == Vector2i.UP, "profile restores shield, demolition and facing at checkpoint")
+	var legacy := ConfigFile.new()
+	legacy.set_value("progress", "has_resume", true)
+	legacy.set_value("progress", "resume_floor", 3)
+	legacy.set_value("progress", "resume_coins", 8)
+	legacy.save(path)
+	var old_reader = GameScript.new()
+	old_reader.profile_path = path
+	old_reader._load_profile()
+	_expect(old_reader.resume_floor == 3 and old_reader.resume_coins == 8 and old_reader.resume_charges == 0 and old_reader.resume_breach_charges == 0 and old_reader.resume_facing == Vector2i.RIGHT, "legacy checkpoints load with safe inventory defaults")
+	old_reader.free()
 	writer.free()
 	reader.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
@@ -240,6 +279,249 @@ func _test_large_camera_and_rescue(game: Node) -> void:
 	game.player_position = game.portal_position
 	game._check_portal()
 	_expect(game.game_state == "rescued", "portal on the fifth floor reaches the rescue ending")
+
+
+func _test_arena(game: Node) -> void:
+	game.world_size = Vector2i(12, 10)
+	game.grid.clear()
+	for y in game.world_size.y:
+		var row: Array[int] = []
+		for x in game.world_size.x:
+			row.append(game.TILE_BORDER if x == 0 or y == 0 or x == game.world_size.x - 1 or y == game.world_size.y - 1 else game.TILE_FLOOR)
+		game.grid.append(row)
+	game.game_state = "playing"
+	game.dev_god_mode = false
+	game.dev_noclip = false
+	game.enemies.clear()
+	game.coins.clear()
+	game.shields.clear()
+	game.breakers.clear()
+	game.switches.clear()
+	game.traps.clear()
+	game.player_position = Vector2i(4, 4)
+	game.player_from = game._cell_center(game.player_position)
+	game.player_to = game.player_from
+	game.player_anim = 1.0
+	game.portal_position = Vector2i(10, 8)
+	game.portal_open = true
+	game.objective_type = "escape"
+	game.facing = Vector2i.RIGHT
+	game.charges = 0
+	game.breach_charges = 0
+	game.turn_number = 0
+	game.moves_this_floor = 0
+	game.jumps_this_floor = 0
+	game.hits_this_floor = 0
+	game.coins_this_floor = 0
+	game.coins_spawned_this_floor = 0
+	game.damage_this_turn = false
+	game.challenge_complete = false
+
+
+func _test_challenges(game: Node) -> void:
+	_test_arena(game)
+	game.challenge_kind = "no_jump"
+	_expect(game.is_challenge_met() and not game.is_challenge_failed(), "no-jump challenge begins eligible")
+	game.jumps_this_floor = 1
+	_expect(not game.is_challenge_met() and game.is_challenge_failed(), "jump invalidates no-jump challenge")
+	game.challenge_kind = "no_hit"
+	game.hits_this_floor = 1
+	_expect(not game.is_challenge_met() and game.is_challenge_failed(), "damage invalidates no-hit challenge")
+	game.challenge_kind = "moves"
+	game.challenge_par = 19
+	game.moves_this_floor = 19
+	_expect(game.is_challenge_met(), "action challenge includes its exact limit")
+	game.moves_this_floor = 20
+	_expect(not game.is_challenge_met() and game.is_challenge_failed(), "action challenge fails above its limit")
+	game.challenge_kind = "all_coins"
+	game.coins_spawned_this_floor = 2
+	game.coins.append(Vector2i(2, 2))
+	_expect(not game.is_challenge_met(), "all-coins challenge requires every coin")
+	game.coins.clear()
+	_expect(game.is_challenge_met(), "all-coins challenge succeeds when the last coin is collected")
+	game.challenge_kind = "no_jump"
+	game.jumps_this_floor = 0
+	game.total_coins = 10
+	game.floor_number = 1
+	game.player_position = game.portal_position
+	var stars: int = game._stars_for_floor()
+	game._check_portal()
+	var reward: int = stars * 2 + 5
+	_expect(game.floor_reward == reward and game.total_coins == 10 + reward, "challenge bonus is displayed and paid exactly once")
+	game._check_portal()
+	_expect(game.total_coins == 10 + reward, "rechecking a completed portal cannot pay twice")
+	game.active_seed = 58231
+	game.generate_floor(2)
+	var route: int = game._estimate_route_length()
+	_expect(route > 0 and game.challenge_par >= route, "action limit covers an actual path through switches to the portal")
+
+
+func _test_score_saving(game: Node) -> void:
+	_test_arena(game)
+	var old_path: String = game.profile_path
+	var path := "res://.godot/self_test_record.cfg"
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	game.profile_path = path
+	game.persistence_enabled = true
+	game.best_score = 0
+	game.best_score_dirty = false
+	game.total_coins = 0
+	game.coins.append(game.player_position)
+	game._collect_pickups()
+	_expect(game.best_score == 1 and game.best_score_dirty and not FileAccess.file_exists(path), "collecting a coin updates the record without a synchronous profile write")
+	game._save_profile()
+	_expect(FileAccess.file_exists(path) and not game.best_score_dirty, "checkpoint persists the pending record")
+	game.persistence_enabled = false
+	game.profile_path = old_path
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func _test_restart_and_checkpoints(game: Node) -> void:
+	game.new_game(28373)
+	_expect(game.has_resume and game.resume_floor == 1, "new campaign immediately has a floor-start checkpoint")
+	game.floor_history.assign([3, 4, 5])
+	game.total_coins = 27
+	game.charges = 2
+	game.breach_charges = 3
+	game.facing = Vector2i.UP
+	game.generate_floor(4)
+	game.game_state = "playing"
+	var original_grid: Array = game.grid.duplicate(true)
+	var original_coins: Array = game.coins.duplicate()
+	var original_enemies: Array = game.enemies.duplicate(true)
+	var original_challenge: String = game.challenge_kind
+	var original_par: int = game.challenge_par
+	game.total_coins = 99
+	game.charges = 0
+	game.breach_charges = 0
+	game.floor_history.append(1)
+	game.facing = Vector2i.LEFT
+	game.coins.clear()
+	var restart_key := InputEventKey.new()
+	restart_key.pressed = true
+	restart_key.keycode = KEY_R
+	game._unhandled_key_input(restart_key)
+	_expect(game.floor_number == 4 and game.active_seed == 28373 and game.total_coins == 27, "R restores floor, seed and pre-floor coins")
+	_expect(game.charges == 2 and game.breach_charges == 3 and game.facing == Vector2i.UP and game.floor_history == [3, 4, 5], "R preserves inventory, facing and completed-floor history")
+	_expect(game.grid == original_grid and game.coins == original_coins and game.enemies == original_enemies and game.challenge_kind == original_challenge and game.challenge_par == original_par, "R regenerates exactly the same seeded floor and challenge")
+	game.total_coins = 88
+	game.charges = 0
+	game.breach_charges = 0
+	game.floor_history.append(1)
+	game._begin_capture("TEST", Color.WHITE)
+	game._update_capture_sequence(game.CAPTURE_END_TIME + 0.1)
+	_expect(game.game_state == "game_over" and game.resume_coins == 27 and game.resume_charges == 2 and game.resume_breach_charges == 3 and game.resume_history == [3, 4, 5], "defeat saves the complete floor-start snapshot")
+	game.continue_game()
+	_expect(game.floor_number == 4 and game.total_coins == 27 and game.charges == 2 and game.breach_charges == 3 and game.facing == Vector2i.UP, "continue restores the same floor-start resources")
+	_expect(game.grid == original_grid and game.coins == original_coins, "continue regenerates the same map and pickups")
+	game.portal_open = true
+	game.player_position = game.portal_position
+	game._check_portal()
+	var completed_total: int = game.total_coins
+	_expect(game.resume_floor == 5 and game.resume_coins == completed_total and game.resume_charges == 2 and game.resume_breach_charges == 3, "clearing saves next floor with carried inventory")
+	game.continue_game()
+	_expect(game.floor_number == 5 and game.total_coins == completed_total and game.charges == 2 and game.breach_charges == 3, "continuing next floor keeps carried inventory")
+
+
+func _test_turn_edge_cases(game: Node) -> void:
+	_test_arena(game)
+	var enemy := {"pos": Vector2i(6, 4), "next": Vector2i(5, 4), "from": game._cell_center(Vector2i(6, 4)), "to": game._cell_center(Vector2i(6, 4)), "t": 1.0, "role": "hunter"}
+	game.enemies.append(enemy)
+	game.grid[4][3] = game.TILE_WALL
+	game.try_move(-1, 0)
+	_expect(game.turn_number == 0 and game.moves_this_floor == 0 and game.enemies[0].pos == Vector2i(6, 4), "bumping a wall gives feedback but does not spend a turn")
+	game.try_move(0, 0)
+	_expect(game.turn_number == 0 and game.facing == Vector2i.LEFT, "invalid movement does not become an accidental wait or change facing")
+	game.wait_turn()
+	_expect(game.turn_number == 1 and game.moves_this_floor == 1 and game.enemies[0].pos == Vector2i(5, 4) and game.facing == Vector2i.LEFT, "explicit wait spends one action and preserves facing")
+	_test_arena(game)
+	game.charges = 1
+	game.enemies.append({"pos": Vector2i(5, 4), "next": Vector2i(4, 4), "from": game._cell_center(Vector2i(5, 4)), "to": game._cell_center(Vector2i(5, 4)), "t": 1.0, "role": "hunter"})
+	game.try_move(1, 0)
+	_expect(game.game_state == "playing" and game.charges == 0 and game.hits_this_floor == 1, "swapping cells with a pursuer counts as contact")
+	_test_arena(game)
+	game.floor_number = 5
+	game.charges = 2
+	var boss: Dictionary = game._make_boss(Vector2i(6, 4))
+	boss.next = Vector2i(5, 4)
+	game.enemies.append(boss)
+	game.traps.append({"pos": Vector2i(5, 4), "armed": true, "revealed": false})
+	game.try_move(1, 0)
+	_expect(game.charges == 1 and game.hits_this_floor == 1 and game.enemies[0].hp == boss.max_hp, "trap and warden on the same turn consume only one shield")
+	_test_arena(game)
+	game.portal_position = Vector2i(5, 4)
+	game.traps.append({"pos": game.portal_position, "armed": true, "revealed": false})
+	game.try_move(1, 0)
+	_expect(game.game_state == "captured", "a lethal trap on the portal cannot also finish the floor")
+	_test_arena(game)
+	game.player_position = Vector2i(4, 3)
+	game.player_from = game._cell_center(game.player_position)
+	game.player_to = game.player_from
+	game.charges = 1
+	game.enemies.append({"pos": Vector2i(2, 4), "next": Vector2i(5, 4), "path": [Vector2i(3, 4), Vector2i(4, 4), Vector2i(5, 4)], "from": game._cell_center(Vector2i(2, 4)), "to": game._cell_center(Vector2i(2, 4)), "t": 1.0, "role": "rusher"})
+	game.try_move(0, 1)
+	_expect(game.charges == 0 and game.hits_this_floor == 1, "a sliding enemy also hits a player crossed between endpoints")
+	_test_arena(game)
+	game.dev_god_mode = true
+	game.traps.append({"pos": Vector2i(5, 4), "armed": true, "revealed": false})
+	game.try_move(1, 0)
+	_expect(game.game_state == "playing", "developer god mode also prevents trap capture")
+	game.dev_god_mode = false
+
+
+func _test_chess_bosses(game: Node) -> void:
+	_test_arena(game)
+	var types := ["pawn", "rook", "knight", "bishop", "queen", "king", "pawn"]
+	for i in types.size():
+		game.floor_number = (i + 1) * 5
+		var piece: Dictionary = game._make_boss(Vector2i(2, 2))
+		_expect(piece.boss_kind == types[i] and piece.hp >= 2, "chess bosses cycle every five floors and resist a single hit")
+	game.player_position = Vector2i(8, 4)
+	game.floor_number = 10
+	var rook: Dictionary = game._make_boss(Vector2i(2, 4))
+	game.enemies.append(rook)
+	var reserved: Array[Vector2i] = []
+	var move: Dictionary = game._boss_intent(rook, reserved)
+	_expect(move.pos == Vector2i(5, 4) and move.path.size() == 3, "rook moves along a clear line up to three cells")
+	game.grid[4][4] = game.TILE_WALL
+	move = game._boss_intent(rook, reserved)
+	_expect(move.pos == Vector2i(3, 4), "rook cannot cross a wall")
+	_test_arena(game)
+	game.floor_number = 15
+	game.player_position = Vector2i(5, 4)
+	var knight: Dictionary = game._make_boss(Vector2i(2, 2))
+	game.enemies.append(knight)
+	game.grid[2][3] = game.TILE_WALL
+	move = game._boss_intent(knight, reserved)
+	var delta: Vector2i = move.pos - knight.pos
+	_expect((absi(delta.x) == 2 and absi(delta.y) == 1) or (absi(delta.x) == 1 and absi(delta.y) == 2), "knight jumps in an L to a free landing")
+	_test_arena(game)
+	game.floor_number = 20
+	game.player_position = Vector2i(6, 6)
+	var bishop: Dictionary = game._make_boss(Vector2i(2, 2))
+	game.enemies.append(bishop)
+	game.grid[2][3] = game.TILE_WALL
+	move = game._boss_intent(bishop, reserved)
+	_expect(move.pos != Vector2i(3, 3) and move.pos != Vector2i(4, 4), "bishop cannot cut through a blocked diagonal corner")
+	_test_arena(game)
+	game.floor_number = 10
+	game.breach_charges = 2
+	var target: Dictionary = game._make_boss(Vector2i(5, 4))
+	target.next = target.pos
+	game.enemies.append(target)
+	game.try_break_wall()
+	_expect(game.enemies.size() == 1 and game.enemies[0].hp == 2 and game.breach_charges == 1, "one demolition hit damages but does not instantly kill a boss")
+	game.enemies[0].hp = 1
+	game.try_break_wall()
+	_expect(game.enemies.is_empty() and game.breach_charges == 0, "the last demolition hit can defeat a boss")
+	_test_arena(game)
+	game.floor_number = 5
+	game.charges = 1
+	var counter: Dictionary = game._make_boss(game.player_position)
+	game.enemies.append(counter)
+	game._check_enemy_collision()
+	_expect(game.charges == 0 and game.enemies.size() == 1 and game.enemies[0].hp == 1 and game.enemies[0].pos != game.player_position, "shield counter damages and staggers a boss")
 
 
 func _test_capture_sequence(game: Node) -> void:

@@ -80,6 +80,8 @@ func _draw() -> void:
 		"playing", "floor_clear", "rescued", "captured", "game_over":
 			_draw_header(screen)
 			_draw_footer(screen)
+	if game.game_state == "playing":
+		_draw_boss_bar(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
 	elif game.game_state == "rescued":
@@ -116,23 +118,28 @@ func _draw_header(screen: Vector2) -> void:
 	draw_string(font, Vector2(38, 30), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 180, 15, Color("f0e8ff"))
 	draw_string(font, Vector2(38, 49), "NEON RUINS", HORIZONTAL_ALIGNMENT_LEFT, 180, 10, Color("c060ff"))
 	# Subtítulo: andar e bioma
-	draw_string(font, Vector2(38, 66), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 240, 9, Color("9060d0"))
+	draw_string(font, Vector2(38, 66), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 240 if screen.x >= 1100 else 165, 9, Color("9060d0"))
 	
 	# ── OBJETIVO (centro) ─────────────────────────────────────────────────────────
-	var obj_x := 300.0
-	var obj_w := maxf(200.0, screen.x * 0.3)
+	# On smaller windows, hide the minimap and give the objective its own space
+	# instead of letting the stat chips overlap it.
+	var show_minimap := screen.x >= 1100.0
+	var chip_w := 70.0
+	var chip_h := 40.0
+	var chip_gap := 4.0
+	var chip_start_x := screen.x - (chip_w + chip_gap) * 4 - (120.0 if show_minimap else 10.0)
+	var obj_x := 300.0 if show_minimap else 210.0
+	var obj_w := maxf(150.0, chip_start_x - obj_x - 20.0)
 	# Caixa de objetivo chanfrada
 	var obj_rect := Rect2(obj_x - 8, 8, obj_w + 16, 58)
 	draw_rect(obj_rect, Color("08061a", 0.85), true)
 	draw_rect(Rect2(obj_x - 8, 8, obj_w + 16, 2), Color("5030a0", 0.8), true)
-	draw_string(font, Vector2(obj_x, 26), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
-	draw_string(font, Vector2(obj_x, 47), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 11, Color("d0b0ff"))
+	draw_string(font, Vector2(obj_x, 23), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
+	draw_string(font, Vector2(obj_x, 40), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 10, Color("d0b0ff"))
+	var challenge_color := Color("ff8b90") if game.is_challenge_failed() else Color("f0cf7a")
+	draw_string(font, Vector2(obj_x, 57), "DESAFIO +5 / " + game.get_challenge_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, challenge_color)
 	
 	# ── STATS top-right: Shield | Coin | Switch | Key ─────────────────────────────
-	var chip_w := 70.0
-	var chip_h := 40.0
-	var chip_gap := 4.0
-	var chip_start_x := screen.x - (chip_w + chip_gap) * 4 - 120.0
 	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "shield", "%d" % game.charges, Color("8cf4ff"))
 	_draw_stat_chip(Rect2(chip_start_x + chip_w + chip_gap, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
 	var sw_val := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
@@ -140,10 +147,28 @@ func _draw_header(screen: Vector2) -> void:
 	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
 	
 	# ── MINI-MAP top-right corner ──────────────────────────────────────────────────
-	var map_size := 96.0
-	var map_x := screen.x - map_size - 10.0
-	var map_y := 8.0
-	_draw_minimap(Rect2(map_x, map_y, map_size, map_size))
+	if show_minimap:
+		var map_size := 96.0
+		var map_x := screen.x - map_size - 10.0
+		var map_y := 8.0
+		_draw_minimap(Rect2(map_x, map_y, map_size, map_size))
+
+
+func _draw_boss_bar(screen: Vector2) -> void:
+	var boss: Dictionary = game.get_active_boss()
+	if boss.is_empty():
+		return
+	var width := minf(330.0, screen.x * 0.42)
+	var rect := Rect2((screen.x - width) * 0.5, 81, width, 47)
+	draw_rect(rect, Color("100820", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(width, 1.5)), Color("e263ff", 0.8))
+	var max_hp := maxi(1, int(boss.get("max_hp", 2)))
+	var hp := clampi(int(boss.get("hp", max_hp)), 0, max_hp)
+	draw_string(font, rect.position + Vector2(10, 15), "CHEFE / %s   %d/%d" % [boss.get("boss_name", "GUARDIAO"), hp, max_hp], HORIZONTAL_ALIGNMENT_LEFT, width - 20, 10, Color("f5c5ff"))
+	draw_string(font, rect.position + Vector2(10, 29), "%s   |   B OU ESCUDO: -1 VIDA" % boss.get("rule", "1 CASA"), HORIZONTAL_ALIGNMENT_LEFT, width - 20, 8, Color("c9a9dc"))
+	var bar := Rect2(rect.position + Vector2(10, 36), Vector2(width - 20, 5))
+	draw_rect(bar, Color("3a204d"))
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(hp) / float(max_hp), bar.size.y)), Color("e85cff"))
 
 
 func _draw_minimap(rect: Rect2) -> void:
@@ -207,18 +232,13 @@ func _draw_footer(screen: Vector2) -> void:
 	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("06091a", 0.92))
 	draw_rect(Rect2(0, screen.y - footer_height, screen.x, 1.5), Color("8040c0", 0.6))
 	
-	# ── Controlos centrais ──────────────────────────────────────────────────────
-	var controls := "W A S D  MOVER     ESPACO  SALTAR     B  DEMOLIR     ESC  PAUSA     R  REPETIR     M  MUSICA"
-	draw_string(font, Vector2(screen.x * 0.5, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x * 0.6, 9, Color("6050a0"))
-	
-	# ── Ícone do Personagem + Vidas no canto direito ────────────────────────────
-	var char_x := screen.x - 55.0
-	var char_y := screen.y - footer_height * 0.5 + 2.0
-	draw_circle(Vector2(char_x, char_y), 8.0, Color("5c081e"))
-	draw_circle(Vector2(char_x - 0.5, char_y - 0.5), 7.0, Color("e01b3c"))
-	draw_circle(Vector2(char_x - 2.5, char_y - 2.5), 2.0, Color("ffffff", 0.9))
-	draw_string(font, Vector2(char_x + 12, char_y + 4), "x 3", HORIZONTAL_ALIGNMENT_LEFT, 30, 11, Color("e0d0ff"))
-	
+	# The displayed controls correspond to actual actions; the old decorative
+	# "x 3" life counter was misleading. Waiting is also available via touch.
+	var controls := "WASD / SETAS  MOVER    ESPACO  SALTAR    B  DEMOLIR    R  REPETIR    ESC  PAUSA    M  MUSICA"
+	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 132.0, 9, Color("8070b8"))
+	if game.game_state == "playing":
+		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "X ESPERAR", "wait", "secondary")
+
 	# ── Aviso / Notícia central ─────────────────────────────────────────────────
 	if game.last_notice != "" and game.game_state == "playing":
 		var center := Vector2(screen.x * 0.5, screen.y - footer_height - 32.0)
@@ -323,8 +343,9 @@ func _draw_pause(screen: Vector2) -> void:
 	draw_string(font, Vector2(panel.position.x + 24, panel.position.y + 60), "PAUSA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 30, Color("eef7ff"))
 	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 90), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 116, panel.size.x - 96, 44), "VOLTAR AO JOGO", "resume", "primary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 170, panel.size.x - 96, 40), "DIARIO DE ANDARES", "levels", "secondary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 220, panel.size.x - 96, 40), "SAIR PARA O MENU", "menu", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 166, panel.size.x - 96, 40), "REINICIAR ANDAR", "restart_floor", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 216, panel.size.x - 96, 40), "DIARIO DE ANDARES", "levels", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 266, panel.size.x - 96, 40), "SAIR PARA O MENU", "menu", "secondary")
 
 
 func _draw_result(screen: Vector2, rescued: bool) -> void:
@@ -348,6 +369,7 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	else:
 		title = "ANDAR %02d CONCLUIDO" % game.floor_number
 		subtitle = game.get_floor_name(game.floor_number)
+	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 49), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 23, Color("f6eaff"))
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 80), subtitle, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 12, Color("9caecc"))
 	var star_y := panel.position.y + 139
 	for index in 5:
