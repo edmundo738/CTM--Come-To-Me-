@@ -6,11 +6,19 @@ const TILE_WALL := 1
 const TILE_BORDER := 2
 const TILE_WATER := 3
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
-const CHALLENGES := [
-	"Atravesse sem saltar",
-	"Chegue ao portal sem sofrer dano",
-	"Escape em ate 14 movimentos",
+const DIAGONALS := [Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)]
+const KNIGHT_OFFSETS := [Vector2i(2, 1), Vector2i(2, -1), Vector2i(-2, 1), Vector2i(-2, -1), Vector2i(1, 2), Vector2i(-1, 2), Vector2i(1, -2), Vector2i(-1, -2)]
+# Every fifth floor features the next piece in this cycle. The portal remains
+# an escape route: defeating the boss is optional, not a soft-lock condition.
+const BOSS_TYPES := [
+	{"id": "pawn", "name": "PEAO", "symbol": "P", "hp": 2, "rule": "1 CASA ORTOGONAL"},
+	{"id": "rook", "name": "TORRE", "symbol": "T", "hp": 3, "rule": "LINHAS DE ATE 3 CASAS"},
+	{"id": "knight", "name": "CAVALO", "symbol": "C", "hp": 3, "rule": "SALTO EM L"},
+	{"id": "bishop", "name": "BISPO", "symbol": "B", "hp": 3, "rule": "DIAGONAIS DE ATE 3 CASAS"},
+	{"id": "queen", "name": "RAINHA", "symbol": "Q", "hp": 4, "rule": "LINHAS E DIAGONAIS"},
+	{"id": "king", "name": "REI", "symbol": "K", "hp": 5, "rule": "1 CASA EM QUALQUER DIRECAO"},
 ]
+const CHALLENGE_KINDS := ["no_jump", "no_hit", "moves", "all_coins"]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
 const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA", "CATEDRAL DE GELO", "TRONO DO GUARDIAO"]
 const LEVELS_PER_PAGE := 5
@@ -71,13 +79,17 @@ var furthest_floor := 1
 var has_resume := false
 var resume_floor := 1
 var resume_coins := 0
+var resume_charges := 0
+var resume_breach_charges := 0
+var resume_facing := Vector2i.RIGHT
 var resume_seed := 0
 var resume_history: Array[int] = []
 var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
 var joy_axis_cooldown: float = 0.0
-var coins_at_floor_start := 0
+# Snapshot of the run at entry, used both by R and by the defeat checkpoint.
+var floor_start_snapshot: Dictionary = {}
 var persistence_enabled := true
 var profile_path := "user://come_to_me_profile.cfg"
 var flash_time := 0.0
@@ -85,8 +97,10 @@ var flash_color := Color.WHITE
 var game_state := "ready"
 var damage_this_turn := false
 var objective_type := "escape"
-var challenge_index := 0
+var challenge_kind := "no_jump"
+var challenge_par := 0
 var challenge_complete := false
+var best_score_dirty := false
 var last_notice := ""
 var notice_timer := 0.0
 var floor_history: Array[int] = []
@@ -165,27 +179,19 @@ func new_game(seed_value: int = -1) -> void:
 	charges = 0
 	breach_charges = 0
 	total_coins = 0
-	coins_at_floor_start = 0
+	facing = Vector2i.RIGHT
 	has_resume = false
 	resume_floor = 1
 	resume_coins = 0
+	resume_charges = 0
+	resume_breach_charges = 0
+	resume_facing = facing
 	resume_seed = active_seed
 	resume_history.clear()
-	capture_time = 0.0
-	capture_darkness = 0.0
-	capture_flash = 0.0
-	capture_popped = false
-	capture_puddle_active = false
-	capture_puddle_points.clear()
-	capture_splats.clear()
-	capture_shockwave_radius = 0.0
-	capture_chromatic = 0.0
-	capture_noise = 0.0
+	_reset_capture_state()
 	game_state = "playing"
-	if audio != null and audio.has_method("reset_cinematic_mix"):
-		audio.reset_cinematic_mix()
 	generate_floor(1)
-	_save_profile()
+	_save_resume(1, total_coins, charges, breach_charges, floor_history, facing)
 
 
 func continue_game() -> void:
@@ -195,20 +201,10 @@ func continue_game() -> void:
 	active_seed = resume_seed
 	total_coins = resume_coins
 	floor_history = resume_history.duplicate()
-	charges = 0
-	breach_charges = 0
-	capture_time = 0.0
-	capture_darkness = 0.0
-	capture_flash = 0.0
-	capture_popped = false
-	capture_puddle_active = false
-	capture_puddle_points.clear()
-	capture_splats.clear()
-	capture_shockwave_radius = 0.0
-	capture_chromatic = 0.0
-	capture_noise = 0.0
-	if audio != null and audio.has_method("reset_cinematic_mix"):
-		audio.reset_cinematic_mix()
+	charges = resume_charges
+	breach_charges = resume_breach_charges
+	facing = resume_facing
+	_reset_capture_state()
 	generate_floor(resume_floor)
 	game_state = "playing"
 
@@ -222,6 +218,13 @@ func start_level(number: int) -> void:
 	total_coins = 0
 	charges = 0
 	breach_charges = 0
+	_reset_capture_state()
+	generate_floor(number)
+	game_state = "playing"
+	_save_resume(number, total_coins, charges, breach_charges, floor_history, facing)
+
+
+func _reset_capture_state() -> void:
 	capture_time = 0.0
 	capture_darkness = 0.0
 	capture_flash = 0.0
@@ -232,10 +235,34 @@ func start_level(number: int) -> void:
 	capture_shockwave_radius = 0.0
 	capture_chromatic = 0.0
 	capture_noise = 0.0
+	damage_this_turn = false
+	particles.clear()
+	flash_time = 0.0
+	shake_time = 0.0
+	if camera != null:
+		camera.offset = Vector2.ZERO
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
-	generate_floor(number)
+
+
+func restart_floor() -> void:
+	if floor_start_snapshot.is_empty() or game_state not in ["playing", "paused"]:
+		return
+	# Copy before generate_floor replaces the snapshot. Do not call start_level:
+	# it intentionally starts a fresh run with a new seed and no inventory.
+	var snapshot := floor_start_snapshot.duplicate(true)
+	active_seed = int(snapshot.seed)
+	total_coins = int(snapshot.coins)
+	charges = int(snapshot.charges)
+	breach_charges = int(snapshot.breach_charges)
+	floor_history.assign(snapshot.history)
+	facing = snapshot.facing
+	_reset_capture_state()
 	game_state = "playing"
+	generate_floor(int(snapshot.floor))
+	_save_resume(floor_number, total_coins, charges, breach_charges, floor_history, facing)
+	last_notice = "ANDAR REINICIADO — PROGRESSO ANTERIOR PRESERVADO"
+	notice_timer = 2.5
 
 
 func handle_hud_action(action: String) -> void:
@@ -245,10 +272,6 @@ func handle_hud_action(action: String) -> void:
 		continue_game()
 	elif action == "levels":
 		open_level_select()
-	elif action == "levels_previous":
-		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
-	elif action == "levels_next":
-		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
 	elif action == "levels_previous":
 		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
 	elif action == "levels_next":
@@ -264,7 +287,9 @@ func handle_hud_action(action: String) -> void:
 	elif action == "next_floor":
 		advance_floor()
 	elif action == "restart_floor":
-		start_level(floor_number)
+		restart_floor()
+	elif action == "wait":
+		wait_turn()
 	elif action == "music":
 		audio.toggle_music()
 	elif action.begins_with("floor:"):
@@ -332,21 +357,22 @@ func dev_jump_floor(target_floor: int) -> void:
 
 func dev_spawn_enemy(role: String) -> void:
 	var spawn_pos: Vector2i = player_position + facing
-	if not _inside(spawn_pos) or _enemy_at(spawn_pos):
+	if not _is_floor(spawn_pos) or _enemy_at(spawn_pos):
+		spawn_pos = Vector2i(-1, -1)
 		for dir in FOUR_WAY:
 			var cand: Vector2i = player_position + dir
-			if _inside(cand) and not _enemy_at(cand):
+			if _is_floor(cand) and not _enemy_at(cand):
 				spawn_pos = cand
 				break
-	enemies.append({
-		"pos": spawn_pos,
-		"from": _cell_center(spawn_pos),
-		"to": _cell_center(spawn_pos),
-		"next": spawn_pos,
-		"t": 1.0,
-		"role": role,
-		"phase": 0
-	})
+	if spawn_pos == Vector2i(-1, -1):
+		last_notice = "SEM CASA LIVRE PARA O INIMIGO"
+		notice_timer = 2.0
+		return
+	var enemy := _make_boss(spawn_pos) if role == "warden" else {
+		"pos": spawn_pos, "from": _cell_center(spawn_pos), "to": _cell_center(spawn_pos),
+		"next": spawn_pos, "t": 1.0, "role": role, "phase": 0,
+	}
+	enemies.append(enemy)
 	_spawn_burst(_cell_center(spawn_pos), Color("ff59c7"), 20, 120.0)
 	last_notice = "SPAWN DEV: %s" % role.to_upper()
 	notice_timer = 2.0
@@ -485,12 +511,18 @@ func get_floor_size(number: int) -> Vector2i:
 	return Vector2i(last_size.x + width_growth, last_size.y + height_growth)
 
 
-func _save_resume(number: int, coins: int) -> void:
+func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT) -> void:
 	has_resume = true
 	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
+	resume_charges = maxi(0, shield_charges)
+	resume_breach_charges = maxi(0, demolition_charges)
+	resume_facing = start_facing if start_facing in FOUR_WAY else Vector2i.RIGHT
 	resume_seed = active_seed
-	resume_history = floor_history.duplicate()
+	var saved_history: Array = (floor_history if history == null else history).duplicate()
+	resume_history.clear()
+	for value in saved_history:
+		resume_history.append(int(value))
 	_save_profile()
 
 
@@ -499,7 +531,11 @@ func generate_floor(number: int) -> void:
 	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
 	rng.seed = level_seed
-	coins_at_floor_start = total_coins
+	floor_start_snapshot = {
+		"floor": floor_number, "seed": active_seed, "coins": total_coins,
+		"charges": charges, "breach_charges": breach_charges,
+		"history": floor_history.duplicate(), "facing": facing,
+	}
 	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
 	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
 	if result.ok:
@@ -540,13 +576,13 @@ func generate_floor(number: int) -> void:
 		required_switches = mini(1 + number / 2, 4)
 	objective_type = "switches" if required_switches > 0 else "escape"
 	portal_open = required_switches == 0
-	var occupied: Array[Vector2i] = [player_position, portal_position]
+	var occupied := {player_position: true, portal_position: true}
 	var walkable := _reachable_cells(player_position)
 	for i in required_switches:
 		var position: Vector2i = _pick_spaced(walkable, occupied, 7)
 		if position != Vector2i(-1, -1):
 			switches.append({"pos": position, "active": false})
-			occupied.append(position)
+			occupied[position] = true
 	for i in mini(1 + int(number / 2), 7):
 		var position: Vector2i = _pick_spaced(walkable, occupied, 5)
 		if position != Vector2i(-1, -1):
@@ -558,47 +594,119 @@ func generate_floor(number: int) -> void:
 			if number >= 6 and i % 4 == 3:
 				role = "rusher"
 			enemies.append({"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position), "t": 1.0, "role": role, "phase": rng.randi_range(0, 1)})
-			occupied.append(position)
+			occupied[position] = true
 	if number % 5 == 0:
 		var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
 		if boss_position != Vector2i(-1, -1):
-			enemies.append({"pos": boss_position, "next": boss_position, "from": _cell_center(boss_position), "to": _cell_center(boss_position), "t": 1.0, "role": "warden", "phase": 0})
-			occupied.append(boss_position)
+			enemies.append(_make_boss(boss_position))
+			occupied[boss_position] = true
 	for i in rng.randi_range(2, 4):
 		var position: Vector2i = _pick_spaced(walkable, occupied, 2)
 		if position != Vector2i(-1, -1):
 			shields.append(position)
-			occupied.append(position)
+			occupied[position] = true
 	if (number == 1 or number >= 3) and number % 2 == 1:
 		var breaker_position: Vector2i = _pick_spaced(walkable, occupied, 6)
 		if breaker_position != Vector2i(-1, -1):
 			breakers.append(breaker_position)
-			occupied.append(breaker_position)
+			occupied[breaker_position] = true
 	for i in 8 + number:
 		var position: Vector2i = _pick_spaced(walkable, occupied, 1)
 		if position != Vector2i(-1, -1):
 			coins.append(position)
-			occupied.append(position)
+			occupied[position] = true
 	coins_spawned_this_floor = coins.size()
 	if number >= 3:
 		for i in mini(1 + number / 4, 3):
 			var position: Vector2i = _pick_spaced(walkable, occupied, 4)
 			if position != Vector2i(-1, -1):
 				traps.append({"pos": position, "armed": true, "revealed": false})
-				occupied.append(position)
+				occupied[position] = true
 	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
 	jumps_this_floor = 0
 	hits_this_floor = 0
 	coins_this_floor = 0
-	challenge_index = rng.randi_range(0, CHALLENGES.size() - 1)
+	var route_length := _estimate_route_length()
+	challenge_par = ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
+	var available_challenges := CHALLENGE_KINDS.duplicate()
+	if route_length < 0:
+		available_challenges.erase("moves")
+	challenge_kind = available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
 	challenge_complete = false
-	last_notice = "%s   /   seed %d" % [CHALLENGES[challenge_index], level_seed]
+	last_notice = "%s   /   seed %d" % [get_challenge_text(), level_seed]
 	notice_timer = 3.8
 	_update_enemy_intents()
 	_update_camera(1.0)
 	queue_redraw()
+
+
+func get_challenge_text() -> String:
+	match challenge_kind:
+		"no_jump": return "Atravessa sem saltar"
+		"no_hit": return "Chega ao portal sem sofrer dano"
+		"moves": return "Escapa em ate %d acoes (%d/%d)" % [challenge_par, moves_this_floor, challenge_par]
+		"all_coins": return "Apanha todas as moedas (%d restantes)" % coins.size()
+	return ""
+
+
+func is_challenge_failed() -> bool:
+	match challenge_kind:
+		"no_jump": return jumps_this_floor > 0
+		"no_hit": return hits_this_floor > 0
+		"moves": return moves_this_floor > challenge_par
+	return false
+
+
+func is_challenge_met() -> bool:
+	match challenge_kind:
+		"no_jump": return jumps_this_floor == 0
+		"no_hit": return hits_this_floor == 0
+		"moves": return moves_this_floor <= challenge_par
+		"all_coins": return coins_spawned_this_floor > 0 and coins.is_empty()
+	return false
+
+
+# A real reachable route through every switch, followed by the portal. The
+# nearest leg is chosen by path distance, not Manhattan distance through walls.
+func _estimate_route_length() -> int:
+	var total := 0
+	var here := player_position
+	var pending: Array[Vector2i] = []
+	for item in switches:
+		pending.append(item.pos)
+	while not pending.is_empty():
+		var distances := _path_distances(here)
+		var best_index := -1
+		var best_distance := 2147483647
+		for i in pending.size():
+			var distance: int = distances.get(pending[i], -1)
+			if distance >= 0 and distance < best_distance:
+				best_index = i
+				best_distance = distance
+		if best_index < 0:
+			return -1
+		total += best_distance
+		here = pending[best_index]
+		pending.remove_at(best_index)
+	var last_leg: int = _path_distances(here).get(portal_position, -1)
+	return total + last_leg if last_leg >= 0 else -1
+
+
+func _path_distances(start: Vector2i) -> Dictionary:
+	var distances := {start: 0}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not distances.has(next):
+				distances[next] = int(distances[point]) + 1
+				queue.append(next)
+	return distances
 
 
 func _build_nav_chevrons() -> void:
@@ -609,8 +717,10 @@ func _build_nav_chevrons() -> void:
 	var parent: Dictionary = {}
 	parent[player_position] = player_position
 	var found := false
-	while not queue.is_empty():
-		var current: Vector2i = queue.pop_front()
+	var head := 0
+	while head < queue.size():
+		var current: Vector2i = queue[head]
+		head += 1
 		if current == portal_position:
 			found = true
 			break
@@ -786,8 +896,10 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 	var result: Array[Vector2i] = []
 	var queue: Array[Vector2i] = [start]
 	var visited := {start: true}
-	while not queue.is_empty():
-		var point: Vector2i = queue.pop_front()
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
 		result.append(point)
 		for direction in FOUR_WAY:
 			var next: Vector2i = point + direction
@@ -797,21 +909,24 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 	return result
 
 
-func _pick_spaced(cells: Array[Vector2i], occupied: Array[Vector2i], min_distance: int) -> Vector2i:
+func _pick_spaced(cells: Array[Vector2i], occupied: Dictionary, min_distance: int) -> Vector2i:
 	var candidates: Array[Vector2i] = []
 	for point in cells:
-		if point == player_position or point == portal_position or occupied.has(point):
+		if occupied.has(point):
 			continue
 		var far_enough := true
-		for other in occupied:
-			if abs(point.x - other.x) + abs(point.y - other.y) < min_distance:
-				far_enough = false
-				break
+		# With distance 1, the membership test above is the entire condition.
+		# This is the common case for the many coins on high floors.
+		if min_distance > 1:
+			for other in occupied:
+				if _manhattan(point, other) < min_distance:
+					far_enough = false
+					break
 		if far_enough:
 			candidates.append(point)
 	if candidates.is_empty():
 		for point in cells:
-			if point != player_position and point != portal_position and not occupied.has(point):
+			if not occupied.has(point):
 				candidates.append(point)
 	if candidates.is_empty():
 		return Vector2i(-1, -1)
@@ -829,6 +944,82 @@ func _enemy_at(point: Vector2i, except_enemy: Dictionary = {}) -> bool:
 	return false
 
 
+func _make_boss(position: Vector2i) -> Dictionary:
+	var index := posmod(floori(float(maxi(5, floor_number)) / 5.0) - 1, BOSS_TYPES.size())
+	var piece: Dictionary = BOSS_TYPES[index]
+	return {
+		"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": "warden", "phase": 0, "boss_kind": piece.id,
+		"boss_name": piece.name, "symbol": piece.symbol, "rule": piece.rule,
+		"hp": piece.hp, "max_hp": piece.hp,
+	}
+
+
+func get_active_boss() -> Dictionary:
+	for enemy in enemies:
+		if enemy.get("role", "") == "warden":
+			return enemy
+	return {}
+
+
+# Choose a legal chess-inspired move, limited to three cells for readability.
+# Sliding pieces cannot pass through walls, other enemies, reserved landings,
+# or blocked diagonal corners. Knights may jump but must land on free floor.
+func _boss_intent(enemy: Dictionary, reserved: Array[Vector2i]) -> Dictionary:
+	var origin: Vector2i = enemy.pos
+	var kind: String = enemy.get("boss_kind", "pawn")
+	var candidates: Array[Dictionary] = []
+	if kind == "knight":
+		for offset in KNIGHT_OFFSETS:
+			var landing: Vector2i = origin + offset
+			if _is_floor(landing) and not _enemy_at(landing, enemy) and not reserved.has(landing):
+				candidates.append({"pos": landing, "path": [landing]})
+	else:
+		var directions: Array = []
+		if kind in ["pawn", "rook", "queen", "king"]:
+			directions.append_array(FOUR_WAY)
+		if kind in ["bishop", "queen", "king"]:
+			directions.append_array(DIAGONALS)
+		var reach := 3 if kind in ["rook", "bishop", "queen"] else 1
+		for direction in directions:
+			var path: Array[Vector2i] = []
+			var previous := origin
+			for step in range(1, reach + 1):
+				var candidate: Vector2i = origin + direction * step
+				if not _is_floor(candidate) or _enemy_at(candidate, enemy) or reserved.has(candidate):
+					break
+				if direction.x != 0 and direction.y != 0:
+					if not _is_floor(previous + Vector2i(direction.x, 0)) or not _is_floor(previous + Vector2i(0, direction.y)):
+						break
+				path.append(candidate)
+				candidates.append({"pos": candidate, "path": path.duplicate()})
+				previous = candidate
+				if candidate == player_position:
+					break
+	var best := origin
+	var best_distance := _manhattan(origin, player_position)
+	var best_path: Array[Vector2i] = []
+	for candidate in candidates:
+		var distance := _manhattan(candidate.pos, player_position)
+		if distance < best_distance:
+			best = candidate.pos
+			best_distance = distance
+			best_path.assign(candidate.path)
+	if best == origin:
+		# Chess diagonals/parity and irregular rooms can otherwise trap a piece
+		# indefinitely. A single orthogonal step follows a real path around walls.
+		var distances := _path_distances(player_position)
+		best_distance = int(distances.get(origin, 2147483647))
+		for direction in FOUR_WAY:
+			var candidate: Vector2i = origin + direction
+			var distance: int = distances.get(candidate, 2147483647)
+			if _is_floor(candidate) and not _enemy_at(candidate, enemy) and not reserved.has(candidate) and distance < best_distance:
+				best = candidate
+				best_distance = distance
+				best_path.assign([candidate])
+	return {"pos": best, "path": best_path}
+
+
 func _update_enemy_intents() -> void:
 	var reserved: Array[Vector2i] = []
 	for enemy in enemies:
@@ -839,6 +1030,14 @@ func _update_enemy_intents() -> void:
 		if face_vector != Vector2i.ZERO:
 			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
 		enemy.alert = _enemy_sees_player(origin)
+		enemy["path"] = []
+		if role == "warden":
+			var intent := _boss_intent(enemy, reserved)
+			enemy.next = intent.pos
+			enemy.path = intent.path
+			if enemy.next != origin:
+				reserved.append(enemy.next)
+			continue
 		if role == "wisp" and (turn_number + phase) % 2 == 1:
 			enemy.next = enemy.pos
 			continue
@@ -855,6 +1054,7 @@ func _update_enemy_intents() -> void:
 				var landing := origin + dash_direction * 2
 				if _inside(middle) and _inside(landing) and _is_floor(middle) and _is_floor(landing) and not _enemy_at(middle, enemy) and not _enemy_at(landing, enemy) and not reserved.has(middle) and not reserved.has(landing):
 					enemy.next = landing
+					enemy.path = [middle, landing]
 					reserved.append(landing)
 					continue
 		var best := origin
@@ -922,21 +1122,31 @@ func _nearest_inactive_switch(origin: Vector2i) -> Vector2i:
 
 
 func try_move(dx: int, dy: int) -> void:
-	if game_state != "playing":
+	if game_state != "playing" or absi(dx) + absi(dy) != 1:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
 	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
-	if can_walk:
-		_begin_player_move(next)
-		moves_this_floor += 1
-		audio.play("step")
-	else:
+	if not can_walk:
 		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
 		notice_timer = 1.0
 		_trigger_shake(0.12, 5.0)
 		audio.play("blocked")
 		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
+		queue_redraw()
+		return
+	_begin_player_move(next)
+	moves_this_floor += 1
+	audio.play("step")
+	_take_turn()
+
+
+func wait_turn() -> void:
+	if game_state != "playing":
+		return
+	moves_this_floor += 1
+	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
+	notice_timer = 1.0
 	_take_turn()
 
 
@@ -998,13 +1208,23 @@ func try_break_wall() -> void:
 			queue_redraw()
 			return
 		breach_charges -= 1
-		var dead_role: String = enemies[enemy_idx].get("role", "hunter")
-		enemies.remove_at(enemy_idx)
+		var enemy: Dictionary = enemies[enemy_idx]
+		var dead_role: String = enemy.get("role", "hunter")
+		if dead_role == "warden":
+			enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+			if enemy.hp > 0:
+				enemies[enemy_idx] = enemy
+				last_notice = "%s ATINGIDO: %d/%d" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
+			else:
+				enemies.remove_at(enemy_idx)
+				last_notice = "%s DERROTADO!" % enemy.get("boss_name", "GUARDIAO")
+		else:
+			enemies.remove_at(enemy_idx)
+			last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
 		moves_this_floor += 1
 		_trigger_shake(0.28, 14.0)
 		flash_time = 0.12
 		flash_color = Color("ff4d73")
-		last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
 		notice_timer = 2.0
 		_spawn_burst(_cell_center(target), Color("ff3366"), 42, 220.0)
 		_spawn_shockwave(_cell_center(target), 8.0, 52.0, Color("ff6b8b"), 0.4)
@@ -1049,10 +1269,23 @@ func _take_turn() -> void:
 	turn_number += 1
 	_collect_pickups()
 	_trigger_traps()
+	if game_state != "playing":
+		queue_redraw()
+		return
 	_activate_switches()
+	# Contact with an enemy's starting cell counts as well as its destination;
+	# otherwise the player and a pursuer can silently pass through each other.
+	_check_enemy_collision()
+	if game_state != "playing":
+		queue_redraw()
+		return
 	var positions: Array[Vector2i] = []
-	for enemy in enemies:
+	var crossings: Array[int] = []
+	for i in enemies.size():
+		var enemy: Dictionary = enemies[i]
 		positions.append(enemy.next)
+		if enemy.next != player_position and enemy.get("path", []).has(player_position):
+			crossings.append(i)
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.from = _cell_center(enemy.pos)
@@ -1060,9 +1293,18 @@ func _take_turn() -> void:
 		enemy.to = _cell_center(enemy.pos)
 		enemy.t = 0.0
 		enemies[i] = enemy
-	_update_enemy_intents()
 	_check_enemy_collision()
-	_check_portal()
+	if game_state == "playing" and not damage_this_turn:
+		for index in crossings:
+			var enemy: Dictionary = enemies[index]
+			if enemy.get("role", "hunter") == "warden" and charges > 0:
+				_stagger_warden(index)
+			else:
+				_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
+			break
+	if game_state == "playing":
+		_update_enemy_intents()
+		_check_portal()
 	queue_redraw()
 
 
@@ -1073,7 +1315,7 @@ func _collect_pickups() -> void:
 		total_coins += 1
 		if total_coins > best_score:
 			best_score = total_coins
-			_save_profile()
+			best_score_dirty = true
 		last_notice = "+1 MOEDA"
 		notice_timer = 1.0
 		_spawn_burst(_cell_center(player_position), Color("ffd15d"), 18, 150.0)
@@ -1142,7 +1384,7 @@ func _check_enemy_collision() -> void:
 		var enemy: Dictionary = enemies[i]
 		if enemy.pos != player_position:
 			continue
-		if enemy.get("role", "hunter") == "warden" and charges > 0:
+		if enemy.get("role", "hunter") == "warden" and charges > 0 and not damage_this_turn:
 			_stagger_warden(i)
 		else:
 			_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
@@ -1150,15 +1392,31 @@ func _check_enemy_collision() -> void:
 
 
 func _stagger_warden(index: int) -> void:
+	if damage_this_turn or charges <= 0 or index < 0 or index >= enemies.size():
+		return
 	var enemy: Dictionary = enemies[index]
 	charges -= 1
 	hits_this_floor += 1
 	damage_this_turn = true
+	# A shield counter deals one point of boss damage as well as pushing it away.
+	enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+	if enemy.hp <= 0:
+		enemies.remove_at(index)
+		_trigger_shake(0.28, 10.0)
+		last_notice = "%s DERROTADO PELO CONTRA-ATAQUE" % enemy.get("boss_name", "GUARDIAO")
+		notice_timer = 2.0
+		_spawn_burst(_cell_center(enemy.pos), Color("c476ff"), 30, 190.0)
+		audio.play("hit")
+		return
 	var best_position: Vector2i = enemy.pos
 	var best_distance := _manhattan(enemy.pos, player_position)
+	var reserved: Dictionary = {}
+	for other in enemies:
+		if other != enemy:
+			reserved[other.get("next", other.pos)] = true
 	for direction in FOUR_WAY:
 		var candidate: Vector2i = enemy.pos + direction
-		if not _inside(candidate) or not _is_floor(candidate) or _enemy_at(candidate, enemy):
+		if not _inside(candidate) or not _is_floor(candidate) or _enemy_at(candidate, enemy) or reserved.has(candidate):
 			continue
 		var distance := _manhattan(candidate, player_position)
 		if distance > best_distance:
@@ -1168,20 +1426,21 @@ func _stagger_warden(index: int) -> void:
 	enemy.pos = best_position
 	enemy.to = _cell_center(best_position)
 	enemy.next = best_position
+	enemy["path"] = []
 	enemy.t = 0.0
 	enemies[index] = enemy
 	shake_time = 0.2
 	shake_strength = 7.0
 	flash_time = 0.13
 	flash_color = Color("56ebff")
-	last_notice = "O GUARDIAO RECUOU — O ESCUDO QUEBROU"
+	last_notice = "%s RECUOU (%d/%d) — O ESCUDO QUEBROU" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
 	notice_timer = 2.0
 	_spawn_burst(_cell_center(best_position), Color("66eaff"), 24, 170.0)
 	audio.play("hit")
 
 
 func _apply_damage(message: String, color: Color) -> void:
-	if damage_this_turn:
+	if damage_this_turn or dev_god_mode:
 		return
 	damage_this_turn = true
 	shake_time = 0.25
@@ -1338,7 +1597,9 @@ func _update_capture_sequence(delta: float) -> void:
 			capture_chromatic = 0.0
 			capture_noise = 0.25
 			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
-			_save_resume(floor_number, coins_at_floor_start)
+			_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
+				int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
+				floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT))
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
@@ -1372,14 +1633,8 @@ func _check_portal() -> void:
 		last_notice = "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
 		return
-	var challenge_ok := false
-	match challenge_index:
-		0: challenge_ok = jumps_this_floor == 0
-		1: challenge_ok = hits_this_floor == 0
-		2: challenge_ok = moves_this_floor <= 14
-	if challenge_ok and not challenge_complete:
+	if is_challenge_met() and not challenge_complete:
 		challenge_complete = true
-		total_coins += 5
 		last_notice = "DESAFIO CUMPRIDO  +5 MOEDAS"
 		_spawn_burst(_cell_center(portal_position), Color("ffd15d"), 26, 170.0)
 		audio.play("switch")
@@ -1389,6 +1644,7 @@ func _check_portal() -> void:
 	total_coins += floor_reward
 	if total_coins > best_score:
 		best_score = total_coins
+		best_score_dirty = true
 	_spawn_burst(_cell_center(portal_position), Color("c476ff"), 42, 240.0)
 	audio.play("portal")
 	var rescue_milestone := floor_number % 5 == 0
@@ -1406,15 +1662,10 @@ func _check_portal() -> void:
 		game_state = "floor_clear"
 		last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
 	furthest_floor = maxi(furthest_floor, floor_number + 1)
-	resume_floor = floor_number + 1
-	resume_coins = total_coins
-	resume_seed = active_seed
-	resume_history = floor_history.duplicate()
-	has_resume = true
 	var star_key := str(floor_number)
 	floor_stars[star_key] = maxi(int(floor_stars.get(star_key, 0)), stars_last_floor)
 	notice_timer = 999.0
-	_save_profile()
+	_save_resume(floor_number + 1, total_coins, charges, breach_charges, floor_history, facing)
 
 
 func advance_floor() -> void:
@@ -1445,6 +1696,8 @@ func get_objective_text() -> String:
 
 
 func _load_profile() -> void:
+	if not persistence_enabled:
+		return
 	var profile := ConfigFile.new()
 	if profile.load(profile_path) == OK:
 		best_score = int(profile.get_value("progress", "best_score", 0))
@@ -1454,12 +1707,18 @@ func _load_profile() -> void:
 		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
 		has_resume = bool(profile.get_value("progress", "has_resume", false))
 		resume_floor = maxi(1, int(profile.get_value("progress", "resume_floor", 1)))
-		resume_coins = int(profile.get_value("progress", "resume_coins", 0))
+		resume_coins = maxi(0, int(profile.get_value("progress", "resume_coins", 0)))
+		# Older profiles did not store the inventory; zero is their safe default.
+		resume_charges = maxi(0, int(profile.get_value("progress", "resume_charges", 0)))
+		resume_breach_charges = maxi(0, int(profile.get_value("progress", "resume_breach_charges", 0)))
+		var saved_facing: Variant = profile.get_value("progress", "resume_facing", Vector2i.RIGHT)
+		resume_facing = saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT
 		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
 		var stored_history = profile.get_value("progress", "resume_history", [])
 		resume_history.clear()
-		for value in stored_history:
-			resume_history.append(int(value))
+		if stored_history is Array or stored_history is PackedInt32Array or stored_history is PackedInt64Array:
+			for value in stored_history:
+				resume_history.append(int(value))
 		# Old saves treated floor five as the campaign ending. Open the next procedural floor for those players.
 		if rescues_completed > 0 and furthest_floor <= 5:
 			furthest_floor = 6
@@ -1483,9 +1742,22 @@ func _save_profile() -> void:
 	profile.set_value("progress", "has_resume", has_resume)
 	profile.set_value("progress", "resume_floor", resume_floor)
 	profile.set_value("progress", "resume_coins", resume_coins)
+	profile.set_value("progress", "resume_charges", resume_charges)
+	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
+	profile.set_value("progress", "resume_facing", resume_facing)
 	profile.set_value("progress", "resume_seed", resume_seed)
 	profile.set_value("progress", "resume_history", resume_history)
-	profile.save(profile_path)
+	var error := profile.save(profile_path)
+	if error == OK:
+		best_score_dirty = false
+	else:
+		push_warning("Nao foi possivel guardar o perfil (erro %d)" % error)
+
+
+func _exit_tree() -> void:
+	# A record earned mid-floor should survive quitting without writing per coin.
+	if best_score_dirty:
+		_save_profile()
 
 
 func _process(delta: float) -> void:
@@ -1601,6 +1873,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				try_jump()
 			JOY_BUTTON_X:
 				try_break_wall()
+			JOY_BUTTON_LEFT_SHOULDER:
+				wait_turn()
 			JOY_BUTTON_START:
 				if game_state == "playing":
 					game_state = "paused"
@@ -1663,6 +1937,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			game_state = "playing"
 		elif event.keycode == KEY_L:
 			open_level_select()
+		elif event.keycode == KEY_R:
+			restart_floor()
 		elif event.keycode == KEY_M:
 			audio.toggle_music()
 		return
@@ -1706,7 +1982,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			try_move(1, 0)
 		KEY_SPACE: try_jump()
 		KEY_B: try_break_wall()
-		KEY_R: start_level(floor_number)
+		KEY_X: wait_turn()
+		KEY_R: restart_floor()
 		KEY_N: new_game()
 		KEY_L: open_level_select()
 		KEY_M: audio.toggle_music()
@@ -2892,6 +3169,10 @@ func _draw_enemy(enemy: Dictionary) -> void:
 			draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
 			draw_circle(center, 5.0 * core_p, Color("ffffff"))
 			draw_circle(center, 3.0 * core_p, Color("ef75ff"))
+		var badge := center + Vector2(0, -half_size - 12.0)
+		draw_circle(badge, 8.0, Color("170b2d", 0.95))
+		draw_arc(badge, 8.0, 0.0, TAU, 16, Color("efb4ff"), 1.2, true)
+		draw_string(font, badge + Vector2(-6, 4), str(enemy.get("symbol", "P")), HORIZONTAL_ALIGNMENT_CENTER, 12, 10, Color("ffffff"))
 		return
 
 	# Fallback para outros mobs
