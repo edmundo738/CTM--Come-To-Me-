@@ -11,13 +11,32 @@ const KNIGHT_OFFSETS := [Vector2i(2, 1), Vector2i(2, -1), Vector2i(-2, 1), Vecto
 # Every fifth floor features the next piece in this cycle. The portal remains
 # an escape route: defeating the boss is optional, not a soft-lock condition.
 const BOSS_TYPES := [
-	{"id": "pawn", "name": "PEAO", "symbol": "P", "hp": 2, "rule": "1 CASA ORTOGONAL"},
-	{"id": "rook", "name": "TORRE", "symbol": "T", "hp": 3, "rule": "LINHAS DE ATE 3 CASAS"},
-	{"id": "knight", "name": "CAVALO", "symbol": "C", "hp": 3, "rule": "SALTO EM L"},
-	{"id": "bishop", "name": "BISPO", "symbol": "B", "hp": 3, "rule": "DIAGONAIS DE ATE 3 CASAS"},
-	{"id": "queen", "name": "RAINHA", "symbol": "Q", "hp": 4, "rule": "LINHAS E DIAGONAIS"},
-	{"id": "king", "name": "REI", "symbol": "K", "hp": 5, "rule": "1 CASA EM QUALQUER DIRECAO"},
+	{"id": "pawn", "name": "PEAO", "hp": 2, "rule": "1 CASA ORTOGONAL"},
+	{"id": "rook", "name": "TORRE", "hp": 3, "rule": "LINHAS DE ATE 3 CASAS"},
+	{"id": "knight", "name": "CAVALO", "hp": 4, "rule": "SALTO EM L"},
+	{"id": "bishop", "name": "BISPO", "hp": 5, "rule": "DIAGONAIS DE ATE 3 CASAS"},
+	{"id": "queen", "name": "RAINHA", "hp": 6, "rule": "LINHAS E DIAGONAIS"},
+	{"id": "king", "name": "REI", "hp": 7, "rule": "1 CASA EM QUALQUER DIRECAO"},
 ]
+# Each chess piece has its own original silhouette; the Warden remains a
+# separate mini-boss, not a reskinned chess piece.
+const BOSS_TEXTURES := {
+	"pawn": preload("res://assets/bosses/pawn.svg"),
+	"rook": preload("res://assets/bosses/rook.svg"),
+	"knight": preload("res://assets/bosses/knight.svg"),
+	"bishop": preload("res://assets/bosses/bishop.svg"),
+	"queen": preload("res://assets/bosses/queen.svg"),
+	"king": preload("res://assets/bosses/king.svg"),
+}
+const BOSS_COLORS := {"pawn": "5ff6ef", "rook": "ffb65b", "knight": "5cbfff", "bishop": "84f3bd", "queen": "f578dc", "king": "ffd474"}
+const POWERUP_TYPES := ["speed", "magnet", "blink", "time_freeze"]
+const POWERUP_COLORS := {"speed": "ffce5c", "magnet": "ff68aa", "blink": "9af4ff", "time_freeze": "92a4ff"}
+const SPEED_DURATION := 6
+const MAGNET_DURATION := 8
+const FREEZE_DURATION := 4
+const PUZZLE_COLORS := ["5df4f2", "ffbe60", "d78aff"]
+const PUZZLE_NAMES := ["CIANO", "AMBAR", "VIOLETA"]
+const PATROL_DIRECTIONS := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
 const CHALLENGE_KINDS := ["no_jump", "no_hit", "moves", "all_coins"]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
 const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA", "CATEDRAL DE GELO", "TRONO DO GUARDIAO"]
@@ -42,6 +61,7 @@ var portal_open := true
 var enemies: Array[Dictionary] = []
 var shields: Array[Vector2i] = []
 var breakers: Array[Vector2i] = []
+var powerups: Array[Dictionary] = []
 var coins: Array[Vector2i] = []
 var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
@@ -62,6 +82,12 @@ var active_seed := 0
 var generation_report := ""
 var charges := 0
 var breach_charges := 0
+var speed_turns := 0
+# Zero means the next speed-affected action prevents enemy movement.
+var speed_phase := 0
+var magnet_turns := 0
+var freeze_turns := 0
+var blink_charges := 0
 var total_coins := 0
 var floor_number := 1
 var turn_number := 0
@@ -84,6 +110,7 @@ var resume_breach_charges := 0
 var resume_facing := Vector2i.RIGHT
 var resume_seed := 0
 var resume_history: Array[int] = []
+var resume_powers: Dictionary = {}
 var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
@@ -178,6 +205,7 @@ func new_game(seed_value: int = -1) -> void:
 	floor_number = 1
 	charges = 0
 	breach_charges = 0
+	_restore_power_state({})
 	total_coins = 0
 	facing = Vector2i.RIGHT
 	has_resume = false
@@ -185,6 +213,7 @@ func new_game(seed_value: int = -1) -> void:
 	resume_coins = 0
 	resume_charges = 0
 	resume_breach_charges = 0
+	resume_powers = _capture_power_state()
 	resume_facing = facing
 	resume_seed = active_seed
 	resume_history.clear()
@@ -203,6 +232,7 @@ func continue_game() -> void:
 	floor_history = resume_history.duplicate()
 	charges = resume_charges
 	breach_charges = resume_breach_charges
+	_restore_power_state(resume_powers)
 	facing = resume_facing
 	_reset_capture_state()
 	generate_floor(resume_floor)
@@ -218,6 +248,7 @@ func start_level(number: int) -> void:
 	total_coins = 0
 	charges = 0
 	breach_charges = 0
+	_restore_power_state({})
 	_reset_capture_state()
 	generate_floor(number)
 	game_state = "playing"
@@ -255,6 +286,7 @@ func restart_floor() -> void:
 	total_coins = int(snapshot.coins)
 	charges = int(snapshot.charges)
 	breach_charges = int(snapshot.breach_charges)
+	_restore_power_state(snapshot.get("powers", {}))
 	floor_history.assign(snapshot.history)
 	facing = snapshot.facing
 	_reset_capture_state()
@@ -290,6 +322,8 @@ func handle_hud_action(action: String) -> void:
 		restart_floor()
 	elif action == "wait":
 		wait_turn()
+	elif action == "blink":
+		try_blink()
 	elif action == "music":
 		audio.toggle_music()
 	elif action.begins_with("floor:"):
@@ -368,10 +402,13 @@ func dev_spawn_enemy(role: String) -> void:
 		last_notice = "SEM CASA LIVRE PARA O INIMIGO"
 		notice_timer = 2.0
 		return
-	var enemy := _make_boss(spawn_pos) if role == "warden" else {
-		"pos": spawn_pos, "from": _cell_center(spawn_pos), "to": _cell_center(spawn_pos),
-		"next": spawn_pos, "t": 1.0, "role": role, "phase": 0,
-	}
+	var enemy: Dictionary
+	if role == "warden":
+		enemy = _make_warden(spawn_pos)
+	elif role == "chess_boss":
+		enemy = _make_boss(spawn_pos)
+	else:
+		enemy = _make_enemy(spawn_pos, role)
 	enemies.append(enemy)
 	_spawn_burst(_cell_center(spawn_pos), Color("ff59c7"), 20, 120.0)
 	last_notice = "SPAWN DEV: %s" % role.to_upper()
@@ -391,7 +428,8 @@ func dev_give_resources() -> void:
 	total_coins += 10
 	charges = mini(charges + 1, 3)
 	breach_charges = mini(breach_charges + 1, 3)
-	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, +1 ESCUDO, +1 DEMOLIR)"
+	blink_charges += 1
+	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, ESCUDO, DEMOLICAO E BLINK)"
 	notice_timer = 2.5
 	audio.play("coin")
 	queue_redraw()
@@ -430,9 +468,11 @@ func dev_load_sandbox_arena() -> void:
 	coins.clear()
 	shields.clear()
 	breakers.clear()
+	powerups.clear()
 	switches.clear()
 	traps.clear()
 	nav_chevrons.clear()
+	_restore_power_state({})
 	charges = 2
 	breach_charges = 2
 	game_state = "playing"
@@ -511,12 +551,13 @@ func get_floor_size(number: int) -> Vector2i:
 	return Vector2i(last_size.x + width_growth, last_size.y + height_growth)
 
 
-func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT) -> void:
+func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT, powers: Variant = null) -> void:
 	has_resume = true
 	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
 	resume_charges = maxi(0, shield_charges)
 	resume_breach_charges = maxi(0, demolition_charges)
+	resume_powers = _normalized_power_state(_capture_power_state() if powers == null else powers)
 	resume_facing = start_facing if start_facing in FOUR_WAY else Vector2i.RIGHT
 	resume_seed = active_seed
 	var saved_history: Array = (floor_history if history == null else history).duplicate()
@@ -526,6 +567,29 @@ func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_c
 	_save_profile()
 
 
+func _capture_power_state() -> Dictionary:
+	return {"speed_turns": speed_turns, "speed_phase": speed_phase, "magnet_turns": magnet_turns,
+		"freeze_turns": freeze_turns, "blink_charges": blink_charges}
+
+
+func _normalized_power_state(raw: Variant) -> Dictionary:
+	var state: Dictionary = raw if raw is Dictionary else {}
+	var speed := maxi(0, int(state.get("speed_turns", 0)))
+	return {"speed_turns": speed, "speed_phase": posmod(int(state.get("speed_phase", 0)), 2) if speed > 0 else 0,
+		"magnet_turns": maxi(0, int(state.get("magnet_turns", 0))),
+		"freeze_turns": maxi(0, int(state.get("freeze_turns", 0))),
+		"blink_charges": maxi(0, int(state.get("blink_charges", 0)))}
+
+
+func _restore_power_state(raw: Variant) -> void:
+	var state := _normalized_power_state(raw)
+	speed_turns = state.speed_turns
+	speed_phase = state.speed_phase
+	magnet_turns = state.magnet_turns
+	freeze_turns = state.freeze_turns
+	blink_charges = state.blink_charges
+
+
 func generate_floor(number: int) -> void:
 	floor_number = maxi(1, number)
 	world_size = get_floor_size(floor_number)
@@ -533,7 +597,7 @@ func generate_floor(number: int) -> void:
 	rng.seed = level_seed
 	floor_start_snapshot = {
 		"floor": floor_number, "seed": active_seed, "coins": total_coins,
-		"charges": charges, "breach_charges": breach_charges,
+		"charges": charges, "breach_charges": breach_charges, "powers": _capture_power_state(),
 		"history": floor_history.duplicate(), "facing": facing,
 	}
 	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
@@ -568,38 +632,55 @@ func generate_floor(number: int) -> void:
 	enemies.clear()
 	shields.clear()
 	breakers.clear()
+	powerups.clear()
 	coins.clear()
 	switches.clear()
 	traps.clear()
+	var puzzle_floor := number % 5 == 3
 	var required_switches := 0
-	if number >= 2 and (number % 3 != 1 or number == 4):
+	if puzzle_floor:
+		required_switches = 3
+	elif number >= 2 and (number % 3 != 1 or number == 4):
 		required_switches = mini(1 + number / 2, 4)
-	objective_type = "switches" if required_switches > 0 else "escape"
+	objective_type = "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
 	portal_open = required_switches == 0
 	var occupied := {player_position: true, portal_position: true}
 	var walkable := _reachable_cells(player_position)
-	for i in required_switches:
-		var position: Vector2i = _pick_spaced(walkable, occupied, 7)
-		if position != Vector2i(-1, -1):
-			switches.append({"pos": position, "active": false})
-			occupied[position] = true
-	for i in mini(1 + int(number / 2), 7):
-		var position: Vector2i = _pick_spaced(walkable, occupied, 5)
-		if position != Vector2i(-1, -1):
-			var role := "hunter"
-			if number >= 2 and i % 3 == 1:
-				role = "sentry"
-			elif number >= 4 and i % 3 == 2:
-				role = "wisp"
-			if number >= 6 and i % 4 == 3:
-				role = "rusher"
-			enemies.append({"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position), "t": 1.0, "role": role, "phase": rng.randi_range(0, 1)})
-			occupied[position] = true
-	if number % 5 == 0:
-		var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
-		if boss_position != Vector2i(-1, -1):
-			enemies.append(_make_boss(boss_position))
-			occupied[boss_position] = true
+	if puzzle_floor:
+		_place_puzzle_switches(walkable, occupied)
+	else:
+		for i in required_switches:
+			var position: Vector2i = _pick_spaced(walkable, occupied, 7)
+			if position != Vector2i(-1, -1):
+				switches.append({"pos": position, "active": false})
+				occupied[position] = true
+		for i in mini(1 + int(number / 2), 7):
+			var position: Vector2i = _pick_spaced(walkable, occupied, 5)
+			if position != Vector2i(-1, -1):
+				var role := "hunter"
+				if number >= 2 and i % 3 == 1:
+					role = "sentry"
+				elif number >= 4 and i % 3 == 2:
+					role = "wisp"
+				if number >= 6 and i % 4 == 3:
+					role = "patrol"
+				if number >= 7 and i % 5 == 2:
+					role = "mirror"
+				if number >= 10 and i % 6 == 5:
+					role = "rusher"
+				enemies.append(_make_enemy(position, role))
+				occupied[position] = true
+		# The original Guardian keeps its own body and behavior as a mini-boss.
+		if number % 5 == 4:
+			var warden_position: Vector2i = _pick_spaced(walkable, occupied, 9)
+			if warden_position != Vector2i(-1, -1):
+				enemies.append(_make_warden(warden_position))
+				occupied[warden_position] = true
+		if number % 5 == 0:
+			var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
+			if boss_position != Vector2i(-1, -1):
+				enemies.append(_make_boss(boss_position))
+				occupied[boss_position] = true
 	for i in rng.randi_range(2, 4):
 		var position: Vector2i = _pick_spaced(walkable, occupied, 2)
 		if position != Vector2i(-1, -1):
@@ -610,17 +691,28 @@ func generate_floor(number: int) -> void:
 		if breaker_position != Vector2i(-1, -1):
 			breakers.append(breaker_position)
 			occupied[breaker_position] = true
+	# Cycle all four abilities across successive floors; the cell is unique and
+	# reachable, just like all other pickups.
+	var power_position: Vector2i = _pick_spaced(walkable, occupied, 3)
+	if power_position != Vector2i(-1, -1):
+		powerups.append({"pos": power_position, "kind": POWERUP_TYPES[posmod(number - 1, POWERUP_TYPES.size())]})
+		occupied[power_position] = true
 	for i in 8 + number:
 		var position: Vector2i = _pick_spaced(walkable, occupied, 1)
 		if position != Vector2i(-1, -1):
 			coins.append(position)
 			occupied[position] = true
 	coins_spawned_this_floor = coins.size()
-	if number >= 3:
+	# Puzzle floors contain neither enemies nor traps: the sequence itself is
+	# the challenge. Other floors introduce visible recurring rhythm hazards.
+	if number >= 3 and not puzzle_floor:
 		for i in mini(1 + number / 4, 3):
 			var position: Vector2i = _pick_spaced(walkable, occupied, 4)
 			if position != Vector2i(-1, -1):
-				traps.append({"pos": position, "armed": true, "revealed": false})
+				if i % 2 == 0:
+					traps.append({"pos": position, "type": "rhythm", "phase": rng.randi_range(0, 2), "armed": true, "revealed": true})
+				else:
+					traps.append({"pos": position, "type": "one_shot", "armed": true, "revealed": false})
 				occupied[position] = true
 	_build_nav_chevrons()
 	moves_this_floor = 0
@@ -668,9 +760,99 @@ func is_challenge_met() -> bool:
 	return false
 
 
-# A real reachable route through every switch, followed by the portal. The
-# nearest leg is chosen by path distance, not Manhattan distance through walls.
+# Pick three ordered runes, rejecting placements whose sequence cannot be
+# solved. Merely checking connectivity is insufficient: a future rune can
+# block a corridor and reset the sequence when crossed.
+func _place_puzzle_switches(walkable: Array[Vector2i], occupied: Dictionary) -> void:
+	for attempt in 24:
+		for item in switches:
+			occupied.erase(item.pos)
+		switches.clear()
+		for order in 3:
+			var position := _pick_spaced(walkable, occupied, 7)
+			if position == Vector2i(-1, -1):
+				break
+			switches.append({"pos": position, "active": false, "order": order})
+			occupied[position] = true
+		if switches.size() == 3 and int(_plan_puzzle_route().length) >= 0:
+			return
+	# Deterministic fallback: place runes in order on one simple route from
+	# the start, so no later rune can block an earlier one.
+	for item in switches:
+		occupied.erase(item.pos)
+	switches.clear()
+	var previous := {player_position: player_position}
+	var queue: Array[Vector2i] = [player_position]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not previous.has(next):
+				previous[next] = point
+				queue.append(next)
+	if queue.size() < 4:
+		push_error("O piso puzzle nao tem espaco suficiente para tres runas")
+		return
+	var path: Array[Vector2i] = []
+	var here: Vector2i = queue.back()
+	while here != player_position:
+		path.append(here)
+		here = previous[here]
+	path.reverse()
+	for point in path:
+		if point == portal_position:
+			continue
+		switches.append({"pos": point, "active": false, "order": switches.size()})
+		occupied[point] = true
+		if switches.size() == 3:
+			return
+	push_error("Nao foi possivel colocar as tres runas do puzzle")
+
+
+# BFS over both position and sequence progress. Entering a future rune resets
+# progress; already-lit runes are harmless. Return both exact action count and
+# the first step so tests/bots follow the same rules as the player.
+func _plan_puzzle_route() -> Dictionary:
+	var order_by_pos := {}
+	for item in switches:
+		order_by_pos[item.pos] = int(item.get("order", 0))
+	var start := Vector3i(player_position.x, player_position.y, _active_switches())
+	var distance := {start: 0}
+	var first_step := {start: Vector2i.ZERO}
+	var queue: Array[Vector3i] = [start]
+	var head := 0
+	while head < queue.size():
+		var state: Vector3i = queue[head]
+		head += 1
+		if Vector2i(state.x, state.y) == portal_position and state.z == switches.size():
+			return {"length": int(distance[state]), "step": first_step[state]}
+		for direction in FOUR_WAY:
+			var point: Vector2i = Vector2i(state.x, state.y) + direction
+			if not _is_floor(point):
+				continue
+			var progress := state.z
+			if order_by_pos.has(point):
+				var order: int = order_by_pos[point]
+				if order == progress:
+					progress += 1
+				elif order > progress:
+					progress = 0
+			var next := Vector3i(point.x, point.y, progress)
+			if distance.has(next):
+				continue
+			distance[next] = int(distance[state]) + 1
+			first_step[next] = direction if state == start else first_step[state]
+			queue.append(next)
+	return {"length": -1, "step": Vector2i.ZERO}
+
+
+# A real reachable route through every switch, followed by the portal. Puzzle
+# routes also include the exact ordered-rune/reset rules.
 func _estimate_route_length() -> int:
+	if objective_type == "puzzle":
+		return int(_plan_puzzle_route().length)
 	var total := 0
 	var here := player_position
 	var pending: Array[Vector2i] = []
@@ -944,20 +1126,32 @@ func _enemy_at(point: Vector2i, except_enemy: Dictionary = {}) -> bool:
 	return false
 
 
+func _make_enemy(position: Vector2i, role: String) -> Dictionary:
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": role, "phase": rng.randi_range(0, 1),
+		"patrol_dir": PATROL_DIRECTIONS[rng.randi_range(0, 3)]}
+
+
+func _make_warden(position: Vector2i) -> Dictionary:
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": "warden", "phase": 0, "boss_name": "GUARDIAO", "hp": 3, "max_hp": 3}
+
+
 func _make_boss(position: Vector2i) -> Dictionary:
 	var index := posmod(floori(float(maxi(5, floor_number)) / 5.0) - 1, BOSS_TYPES.size())
 	var piece: Dictionary = BOSS_TYPES[index]
-	return {
-		"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
-		"t": 1.0, "role": "warden", "phase": 0, "boss_kind": piece.id,
-		"boss_name": piece.name, "symbol": piece.symbol, "rule": piece.rule,
-		"hp": piece.hp, "max_hp": piece.hp,
-	}
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": "chess_boss", "phase": 0, "boss_kind": piece.id,
+		"boss_name": piece.name, "rule": piece.rule, "hp": piece.hp, "max_hp": piece.hp}
+
+
+func _is_elite(enemy: Dictionary) -> bool:
+	return enemy.get("role", "") in ["warden", "chess_boss"]
 
 
 func get_active_boss() -> Dictionary:
 	for enemy in enemies:
-		if enemy.get("role", "") == "warden":
+		if enemy.get("role", "") == "chess_boss":
 			return enemy
 	return {}
 
@@ -1031,12 +1225,32 @@ func _update_enemy_intents() -> void:
 			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
 		enemy.alert = _enemy_sees_player(origin)
 		enemy["path"] = []
-		if role == "warden":
+		if role == "chess_boss":
 			var intent := _boss_intent(enemy, reserved)
 			enemy.next = intent.pos
 			enemy.path = intent.path
 			if enemy.next != origin:
 				reserved.append(enemy.next)
+			continue
+		if role == "mirror":
+			# A mirror reacts only once the player's direction is known.
+			enemy.next = origin
+			continue
+		if role == "patrol":
+			var direction: Vector2i = enemy.get("patrol_dir", Vector2i.RIGHT)
+			if direction not in PATROL_DIRECTIONS:
+				direction = Vector2i.RIGHT
+			var choice := origin
+			for attempt in 4:
+				var candidate: Vector2i = origin + direction
+				if _is_floor(candidate) and not _enemy_at(candidate, enemy) and not reserved.has(candidate):
+					choice = candidate
+					break
+				direction = Vector2i(-direction.y, direction.x)
+			enemy.patrol_dir = direction
+			enemy.next = choice
+			if choice != origin:
+				reserved.append(choice)
 			continue
 		if role == "wisp" and (turn_number + phase) % 2 == 1:
 			enemy.next = enemy.pos
@@ -1079,6 +1293,25 @@ func _update_enemy_intents() -> void:
 			reserved.append(best)
 
 
+# Unlike planned pursuers, a mirror responds to the direction of the action
+# just taken; waiting/demolishing leaves it still. Reserve the other landings.
+func _plan_reactive_mirrors(action_direction: Vector2i) -> void:
+	var reserved: Array[Vector2i] = []
+	for enemy in enemies:
+		if enemy.get("role", "") != "mirror" and enemy.next != enemy.pos:
+			reserved.append(enemy.next)
+	for enemy in enemies:
+		if enemy.get("role", "") != "mirror":
+			continue
+		var origin: Vector2i = enemy.pos
+		var target: Vector2i = origin - action_direction
+		enemy.next = origin
+		enemy["path"] = []
+		if action_direction != Vector2i.ZERO and _is_floor(target) and not _enemy_at(target, enemy) and not reserved.has(target):
+			enemy.next = target
+			reserved.append(target)
+
+
 func _enemy_sees_player(origin: Vector2i) -> bool:
 	if not _inside(origin) or not _inside(player_position):
 		return false
@@ -1109,6 +1342,11 @@ func _manhattan(first: Vector2i, second: Vector2i) -> int:
 
 
 func _nearest_inactive_switch(origin: Vector2i) -> Vector2i:
+	if objective_type == "puzzle":
+		for item in switches:
+			if int(item.get("order", -1)) == _active_switches() and not item.active:
+				return item.pos
+		return Vector2i(-1, -1)
 	var nearest := Vector2i(-1, -1)
 	var distance := 2147483647
 	for item in switches:
@@ -1138,7 +1376,7 @@ func try_move(dx: int, dy: int) -> void:
 	_begin_player_move(next)
 	moves_this_floor += 1
 	audio.play("step")
-	_take_turn()
+	_take_turn(facing)
 
 
 func wait_turn() -> void:
@@ -1184,7 +1422,42 @@ func try_jump() -> void:
 	_begin_player_move(landing)
 	_spawn_burst(_cell_center(player_position), Color("6bf4ff"), 14, 115.0)
 	audio.play("jump")
-	_take_turn()
+	_take_turn(facing)
+
+
+# Blink ignores intermediate walls, traps, pickups and enemies, but may only
+# land on floor and cannot cross the indestructible map boundary.
+func try_blink() -> void:
+	if game_state != "playing":
+		return
+	if blink_charges <= 0:
+		last_notice = "SEM CARGAS DE BLINK"
+		notice_timer = 1.4
+		audio.play("blocked")
+		return
+	var origin := player_position
+	var landing := origin
+	for step in range(1, 4):
+		var point: Vector2i = origin + facing * step
+		if not _inside(point) or grid[point.y][point.x] == TILE_BORDER:
+			break
+		if _is_floor(point):
+			landing = point
+	if landing == origin:
+		last_notice = "BLINK PRECISA DE UMA CASA LIVRE ATE 3 PASSOS"
+		notice_timer = 1.6
+		audio.play("blocked")
+		return
+	blink_charges -= 1
+	moves_this_floor += 1
+	_spawn_burst(_cell_center(origin), Color("91faff"), 18, 140.0)
+	_begin_player_move(landing)
+	# Blink is an instantaneous teleport, not a slide through intervening tiles.
+	player_from = player_to
+	player_anim = 1.0
+	_spawn_burst(_cell_center(landing), Color("c2b6ff"), 24, 160.0)
+	audio.play("blink")
+	_take_turn(facing)
 
 
 func try_break_wall() -> void:
@@ -1210,7 +1483,7 @@ func try_break_wall() -> void:
 		breach_charges -= 1
 		var enemy: Dictionary = enemies[enemy_idx]
 		var dead_role: String = enemy.get("role", "hunter")
-		if dead_role == "warden":
+		if _is_elite(enemy):
 			enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
 			if enemy.hp > 0:
 				enemies[enemy_idx] = enemy
@@ -1264,62 +1537,102 @@ func try_break_wall() -> void:
 	_take_turn()
 
 
-func _take_turn() -> void:
+func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	damage_this_turn = false
 	turn_number += 1
 	_collect_pickups()
 	_trigger_traps()
 	if game_state != "playing":
+		_tick_power_effects()
 		queue_redraw()
 		return
 	_activate_switches()
-	# Contact with an enemy's starting cell counts as well as its destination;
-	# otherwise the player and a pursuer can silently pass through each other.
+	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
+	# the player could pass through a stationary enemy without consequence.
 	_check_enemy_collision()
 	if game_state != "playing":
+		_tick_power_effects()
 		queue_redraw()
 		return
-	var positions: Array[Vector2i] = []
-	var crossings: Array[int] = []
-	for i in enemies.size():
-		var enemy: Dictionary = enemies[i]
-		positions.append(enemy.next)
-		if enemy.next != player_position and enemy.get("path", []).has(player_position):
-			crossings.append(i)
-	for i in enemies.size():
-		var enemy: Dictionary = enemies[i]
-		enemy.from = _cell_center(enemy.pos)
-		enemy.pos = positions[i]
-		enemy.to = _cell_center(enemy.pos)
-		enemy.t = 0.0
-		enemies[i] = enemy
-	_check_enemy_collision()
-	if game_state == "playing" and not damage_this_turn:
-		for index in crossings:
-			var enemy: Dictionary = enemies[index]
-			if enemy.get("role", "hunter") == "warden" and charges > 0:
-				_stagger_warden(index)
-			else:
-				_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
-			break
+	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
+	if not immobilized:
+		_plan_reactive_mirrors(action_direction)
+		var positions: Array[Vector2i] = []
+		var crossings: Array[int] = []
+		for i in enemies.size():
+			var enemy: Dictionary = enemies[i]
+			positions.append(enemy.next)
+			if enemy.next != player_position and enemy.get("path", []).has(player_position):
+				crossings.append(i)
+		for i in enemies.size():
+			var enemy: Dictionary = enemies[i]
+			enemy.from = _cell_center(enemy.pos)
+			enemy.pos = positions[i]
+			enemy.to = _cell_center(enemy.pos)
+			enemy.t = 0.0
+			enemies[i] = enemy
+		_check_enemy_collision()
+		if game_state == "playing" and not damage_this_turn:
+			for index in crossings:
+				var enemy: Dictionary = enemies[index]
+				if _is_elite(enemy) and charges > 0:
+					_stagger_elite(index)
+				else:
+					_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
+				break
 	if game_state == "playing":
 		_update_enemy_intents()
+	_tick_power_effects()
+	# Tick before saving a completed floor, so its checkpoint contains the
+	# duration remaining after the portal action, not one extra turn.
+	if game_state == "playing":
 		_check_portal()
 	queue_redraw()
 
 
+func _tick_power_effects() -> void:
+	if speed_turns > 0:
+		speed_turns -= 1
+		speed_phase = 1 - speed_phase if speed_turns > 0 else 0
+	if magnet_turns > 0:
+		magnet_turns -= 1
+	if freeze_turns > 0:
+		freeze_turns -= 1
+
+
+func _collect_coin(point: Vector2i) -> bool:
+	if not coins.has(point):
+		return false
+	coins.erase(point)
+	coins_this_floor += 1
+	total_coins += 1
+	if total_coins > best_score:
+		best_score = total_coins
+		best_score_dirty = true
+	_spawn_burst(_cell_center(point), Color("ffd15d"), 18, 150.0)
+	return true
+
+
+# Magnetism follows actual floor paths, not Manhattan distance through walls.
+func _nearby_floor_cells(start: Vector2i, reach: int) -> Dictionary:
+	var distances := {start: 0}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		if int(distances[point]) >= reach:
+			continue
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not distances.has(next):
+				distances[next] = int(distances[point]) + 1
+				queue.append(next)
+	return distances
+
+
 func _collect_pickups() -> void:
-	if coins.has(player_position):
-		coins.erase(player_position)
-		coins_this_floor += 1
-		total_coins += 1
-		if total_coins > best_score:
-			best_score = total_coins
-			best_score_dirty = true
-		last_notice = "+1 MOEDA"
-		notice_timer = 1.0
-		_spawn_burst(_cell_center(player_position), Color("ffd15d"), 18, 150.0)
-		_audio_coin()
+	var collected_coins := 1 if _collect_coin(player_position) else 0
 	if shields.has(player_position):
 		shields.erase(player_position)
 		charges += 1
@@ -1334,6 +1647,42 @@ func _collect_pickups() -> void:
 		notice_timer = 2.6
 		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
 		audio.play("breaker")
+	for i in range(powerups.size() - 1, -1, -1):
+		var item: Dictionary = powerups[i]
+		if item.pos == player_position:
+			powerups.remove_at(i)
+			_activate_powerup(item.kind)
+	if magnet_turns > 0 and not coins.is_empty():
+		var nearby := _nearby_floor_cells(player_position, 2)
+		for point in coins.duplicate():
+			if nearby.has(point) and _collect_coin(point):
+				collected_coins += 1
+	if collected_coins > 0:
+		last_notice = "+%d MOEDA%s%s" % [collected_coins, "S" if collected_coins != 1 else "", " / IMA" if collected_coins > 1 else ""]
+		notice_timer = 1.0
+		_audio_coin()
+
+
+func _activate_powerup(kind: String) -> void:
+	match kind:
+		"speed":
+			speed_turns = SPEED_DURATION
+			speed_phase = 0
+			last_notice = "VELOCIDADE / INIMIGOS AVANCAM EM ACOES ALTERNADAS"
+		"magnet":
+			magnet_turns = MAGNET_DURATION
+			last_notice = "IMA / RECOLHE MOEDAS ATE 2 PASSOS"
+		"blink":
+			blink_charges += 1
+			last_notice = "BLINK +1 / Q TELEPORTA ATE 3 CASAS"
+		"time_freeze":
+			freeze_turns = FREEZE_DURATION
+			last_notice = "TEMPO CONGELADO / ARMADILHAS CONTINUAM ATIVAS"
+		_:
+			return
+	notice_timer = 2.6
+	_spawn_burst(_cell_center(player_position), Color(POWERUP_COLORS.get(kind, "ffffff")), 24, 145.0)
+	audio.play("power_" + kind)
 
 
 func _audio_coin() -> void:
@@ -1343,17 +1692,31 @@ func _audio_coin() -> void:
 func _activate_switches() -> void:
 	for i in switches.size():
 		var item: Dictionary = switches[i]
-		if not item.active and item.pos == player_position:
-			item.active = true
-			switches[i] = item
+		if item.active or item.pos != player_position:
+			continue
+		if objective_type == "puzzle" and int(item.get("order", -1)) != _active_switches():
+			for j in switches.size():
+				switches[j].active = false
+			last_notice = "ORDEM ERRADA! RECOMECA: CIANO > AMBAR > VIOLETA"
+			notice_timer = 2.8
+			_spawn_burst(_cell_center(player_position), Color("ff6c82"), 18, 110.0)
+			audio.play("puzzle_error")
+			return
+		item.active = true
+		switches[i] = item
+		if objective_type == "puzzle":
+			var order: int = item.order
+			last_notice = "RUNA %d / %s — %d/3" % [order + 1, PUZZLE_NAMES[order], _active_switches()]
+			_spawn_burst(_cell_center(player_position), Color(PUZZLE_COLORS[order]), 20, 130.0)
+		else:
 			last_notice = "INTERRUPTOR %d/%d ATIVADO" % [_active_switches(), switches.size()]
-			notice_timer = 2.1
 			_spawn_burst(_cell_center(player_position), Color("7bf4ff"), 20, 130.0)
-			audio.play("switch")
-	if objective_type == "switches" and _active_switches() >= switches.size():
+		notice_timer = 2.1
+		audio.play("switch")
+	if objective_type in ["switches", "puzzle"] and not switches.is_empty() and _active_switches() >= switches.size():
 		if not portal_open:
 			portal_open = true
-			last_notice = "TODOS OS INTERRUPTORES ATIVOS — PORTAL ABERTO"
+			last_notice = "SEQUENCIA COMPLETA — PORTAL ABERTO" if objective_type == "puzzle" else "TODOS OS INTERRUPTORES ATIVOS — PORTAL ABERTO"
 			notice_timer = 3.0
 			_spawn_burst(_cell_center(portal_position), Color("d57aff"), 32, 175.0)
 			audio.play("portal")
@@ -1367,10 +1730,21 @@ func _active_switches() -> int:
 	return count
 
 
+# Phase zero is dangerous; the drawing previews the next action's phase.
+func _rhythm_is_hot(trap: Dictionary, action_turn: int) -> bool:
+	return posmod(action_turn + int(trap.get("phase", 0)), 3) == 0
+
+
 func _trigger_traps() -> void:
 	for i in traps.size():
 		var trap: Dictionary = traps[i]
-		if trap.armed and trap.pos == player_position:
+		if not trap.get("armed", true) or trap.pos != player_position:
+			continue
+		if trap.get("type", "one_shot") == "rhythm":
+			if _rhythm_is_hot(trap, turn_number):
+				_apply_damage("ARMADILHA DE RITMO!", Color("ff7456"))
+				audio.play("rhythm_trap")
+		else:
 			trap.armed = false
 			trap.revealed = true
 			traps[i] = trap
@@ -1384,14 +1758,14 @@ func _check_enemy_collision() -> void:
 		var enemy: Dictionary = enemies[i]
 		if enemy.pos != player_position:
 			continue
-		if enemy.get("role", "hunter") == "warden" and charges > 0 and not damage_this_turn:
-			_stagger_warden(i)
+		if _is_elite(enemy) and charges > 0 and not damage_this_turn:
+			_stagger_elite(i)
 		else:
 			_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
 		return
 
 
-func _stagger_warden(index: int) -> void:
+func _stagger_elite(index: int) -> void:
 	if damage_this_turn or charges <= 0 or index < 0 or index >= enemies.size():
 		return
 	var enemy: Dictionary = enemies[index]
@@ -1599,7 +1973,8 @@ func _update_capture_sequence(delta: float) -> void:
 			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
 			_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
 				int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
-				floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT))
+				floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT),
+				floor_start_snapshot.get("powers", {}))
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
@@ -1684,6 +2059,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if objective_type == "puzzle":
+		return "RUNAS %d/3  /  %s" % [_active_switches(), "PORTAL ABERTO" if portal_open else "SEGUIR A ORDEM"]
 	if objective_type == "switches":
 		return "INTERRUPTORES %d/%d   /   %s" % [_active_switches(), switches.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if game_state == "rescued":
@@ -1711,6 +2088,7 @@ func _load_profile() -> void:
 		# Older profiles did not store the inventory; zero is their safe default.
 		resume_charges = maxi(0, int(profile.get_value("progress", "resume_charges", 0)))
 		resume_breach_charges = maxi(0, int(profile.get_value("progress", "resume_breach_charges", 0)))
+		resume_powers = _normalized_power_state(profile.get_value("progress", "resume_powers", {}))
 		var saved_facing: Variant = profile.get_value("progress", "resume_facing", Vector2i.RIGHT)
 		resume_facing = saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT
 		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
@@ -1744,6 +2122,7 @@ func _save_profile() -> void:
 	profile.set_value("progress", "resume_coins", resume_coins)
 	profile.set_value("progress", "resume_charges", resume_charges)
 	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
+	profile.set_value("progress", "resume_powers", resume_powers)
 	profile.set_value("progress", "resume_facing", resume_facing)
 	profile.set_value("progress", "resume_seed", resume_seed)
 	profile.set_value("progress", "resume_history", resume_history)
@@ -1820,7 +2199,7 @@ func _current_threat_level() -> float:
 		var distance := _manhattan(enemy.pos, player_position)
 		if distance <= 8:
 			intensity = maxf(intensity, 1.0 - float(distance) / 10.0)
-		if enemy.get("role", "") == "warden":
+		if _is_elite(enemy):
 			intensity = maxf(intensity, 0.72)
 	return intensity
 
@@ -1875,6 +2254,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				try_break_wall()
 			JOY_BUTTON_LEFT_SHOULDER:
 				wait_turn()
+			JOY_BUTTON_RIGHT_SHOULDER:
+				try_blink()
 			JOY_BUTTON_START:
 				if game_state == "playing":
 					game_state = "paused"
@@ -1982,6 +2363,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			try_move(1, 0)
 		KEY_SPACE: try_jump()
 		KEY_B: try_break_wall()
+		KEY_Q: try_blink()
 		KEY_X: wait_turn()
 		KEY_R: restart_floor()
 		KEY_N: new_game()
@@ -2046,11 +2428,18 @@ func _draw() -> void:
 		_draw_shield(pos)
 	for pos in breakers:
 		_draw_breaker(pos)
+	for item in powerups:
+		_draw_powerup(item)
 	_draw_portal()
 	
 	# CAMADA 7: Inimigos
 	for enemy in enemies:
 		_draw_enemy(enemy)
+		if freeze_turns > 0:
+			var ice_center := _enemy_visual_position(enemy)
+			var ice_radius := 36.0 if _is_elite(enemy) else 23.0
+			draw_arc(ice_center, ice_radius, animation_clock, animation_clock + TAU * 0.8, 28, Color("b4d8ff", 0.85), 1.7, true)
+			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
 		
 	# CAMADA 8: Jogador (Bola vermelha 3D)
 	_draw_player()
@@ -2336,6 +2725,10 @@ func _draw_floor_neon_glow() -> void:
 		var bc := _cell_center(b)
 		_draw_radial_light(bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
 		
+	# Four power-up colors also match their in-world icon and HUD effects.
+	for item in powerups:
+		var color := Color(POWERUP_COLORS.get(item.kind, "ffffff"))
+		_draw_radial_light(_cell_center(item.pos) + Vector2(0, 4), 43.0, Color(color, 0.9), Color(color, 0.4), pulse)
 	# Halo das moedas (dourado compacto)
 	for c in coins:
 		var cc := _cell_center(c)
@@ -2347,6 +2740,10 @@ func _draw_floor_neon_glow() -> void:
 		var sw_on: bool = sw.get("active", false)
 		var sw_core := Color("a0ffcf", 0.92) if sw_on else Color("6de9ff", 0.82)
 		var sw_glow := Color("15b565", 0.48) if sw_on else Color("1468b8", 0.38)
+		if sw.has("order"):
+			var rune_color := Color(PUZZLE_COLORS[clampi(int(sw.order), 0, 2)])
+			sw_core = Color(rune_color, 0.95 if sw_on else 0.7)
+			sw_glow = Color(rune_color, 0.45 if sw_on else 0.27)
 		_draw_radial_light(sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
 		
 	# Halo dos inimigos no chão (luz volumétrica viva e colorida por tipo de mob)
@@ -2374,10 +2771,23 @@ func _draw_floor_neon_glow() -> void:
 				e_radius = 46.0
 				e_core = Color("ff8b3d", 0.95) if alert else Color("e66a1a", 0.80)
 				e_glow = Color("b33500", 0.46)
+			"patrol":
+				e_radius = 42.0
+				e_core = Color("72f7ac", 0.9)
+				e_glow = Color("1da866", 0.43)
+			"mirror":
+				e_radius = 43.0
+				e_core = Color("bce8ff", 0.9)
+				e_glow = Color("3189d5", 0.44)
 			"warden":
 				e_radius = 62.0
 				e_core = Color("c95eff", 0.95)
 				e_glow = Color("680ca8", 0.52)
+			"chess_boss":
+				var piece_color := Color(BOSS_COLORS.get(enemy.get("boss_kind", "pawn"), "c95eff"))
+				e_radius = 72.0
+				e_core = Color(piece_color, 0.95)
+				e_glow = Color(piece_color, 0.48)
 		_draw_radial_light(ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
 		
 	# Halo do portal dimensional (vórtice violeta/ciano expansivo)
@@ -2556,6 +2966,39 @@ func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
 		draw_line(start, finish, glow, 2.0, true)
+
+
+func _draw_powerup(item: Dictionary) -> void:
+	var kind: String = item.get("kind", "speed")
+	var tint := Color(POWERUP_COLORS.get(kind, "ffffff"))
+	var center := _cell_center(item.pos) + Vector2(0, -5 + sin(animation_clock * 3.0 + item.pos.x) * 2.0)
+	draw_circle(center + Vector2(0, 6), 17.0, Color(tint, 0.12))
+	var frame := PackedVector2Array([center + Vector2(0, -17), center + Vector2(15, -3), center + Vector2(10, 13), center + Vector2(0, 17), center + Vector2(-10, 13), center + Vector2(-15, -3)])
+	draw_colored_polygon(frame, Color("0a1427"))
+	var outline := frame.duplicate()
+	outline.append(frame[0])
+	draw_polyline(outline, Color(tint, 0.95), 2.2, true)
+	var facet := PackedVector2Array([center + Vector2(0, -13), center + Vector2(11, -3), center + Vector2(7, 9), center + Vector2(0, 13), center + Vector2(-7, 9), center + Vector2(-11, -3)])
+	draw_colored_polygon(facet, Color(tint, 0.26))
+	var bright := Color("f4ffff")
+	match kind:
+		"speed":
+			draw_colored_polygon(PackedVector2Array([center + Vector2(1, -10), center + Vector2(-6, 1), center + Vector2(-1, 1), center + Vector2(-3, 9), center + Vector2(7, -3), center + Vector2(2, -3)]), bright)
+		"magnet":
+			draw_arc(center + Vector2(0, 1), 6.0, 0.0, PI, 16, bright, 2.8, true)
+			draw_line(center + Vector2(-6, 1), center + Vector2(-6, -6), bright, 2.8, true)
+			draw_line(center + Vector2(6, 1), center + Vector2(6, -6), bright, 2.8, true)
+			draw_line(center + Vector2(-8, -6), center + Vector2(-4, -6), tint, 2.5, true)
+			draw_line(center + Vector2(4, -6), center + Vector2(8, -6), tint, 2.5, true)
+		"blink":
+			draw_arc(center + Vector2(-4, 0), 5.5, -PI * 0.55, PI * 0.55, 14, bright, 2.0, true)
+			draw_arc(center + Vector2(4, 0), 5.5, PI * 0.45, PI * 1.55, 14, bright, 2.0, true)
+			draw_line(center + Vector2(-6, 0), center + Vector2(6, 0), bright, 1.8, true)
+		"time_freeze":
+			for i in 3:
+				var axis := Vector2.from_angle(float(i) * PI / 3.0) * 8.0
+				draw_line(center - axis, center + axis, bright, 1.7, true)
+			draw_circle(center, 2.2, tint)
 
 
 func _draw_coin(point: Vector2i) -> void:
@@ -2809,6 +3252,8 @@ func _draw_switch(item: Dictionary) -> void:
 	var center := _cell_center(item.pos)
 	var is_active: bool = item.active
 	var state_col := Color("5ef59f") if is_active else Color("52e3ff")
+	if item.has("order"):
+		state_col = Color(PUZZLE_COLORS[clampi(int(item.order), 0, 2)])
 	var pulse := 1.0 + sin(animation_clock * 4.2 + center.x * 0.05) * 0.08
 	
 	# Sombra da consola projetada no chão
@@ -2850,14 +3295,38 @@ func _draw_switch(item: Dictionary) -> void:
 		var rot := animation_clock * 2.4
 		draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
 	else:
-		draw_arc(center, 10.5, 0.0, TAU, 24, Color("3488aa", 0.5), 1.0, true)
+		draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5), 1.0, true)
+	# One, two or three white dots distinguish the ordered runes without color.
+	if item.has("order"):
+		var count := clampi(int(item.order) + 1, 1, 3)
+		draw_rect(Rect2(center + Vector2(-10, 14), Vector2(20, 7)), Color("07101d", 0.9))
+		for dot in count:
+			draw_circle(center + Vector2((float(dot) - float(count - 1) * 0.5) * 5.5, 17.5), 1.8, Color("f3ffff"))
 
 
 func _draw_trap(trap: Dictionary) -> void:
 	var center := _cell_center(trap.pos)
-	if not trap.armed and not trap.revealed:
+	if trap.get("type", "one_shot") == "rhythm":
+		# Three LEDs: the outlined one is the phase of the NEXT action. The
+		# first (red/spiked) phase is dangerous, the other two are safe.
+		var next_phase := posmod(turn_number + 1 + int(trap.get("phase", 0)), 3)
+		var hot := _rhythm_is_hot(trap, turn_number + 1)
+		var color := Color("ff6957") if hot else Color("70dfd8")
+		draw_circle(center, 18.0, Color(color, 0.14))
+		draw_arc(center, 13.0, 0.0, TAU, 28, Color(color, 0.9), 2.2, true)
+		var spikes := PackedVector2Array([center + Vector2(0, -9), center + Vector2(7, 7), center + Vector2(-7, 7)])
+		draw_colored_polygon(spikes, Color(color, 0.8 if hot else 0.28))
+		draw_rect(Rect2(center + Vector2(-14, 15), Vector2(28, 8)), Color("07101d", 0.92))
+		for i in 3:
+			var led := center + Vector2((float(i) - 1.0) * 8.0, 19.0)
+			draw_circle(led, 2.0, Color("ff7761") if i == 0 else Color("83eee5"))
+			if i == next_phase:
+				draw_arc(led, 3.4, 0.0, TAU, 12, Color("ffffff"), 1.0, true)
 		return
-	var alpha := 0.64 + sin(animation_clock * 5.0 + center.x) * 0.16
+	if not trap.get("armed", true) and not trap.get("revealed", false):
+		return
+	var armed: bool = trap.get("armed", true)
+	var alpha := (0.64 + sin(animation_clock * 5.0 + center.x) * 0.16) if armed else 0.2
 	draw_circle(center, 18.0, Color("ff684c", alpha * 0.12))
 	draw_arc(center, 13.0, animation_clock * 0.25, animation_clock * 0.25 + TAU, 28, Color("ff775c", alpha), 2.0, true)
 	for i in 4:
@@ -2868,6 +3337,13 @@ func _draw_trap(trap: Dictionary) -> void:
 func _draw_enemy(enemy: Dictionary) -> void:
 	var center := _enemy_visual_position(enemy)
 	var role: String = enemy.get("role", "hunter")
+	if role == "chess_boss":
+		var kind: String = enemy.get("boss_kind", "pawn")
+		var texture: Texture2D = BOSS_TEXTURES.get(kind, BOSS_TEXTURES["pawn"])
+		var size := 110.0 if kind in ["queen", "king"] else 100.0
+		center.y += sin(animation_clock * 2.5 + center.x * 0.01) * 1.5
+		draw_texture_rect(texture, Rect2(center + Vector2(-size * 0.5, -size * 0.78), Vector2(size, size)), false)
+		return
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
 	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.08 if role == "sentry" else 1.02
 	var bob := sin(animation_clock * (5.5 if alert else 3.2) + center.x * 0.015) * (3.0 if role == "wisp" else 1.4)
@@ -2882,6 +3358,40 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	draw_set_transform(center + Vector2(0, 12 * size_scale), 0.0, Vector2(1.0, 0.45))
 	draw_circle(Vector2.ZERO, half_size * 1.15, Color("020612", 0.48))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	if role == "patrol":
+		# Low, tracked scout; the chevron points along its patrol direction.
+		var direction: Vector2i = enemy.get("patrol_dir", Vector2i.RIGHT)
+		var heading := Vector2(direction)
+		if heading.length_squared() < 0.1:
+			heading = Vector2.RIGHT
+		var side := Vector2(-heading.y, heading.x)
+		draw_line(center + side * 14.0 - heading * 11.0, center + side * 14.0 + heading * 11.0, Color("081e18"), 7.0, true)
+		draw_line(center - side * 14.0 - heading * 11.0, center - side * 14.0 + heading * 11.0, Color("081e18"), 7.0, true)
+		var shell := _chamfered_square_points(center, 15.0, 5.0)
+		draw_colored_polygon(shell, Color("174b3f"))
+		var rim := shell.duplicate()
+		rim.append(shell[0])
+		draw_polyline(rim, Color("75f7b6"), 1.8, true)
+		draw_circle(center, 8.0, Color("0b2523"))
+		draw_line(center - heading * 5.0 + side * 4.0, center + heading * 6.0, Color("ddffe9"), 2.2, true)
+		draw_line(center - heading * 5.0 - side * 4.0, center + heading * 6.0, Color("ddffe9"), 2.2, true)
+		return
+
+	if role == "mirror":
+		# Split reflective diamond, visibly unlike the drones or chess pieces.
+		var shell := PackedVector2Array([center + Vector2(0, -19), center + Vector2(16, 0), center + Vector2(0, 19), center + Vector2(-16, 0)])
+		draw_colored_polygon(shell, Color("132742"))
+		draw_colored_polygon(PackedVector2Array([center + Vector2(0, -16), center + Vector2(13, 0), center + Vector2(0, 16)]), Color("4b9bce"))
+		draw_colored_polygon(PackedVector2Array([center + Vector2(0, -16), center + Vector2(-13, 0), center + Vector2(0, 16)]), Color("89d7ed"))
+		var rim := shell.duplicate()
+		rim.append(shell[0])
+		draw_polyline(rim, Color("c8f6ff"), 1.7, true)
+		draw_line(center + Vector2(0, -14), center + Vector2(0, 14), Color("efffff", 0.8), 1.3, true)
+		draw_line(center + Vector2(-9, -2), center + Vector2(-3, -2), Color("122f47"), 2.2, true)
+		draw_line(center + Vector2(3, 2), center + Vector2(9, 2), Color("e3ffff"), 2.2, true)
+		draw_circle(center + Vector2(-6, -7), 1.8, Color("ffffff"))
+		return
 
 	if role == "hunter":
 		# HUNTER: Drone de Assalto Tático (Armadura Titânio Carmesim, Antenas Chifres, Visor Angular)
@@ -3114,7 +3624,7 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		return
 
 	if role == "warden":
-		# WARDEN: Colosso Titã Boss (Gólem Mecha Violeta, Fagulhas Orbitais, Reator de Fusão Central)
+		# WARDEN: mini-chefe original (Gólem Mecha Violeta, Fagulhas Orbitais, Reator de Fusão Central)
 		# 1. Ombros / Punhos flutuantes pesados à esquerda e direita
 		var hand_bob := sin(animation_clock * 4.0) * 2.5
 		var hand_l := center + Vector2(-half_size * 1.35, hand_bob)
@@ -3169,10 +3679,6 @@ func _draw_enemy(enemy: Dictionary) -> void:
 			draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
 			draw_circle(center, 5.0 * core_p, Color("ffffff"))
 			draw_circle(center, 3.0 * core_p, Color("ef75ff"))
-		var badge := center + Vector2(0, -half_size - 12.0)
-		draw_circle(badge, 8.0, Color("170b2d", 0.95))
-		draw_arc(badge, 8.0, 0.0, TAU, 16, Color("efb4ff"), 1.2, true)
-		draw_string(font, badge + Vector2(-6, 4), str(enemy.get("symbol", "P")), HORIZONTAL_ALIGNMENT_CENTER, 12, 10, Color("ffffff"))
 		return
 
 	# Fallback para outros mobs

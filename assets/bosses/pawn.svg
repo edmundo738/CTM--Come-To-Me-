@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+<defs>
+ <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#667a96"/><stop offset=".35" stop-color="#283249"/><stop offset=".72" stop-color="#0d1321"/><stop offset="1" stop-color="#050913"/></linearGradient>
+ <linearGradient id="armor" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#d8ffff"/><stop offset=".19" stop-color="#5ff6ef"/><stop offset=".49" stop-color="#168f9c"/><stop offset="1" stop-color="#101123"/></linearGradient>
+ <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#d8ffff"/><stop offset=".5" stop-color="#5ff6ef"/><stop offset="1" stop-color="#168f9c"/></linearGradient>
+ <radialGradient id="core" cx=".38" cy=".32" r=".72"><stop stop-color="#ffffff"/><stop offset=".32" stop-color="#d8ffff"/><stop offset=".72" stop-color="#5ff6ef"/><stop offset="1" stop-color="#168f9c"/></radialGradient>
+</defs>
+<!-- Grounded, layered plinth; body is deliberately unique to each piece. -->
+<ellipse cx="96" cy="165" rx="65" ry="16" fill="#030510" opacity=".58"/>
+<ellipse cx="96" cy="159" rx="57" ry="12" fill="#5ff6ef" opacity=".14"/>
+<path d="M45 139 Q48 133 58 132 H134 Q144 133 147 139 L153 149 147 161 Q96 171 45 161 L39 149Z" fill="url(#metal)" stroke="#060912" stroke-width="5" stroke-linejoin="round"/>
+<path d="M46 145 Q96 151 146 145 L145 155 Q96 163 47 155Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M55 151 Q96 156 137 151" fill="none" stroke="#d8ffff" stroke-opacity=".65" stroke-width="2"/>
+
+<!-- Orb head and a tapered armoured pedestal: the pawn's silhouette. -->
+<path d="M67 77 L54 95 57 121 44 143 148 143 135 121 138 95 125 77Z" fill="url(#metal)" stroke="#070b18" stroke-width="5" stroke-linejoin="round"/>
+<path d="M65 88 L76 95 72 122 61 135 55 134 62 116Z" fill="#415b72"/>
+<path d="M127 88 L116 95 120 122 131 135 137 134 130 116Z" fill="#0a1427"/>
+<path d="M76 98 L116 98 124 131 68 131Z" fill="url(#armor)" stroke="#101a2b" stroke-width="3"/>
+<path d="M81 106 L96 100 111 106 107 124 96 130 85 124Z" fill="#0b1425" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M96 106 L103 114 96 122 89 114Z" fill="url(#core)"/>
+<circle cx="96" cy="58" r="30" fill="#07111f" stroke="#02050c" stroke-width="5"/>
+<circle cx="96" cy="56" r="25" fill="url(#armor)" stroke="url(#edge)" stroke-width="3"/>
+<path d="M76 58 Q96 43 116 58 Q96 69 76 58Z" fill="#081624" stroke="#93f8fb" stroke-width="2"/>
+<circle cx="96" cy="57" r="7" fill="url(#core)"/><circle cx="93" cy="53" r="2" fill="#fff"/>
+<path d="M79 45 Q89 29 106 34" fill="none" stroke="#d9ffff" stroke-opacity=".55" stroke-width="3" stroke-linecap="round"/>
+
+</svg>

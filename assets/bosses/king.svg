@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+<defs>
+ <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#667a96"/><stop offset=".35" stop-color="#283249"/><stop offset=".72" stop-color="#0d1321"/><stop offset="1" stop-color="#050913"/></linearGradient>
+ <linearGradient id="armor" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#fff3c2"/><stop offset=".19" stop-color="#ffd474"/><stop offset=".49" stop-color="#b87925"/><stop offset="1" stop-color="#101123"/></linearGradient>
+ <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#fff3c2"/><stop offset=".5" stop-color="#ffd474"/><stop offset="1" stop-color="#b87925"/></linearGradient>
+ <radialGradient id="core" cx=".38" cy=".32" r=".72"><stop stop-color="#ffffff"/><stop offset=".32" stop-color="#fff3c2"/><stop offset=".72" stop-color="#ffd474"/><stop offset="1" stop-color="#b87925"/></radialGradient>
+</defs>
+<!-- Grounded, layered plinth; body is deliberately unique to each piece. -->
+<ellipse cx="96" cy="165" rx="65" ry="16" fill="#030510" opacity=".58"/>
+<ellipse cx="96" cy="159" rx="57" ry="12" fill="#ffd474" opacity=".14"/>
+<path d="M45 139 Q48 133 58 132 H134 Q144 133 147 139 L153 149 147 161 Q96 171 45 161 L39 149Z" fill="url(#metal)" stroke="#060912" stroke-width="5" stroke-linejoin="round"/>
+<path d="M46 145 Q96 151 146 145 L145 155 Q96 163 47 155Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M55 151 Q96 156 137 151" fill="none" stroke="#fff3c2" stroke-opacity=".65" stroke-width="2"/>
+
+<!-- Broad regal silhouette, floating pauldrons and a true king's finial. -->
+<path d="M88 21 V9 H104 V21 H116 V34 H104 V46 H88 V34 H76 V21Z" fill="url(#armor)" stroke="#17100a" stroke-width="4" stroke-linejoin="round"/>
+<path d="M92 14 H100 V25 H111 V30 H100 V42 H92 V30 H81 V25 H92Z" fill="url(#core)"/>
+<path d="M43 58 L55 44 72 54 79 45 H113 L120 54 137 44 149 58 141 83 157 97 148 127 138 138 H54 L44 127 35 97 51 83Z" fill="url(#metal)" stroke="#100c11" stroke-width="5" stroke-linejoin="round"/>
+<path d="M50 61 L58 52 73 62 82 52 H110 L119 62 134 52 142 61 133 83 H59Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="3"/>
+<path d="M54 87 L71 81 H121 L138 87 145 99 137 126 128 136 H64 L55 126 47 99Z" fill="url(#armor)" stroke="#352415" stroke-width="3"/>
+<path d="M48 91 L64 87 70 99 60 122 48 118 42 101Z M144 91 L128 87 122 99 132 122 144 118 150 101Z" fill="#32251c" stroke="#ffcc70" stroke-width="2.5"/>
+<path d="M75 91 H117 L122 108 112 126 H80 L70 108Z" fill="#1a1421" stroke="#ffd98d" stroke-width="2.5"/>
+<path d="M96 94 L109 105 104 118 H88 L83 105Z" fill="url(#core)"/>
+<path d="M85 58 L96 65 107 58" fill="none" stroke="#fff1c3" stroke-width="3" stroke-linecap="round"/>
+
+</svg>

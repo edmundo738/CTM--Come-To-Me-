@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+<defs>
+ <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#667a96"/><stop offset=".35" stop-color="#283249"/><stop offset=".72" stop-color="#0d1321"/><stop offset="1" stop-color="#050913"/></linearGradient>
+ <linearGradient id="armor" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#ffe1fa"/><stop offset=".19" stop-color="#f578dc"/><stop offset=".49" stop-color="#9d327d"/><stop offset="1" stop-color="#101123"/></linearGradient>
+ <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#ffe1fa"/><stop offset=".5" stop-color="#f578dc"/><stop offset="1" stop-color="#9d327d"/></linearGradient>
+ <radialGradient id="core" cx=".38" cy=".32" r=".72"><stop stop-color="#ffffff"/><stop offset=".32" stop-color="#ffe1fa"/><stop offset=".72" stop-color="#f578dc"/><stop offset="1" stop-color="#9d327d"/></radialGradient>
+</defs>
+<!-- Grounded, layered plinth; body is deliberately unique to each piece. -->
+<ellipse cx="96" cy="165" rx="65" ry="16" fill="#030510" opacity=".58"/>
+<ellipse cx="96" cy="159" rx="57" ry="12" fill="#f578dc" opacity=".14"/>
+<path d="M45 139 Q48 133 58 132 H134 Q144 133 147 139 L153 149 147 161 Q96 171 45 161 L39 149Z" fill="url(#metal)" stroke="#060912" stroke-width="5" stroke-linejoin="round"/>
+<path d="M46 145 Q96 151 146 145 L145 155 Q96 163 47 155Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M55 151 Q96 156 137 151" fill="none" stroke="#ffe1fa" stroke-opacity=".65" stroke-width="2"/>
+
+<!-- Five-pointed crown with wide floating side plates and a faceted core. -->
+<path d="M31 65 L45 72 38 40 58 54 68 21 84 49 96 18 108 49 124 21 134 54 154 40 147 72 161 65 150 102 135 112 146 139 46 139 57 112 42 102Z" fill="url(#metal)" stroke="#100918" stroke-width="5" stroke-linejoin="round"/>
+<path d="M42 49 L62 67 70 32 85 59 96 29 107 59 122 32 130 67 150 49 141 91 51 91Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="42" cy="47" r="5" fill="url(#core)"/><circle cx="70" cy="29" r="5" fill="url(#core)"/><circle cx="96" cy="26" r="6" fill="url(#core)"/><circle cx="122" cy="29" r="5" fill="url(#core)"/><circle cx="150" cy="47" r="5" fill="url(#core)"/>
+<path d="M52 92 Q96 105 140 92 L133 111 121 118 128 134 H64 L71 118 59 111Z" fill="url(#armor)" stroke="#4c1644" stroke-width="3"/>
+<path d="M72 99 L96 94 120 99 115 117 96 127 77 117Z" fill="#200f29" stroke="#ffb4ed" stroke-width="2"/>
+<path d="M96 99 L108 109 96 120 84 109Z" fill="url(#core)"/>
+<path d="M39 80 L24 88 40 97 M153 80 L168 88 152 97" fill="none" stroke="#ffa7ef" stroke-width="3" stroke-linecap="round"/>
+
+</svg>

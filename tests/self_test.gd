@@ -34,6 +34,8 @@ func _run_tests() -> void:
 	_expect(game.audio.effects.has("coin") and game.audio.effects.has("shield"), "action sound effects are synthesized")
 	_expect(game.audio.effects.has("inflate") and game.audio.effects.has("balloon_pop"), "capture has its own rising squeak and pop cues")
 	_expect(game.audio.effects.has("break_wall") and game.audio.effects.has("breaker"), "wall breaking and its power-up have separate sound cues")
+	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
+		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "new action has synthesized audio: " + cue)
 	_expect(game.capture_overlay != null and game.capture_material != null, "capture has a camera-darkening overlay")
 	_expect(game.audio.music_player.stream.get_length() >= 38.0 and game.audio.music_player.stream.stereo, "music is an arranged 40-second stereo track with bass, melody and percussion")
 	_expect(is_equal_approx(game.audio.threat_player.stream.get_length(), game.audio.music_player.stream.get_length()), "enemy-tension layer stays synchronized with the score")
@@ -49,9 +51,12 @@ func _run_tests() -> void:
 	_test_restart_and_checkpoints(game)
 	_test_turn_edge_cases(game)
 	_test_chess_bosses(game)
+	_test_powerups(game)
+	_test_puzzle_floor(game)
+	_test_patrol_mirror_and_rhythm(game)
 	_test_capture_sequence(game)
 	if failures.is_empty():
-		print("SELFTEST_PASS: WFC, biomas, desafios, recompensas, checkpoint, repeticao, turnos, danos, chefes de xadrez, demolicao, captura e audio")
+		print("SELFTEST_PASS: WFC, desafios, checkpoint, chefes, mini-chefe, poderes, puzzles, patrulha, espelho, armadilhas, captura e audio")
 	else:
 		printerr("SELFTEST_FAIL: %d check(s): %s" % [failures.size(), "; ".join(failures)])
 	game.audio.stop_all()
@@ -119,6 +124,7 @@ func _test_profile_roundtrip() -> void:
 	writer.resume_coins = 23
 	writer.resume_charges = 2
 	writer.resume_breach_charges = 3
+	writer.resume_powers = {"speed_turns": 5, "speed_phase": 1, "magnet_turns": 6, "freeze_turns": 2, "blink_charges": 4}
 	writer.resume_facing = Vector2i.UP
 	writer.resume_seed = 9001
 	writer.resume_history.append(5)
@@ -129,6 +135,7 @@ func _test_profile_roundtrip() -> void:
 	_expect(reader.furthest_floor == 4 and reader.floor_stars.get("1", 0) == 5 and reader.floor_stars.get("3", 0) == 2, "profile saves the unlocked campaign and best stars")
 	_expect(reader.has_resume and reader.resume_floor == 4 and reader.resume_coins == 23 and reader.resume_seed == 9001 and reader.resume_history == [5], "profile restores the continue checkpoint")
 	_expect(reader.resume_charges == 2 and reader.resume_breach_charges == 3 and reader.resume_facing == Vector2i.UP, "profile restores shield, demolition and facing at checkpoint")
+	_expect(reader.resume_powers == writer.resume_powers, "profile round-trips all power durations, charges and speed phase")
 	var legacy := ConfigFile.new()
 	legacy.set_value("progress", "has_resume", true)
 	legacy.set_value("progress", "resume_floor", 3)
@@ -138,6 +145,7 @@ func _test_profile_roundtrip() -> void:
 	old_reader.profile_path = path
 	old_reader._load_profile()
 	_expect(old_reader.resume_floor == 3 and old_reader.resume_coins == 8 and old_reader.resume_charges == 0 and old_reader.resume_breach_charges == 0 and old_reader.resume_facing == Vector2i.RIGHT, "legacy checkpoints load with safe inventory defaults")
+	_expect(old_reader.resume_powers == {"speed_turns": 0, "speed_phase": 0, "magnet_turns": 0, "freeze_turns": 0, "blink_charges": 0}, "legacy profiles default every new power to zero")
 	old_reader.free()
 	writer.free()
 	reader.free()
@@ -161,6 +169,8 @@ func _test_turn_loop(game: Node) -> void:
 	game.player_anim = 1.0
 	game.coins.clear()
 	game.shields.clear()
+	game.powerups.clear()
+	game._restore_power_state({})
 	game.switches.clear()
 	game.traps.clear()
 	game._update_enemy_intents()
@@ -259,20 +269,22 @@ func _test_large_camera_and_rescue(game: Node) -> void:
 	for enemy in game.enemies:
 		roles.append(enemy.get("role", "hunter"))
 	_expect(roles.has("sentry") and roles.has("wisp"), "later floors add sentries and slower wisp pursuers")
-	game.generate_floor(5)
 	var warden_index := -1
 	for i in game.enemies.size():
 		if game.enemies[i].get("role", "") == "warden":
 			warden_index = i
 			break
-	_expect(warden_index >= 0, "final floor spawns a distinct warden boss")
+	_expect(warden_index >= 0 and game.get_active_boss().is_empty(), "fourth floor keeps the Warden as a separate mini-boss without a chess boss bar")
 	if warden_index >= 0:
 		var warden: Dictionary = game.enemies[warden_index]
 		var contact: Vector2i = warden.pos
 		game.player_position = contact
 		game.charges = 1
+		game.damage_this_turn = false
 		game._check_enemy_collision()
-		_expect(game.charges == 0 and game.enemies[warden_index].pos != contact, "shield staggers the warden and creates an escape opening")
+		_expect(game.charges == 0 and game.enemies[warden_index].pos != contact, "shield staggers the Warden and creates an escape opening")
+	game.generate_floor(5)
+	_expect(game.get_active_boss().get("role", "") == "chess_boss" and game.get_active_boss().get("boss_kind", "") == "pawn", "fifth floor spawns the distinct pawn boss, not the Warden")
 	game.floor_number = 5
 	game.portal_open = true
 	game.game_state = "playing"
@@ -296,6 +308,8 @@ func _test_arena(game: Node) -> void:
 	game.coins.clear()
 	game.shields.clear()
 	game.breakers.clear()
+	game.powerups.clear()
+	game._restore_power_state({})
 	game.switches.clear()
 	game.traps.clear()
 	game.player_position = Vector2i(4, 4)
@@ -384,6 +398,7 @@ func _test_restart_and_checkpoints(game: Node) -> void:
 	game.total_coins = 27
 	game.charges = 2
 	game.breach_charges = 3
+	game._restore_power_state({"speed_turns": 5, "speed_phase": 1, "magnet_turns": 6, "freeze_turns": 2, "blink_charges": 4})
 	game.facing = Vector2i.UP
 	game.generate_floor(4)
 	game.game_state = "playing"
@@ -395,6 +410,7 @@ func _test_restart_and_checkpoints(game: Node) -> void:
 	game.total_coins = 99
 	game.charges = 0
 	game.breach_charges = 0
+	game._restore_power_state({})
 	game.floor_history.append(1)
 	game.facing = Vector2i.LEFT
 	game.coins.clear()
@@ -404,16 +420,19 @@ func _test_restart_and_checkpoints(game: Node) -> void:
 	game._unhandled_key_input(restart_key)
 	_expect(game.floor_number == 4 and game.active_seed == 28373 and game.total_coins == 27, "R restores floor, seed and pre-floor coins")
 	_expect(game.charges == 2 and game.breach_charges == 3 and game.facing == Vector2i.UP and game.floor_history == [3, 4, 5], "R preserves inventory, facing and completed-floor history")
+	_expect(game._capture_power_state() == {"speed_turns": 5, "speed_phase": 1, "magnet_turns": 6, "freeze_turns": 2, "blink_charges": 4}, "R restores power durations, speed phase and blink charges from floor entry")
 	_expect(game.grid == original_grid and game.coins == original_coins and game.enemies == original_enemies and game.challenge_kind == original_challenge and game.challenge_par == original_par, "R regenerates exactly the same seeded floor and challenge")
 	game.total_coins = 88
 	game.charges = 0
 	game.breach_charges = 0
+	game._restore_power_state({})
 	game.floor_history.append(1)
 	game._begin_capture("TEST", Color.WHITE)
 	game._update_capture_sequence(game.CAPTURE_END_TIME + 0.1)
 	_expect(game.game_state == "game_over" and game.resume_coins == 27 and game.resume_charges == 2 and game.resume_breach_charges == 3 and game.resume_history == [3, 4, 5], "defeat saves the complete floor-start snapshot")
 	game.continue_game()
 	_expect(game.floor_number == 4 and game.total_coins == 27 and game.charges == 2 and game.breach_charges == 3 and game.facing == Vector2i.UP, "continue restores the same floor-start resources")
+	_expect(game.speed_turns == 5 and game.speed_phase == 1 and game.magnet_turns == 6 and game.freeze_turns == 2 and game.blink_charges == 4, "death and continue restore the power snapshot, not the mid-floor state")
 	_expect(game.grid == original_grid and game.coins == original_coins, "continue regenerates the same map and pickups")
 	game.portal_open = true
 	game.player_position = game.portal_position
@@ -473,10 +492,21 @@ func _test_turn_edge_cases(game: Node) -> void:
 func _test_chess_bosses(game: Node) -> void:
 	_test_arena(game)
 	var types := ["pawn", "rook", "knight", "bishop", "queen", "king", "pawn"]
+	var health := [2, 3, 4, 5, 6, 7, 2]
 	for i in types.size():
 		game.floor_number = (i + 1) * 5
 		var piece: Dictionary = game._make_boss(Vector2i(2, 2))
-		_expect(piece.boss_kind == types[i] and piece.hp >= 2, "chess bosses cycle every five floors and resist a single hit")
+		_expect(piece.boss_kind == types[i] and piece.hp == health[i] and piece.max_hp == health[i] and piece.role == "chess_boss" and not piece.has("symbol"), "distinct chess bosses cycle every five floors, resist a hit and carry no letter badge")
+	_expect(game.BOSS_TEXTURES.size() == 6, "all six chess bosses have separate artwork")
+	var art_hashes := {}
+	for kind in ["pawn", "rook", "knight", "bishop", "queen", "king"]:
+		var svg := FileAccess.get_file_as_string("res://assets/bosses/%s.svg" % kind)
+		var image := Image.new()
+		var result := image.load_svg_from_string(svg)
+		_expect(result == OK and image.get_width() == 192 and image.get_height() == 192 and not svg.contains("<text"), "piece artwork is valid SVG with no overlaid letter: " + kind)
+		if result == OK:
+			art_hashes[hash(image.get_data())] = true
+	_expect(art_hashes.size() == 6, "Godot rasterizes six visually distinct chess-piece assets")
 	game.player_position = Vector2i(8, 4)
 	game.floor_number = 10
 	var rook: Dictionary = game._make_boss(Vector2i(2, 4))
@@ -522,6 +552,224 @@ func _test_chess_bosses(game: Node) -> void:
 	game.enemies.append(counter)
 	game._check_enemy_collision()
 	_expect(game.charges == 0 and game.enemies.size() == 1 and game.enemies[0].hp == 1 and game.enemies[0].pos != game.player_position, "shield counter damages and staggers a boss")
+
+
+func _test_powerups(game: Node) -> void:
+	# Each floor advertises the next pickup deterministically and on reachable floor.
+	for number in range(1, 5):
+		game.active_seed = 12900
+		game.generate_floor(number)
+		_expect(game.powerups.size() == 1 and game.powerups[0].kind == game.POWERUP_TYPES[number - 1], "all four ability pickups appear in successive floors")
+		_expect(game._reachable_cells(game.player_position).has(game.powerups[0].pos), "power pickup is reachable")
+
+	_test_arena(game)
+	game.dev_god_mode = true
+	game.powerups.append({"pos": Vector2i(5, 4), "kind": "speed"})
+	game.enemies.append(game._make_enemy(Vector2i(2, 4), "hunter"))
+	game._update_enemy_intents()
+	game.try_move(1, 0)
+	_expect(game.powerups.is_empty() and game.speed_turns == 5 and game.speed_phase == 1 and game.enemies[0].pos == Vector2i(2, 4), "speed is collected on entry and immediately skips the first enemy action")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(3, 4) and game.speed_phase == 0, "speed lets enemies advance on the alternate action")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(3, 4), "speed skips the next alternate enemy action")
+	for i in 3:
+		game.wait_turn()
+	_expect(game.speed_turns == 0 and game.speed_phase == 0, "speed expires after six spent actions including pickup")
+
+	_test_arena(game)
+	game.total_coins = 0
+	game.grid[4][5] = game.TILE_WALL
+	game.coins.assign([Vector2i(4, 5), Vector2i(4, 6), Vector2i(6, 4)])
+	game.powerups.append({"pos": game.player_position, "kind": "magnet"})
+	game._collect_pickups()
+	_expect(game.magnet_turns == 8 and game.total_coins == 2 and game.coins == [Vector2i(6, 4)], "magnet picks up coins within two reachable steps but not through a wall")
+	for i in 8:
+		game.wait_turn()
+	_expect(game.magnet_turns == 0, "magnet expires after eight spent actions")
+
+	_test_arena(game)
+	game.powerups.append({"pos": game.player_position, "kind": "blink"})
+	game._collect_pickups()
+	game.grid[4][5] = game.TILE_WALL
+	game.facing = Vector2i.RIGHT
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.keycode = KEY_Q
+	game._unhandled_key_input(key)
+	_expect(game.player_position == Vector2i(7, 4) and game.blink_charges == 0 and game.turn_number == 1 and game.player_anim == 1.0 and game.player_from == game.player_to, "Q blink instantly crosses an internal wall to the farthest floor within three cells and costs a turn")
+	game.player_position = Vector2i(10, 4)
+	game.blink_charges = 1
+	var before_turn: int = game.turn_number
+	game.handle_hud_action("blink")
+	_expect(game.player_position == Vector2i(10, 4) and game.blink_charges == 1 and game.turn_number == before_turn, "blink cannot cross a border and a failed blink costs neither charge nor turn")
+	_test_arena(game)
+	game.blink_charges = 1
+	var shoulder := InputEventJoypadButton.new()
+	shoulder.pressed = true
+	shoulder.button_index = JOY_BUTTON_RIGHT_SHOULDER
+	game._unhandled_input(shoulder)
+	_expect(game.player_position == Vector2i(7, 4) and game.blink_charges == 0, "right shoulder on a gamepad activates blink")
+	_test_arena(game)
+	game.blink_charges = 1
+	game.handle_hud_action("blink")
+	_expect(game.player_position == Vector2i(7, 4) and game.blink_charges == 0, "HUD blink button performs the same action")
+
+	_test_arena(game)
+	game.powerups.append({"pos": Vector2i(5, 4), "kind": "time_freeze"})
+	game.enemies.append(game._make_enemy(Vector2i(2, 4), "hunter"))
+	game._update_enemy_intents()
+	game.try_move(1, 0)
+	_expect(game.freeze_turns == 3 and game.enemies[0].pos == Vector2i(2, 4), "freeze takes effect on the pickup action")
+	for i in 3:
+		game.wait_turn()
+	_expect(game.freeze_turns == 0 and game.enemies[0].pos == Vector2i(2, 4), "freeze immobilizes enemies for exactly four spent actions")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(3, 4), "enemies resume movement after freeze expires")
+	_test_arena(game)
+	game.freeze_turns = 3
+	game.charges = 1
+	game.enemies.append(game._make_enemy(Vector2i(5, 4), "hunter"))
+	game.try_move(1, 0)
+	_expect(game.charges == 0 and game.hits_this_floor == 1, "moving into a frozen enemy still causes contact damage")
+	_test_arena(game)
+	game.speed_turns = 2
+	game.speed_phase = 1
+	game.freeze_turns = 1
+	game.enemies.append(game._make_enemy(Vector2i(2, 4), "hunter"))
+	game._update_enemy_intents()
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(2, 4) and game.freeze_turns == 0 and game.speed_turns == 1 and game.speed_phase == 0, "freeze overrides speed while both timers advance")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(2, 4) and game.speed_turns == 0, "remaining speed phase still skips its scheduled action after freeze")
+
+	_test_arena(game)
+	game.floor_number = 1
+	game.portal_position = Vector2i(5, 4)
+	game.speed_turns = 2
+	game.speed_phase = 1
+	game.magnet_turns = 3
+	game.freeze_turns = 1
+	game.blink_charges = 2
+	game.try_move(1, 0)
+	_expect(game.game_state == "floor_clear" and game.resume_powers == {"speed_turns": 1, "speed_phase": 0, "magnet_turns": 2, "freeze_turns": 0, "blink_charges": 2}, "portal checkpoint saves the effects remaining after the action")
+	game.new_game(12001)
+	_expect(game._capture_power_state() == {"speed_turns": 0, "speed_phase": 0, "magnet_turns": 0, "freeze_turns": 0, "blink_charges": 0}, "new campaign resets all powers")
+
+
+func _test_puzzle_floor(game: Node) -> void:
+	game.active_seed = 77123
+	for number in [3, 8, 13]:
+		game.generate_floor(number)
+		_expect(game.objective_type == "puzzle" and game.enemies.is_empty() and game.traps.is_empty(), "puzzle floors contain no enemies or traps")
+		_expect(game.switches.size() == 3 and not game.portal_open and game._estimate_route_length() >= 0, "puzzle has three ordered runes and a solvable route")
+		_expect(game.challenge_par >= game._estimate_route_length(), "puzzle move challenge includes the ordered route")
+
+	_test_arena(game)
+	game.objective_type = "puzzle"
+	game.portal_open = false
+	game.switches.assign([
+		{"pos": Vector2i(3, 4), "active": false, "order": 0},
+		{"pos": Vector2i(5, 4), "active": false, "order": 1},
+		{"pos": Vector2i(7, 4), "active": false, "order": 2},
+	])
+	game.player_position = Vector2i(3, 4)
+	game._activate_switches()
+	_expect(game._active_switches() == 1 and not game.portal_open, "first puzzle rune lights without opening the portal")
+	game.player_position = Vector2i(7, 4)
+	game._activate_switches()
+	_expect(game._active_switches() == 0 and not game.portal_open, "touching a future rune resets the whole sequence")
+	for item in game.switches:
+		game.player_position = item.pos
+		game._activate_switches()
+	_expect(game._active_switches() == 3 and game.portal_open, "cyan, amber and violet in order open the portal")
+
+	# Connected cells alone do not guarantee a solvable sequence. Here the
+	# violet rune blocks the only path from cyan to amber.
+	_test_arena(game)
+	for y in range(1, game.world_size.y - 1):
+		for x in range(1, game.world_size.x - 1):
+			game.grid[y][x] = game.TILE_WALL
+	for x in range(1, game.world_size.x - 1):
+		game.grid[4][x] = game.TILE_FLOOR
+	game.player_position = Vector2i(1, 4)
+	game.player_from = game._cell_center(game.player_position)
+	game.player_to = game.player_from
+	game.portal_position = Vector2i(10, 4)
+	game.objective_type = "puzzle"
+	game.portal_open = false
+	game.switches.assign([
+		{"pos": Vector2i(3, 4), "active": false, "order": 0},
+		{"pos": Vector2i(7, 4), "active": false, "order": 1},
+		{"pos": Vector2i(5, 4), "active": false, "order": 2},
+	])
+	_expect(game._estimate_route_length() == -1, "puzzle solver rejects a connected but impossible rune order")
+	game.switches[1].pos = Vector2i(5, 4)
+	game.switches[2].pos = Vector2i(7, 4)
+	_expect(game._estimate_route_length() == 9, "puzzle route length includes the actual ordered sequence")
+	var actions := 0
+	while game.game_state == "playing" and actions < 20:
+		var plan: Dictionary = game._plan_puzzle_route()
+		var step: Vector2i = plan.step
+		if step == Vector2i.ZERO:
+			break
+		game.try_move(step.x, step.y)
+		actions += 1
+	_expect(actions == 9 and game.game_state in ["floor_clear", "rescued"], "following the puzzle solver completes the entire sequence and reaches the portal")
+
+
+func _test_patrol_mirror_and_rhythm(game: Node) -> void:
+	_test_arena(game)
+	var patrol: Dictionary = game._make_enemy(Vector2i(7, 6), "patrol")
+	patrol.patrol_dir = Vector2i.RIGHT
+	game.enemies.append(patrol)
+	game.grid[6][8] = game.TILE_WALL
+	game._update_enemy_intents()
+	_expect(game.enemies[0].patrol_dir == Vector2i.DOWN and game.enemies[0].next == Vector2i(7, 7), "patrol turns clockwise when a wall blocks its line")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(7, 7), "patrol advances along its chosen line")
+
+	_test_arena(game)
+	game.enemies.append(game._make_enemy(Vector2i(8, 4), "mirror"))
+	game._update_enemy_intents()
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(7, 4), "mirror reacts in the opposite direction to the player's move")
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(7, 4), "mirror remains stationary when the player waits")
+	game.grid[3][7] = game.TILE_WALL
+	game.try_move(0, 1)
+	_expect(game.enemies[0].pos == Vector2i(7, 4), "mirror cannot move into a wall")
+
+	_test_arena(game)
+	game.enemies.append(game._make_enemy(Vector2i(8, 4), "mirror"))
+	var other: Dictionary = game._make_enemy(Vector2i(6, 5), "hunter")
+	other.next = Vector2i(7, 4)
+	game.enemies.append(other)
+	game._plan_reactive_mirrors(Vector2i.RIGHT)
+	_expect(game.enemies[0].next == Vector2i(8, 4), "mirror respects another pursuer's reserved landing")
+
+	_test_arena(game)
+	game.breach_charges = 1
+	game.freeze_turns = 2
+	game.enemies.append(game._make_warden(Vector2i(5, 4)))
+	game.try_break_wall()
+	_expect(game.enemies.size() == 1 and game.enemies[0].role == "warden" and game.enemies[0].hp == 2 and game.get_active_boss().is_empty(), "one demolition damages but does not erase the separate Warden mini-boss")
+
+	_test_arena(game)
+	var trap := {"pos": game.player_position, "type": "rhythm", "phase": 2, "armed": true, "revealed": true}
+	game.traps.append(trap)
+	game.charges = 2
+	game.freeze_turns = 4
+	game.grid[4][3] = game.TILE_WALL
+	game.try_move(-1, 0)
+	_expect(game.turn_number == 0 and game._rhythm_is_hot(trap, game.turn_number + 1), "blocked movement does not advance the rhythm; indicator previews the next action")
+	game.wait_turn()
+	_expect(game.charges == 1 and game.traps[0].armed and game.freeze_turns == 3, "rhythm trap strikes on the indicated phase even during time freeze")
+	game.wait_turn()
+	game.wait_turn()
+	_expect(game.charges == 1 and game._rhythm_is_hot(trap, game.turn_number + 1), "the two following rhythm phases are safe and the next is dangerous")
+	game.wait_turn()
+	_expect(game.charges == 0 and game.traps[0].armed, "rhythm trap can strike again on the next cycle")
 
 
 func _test_capture_sequence(game: Node) -> void:
