@@ -95,6 +95,9 @@ var capture_popped := false
 var capture_puddle_active := false
 var capture_puddle_points := PackedVector2Array()
 var capture_splats: Array[Dictionary] = []
+var capture_shockwave_radius := 0.0
+var capture_chromatic := 0.0
+var capture_noise := 0.0
 var font: Font
 
 
@@ -166,6 +169,9 @@ func new_game(seed_value: int = -1) -> void:
 	capture_puddle_active = false
 	capture_puddle_points.clear()
 	capture_splats.clear()
+	capture_shockwave_radius = 0.0
+	capture_chromatic = 0.0
+	capture_noise = 0.0
 	game_state = "playing"
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
@@ -189,6 +195,9 @@ func continue_game() -> void:
 	capture_puddle_active = false
 	capture_puddle_points.clear()
 	capture_splats.clear()
+	capture_shockwave_radius = 0.0
+	capture_chromatic = 0.0
+	capture_noise = 0.0
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
 	generate_floor(resume_floor)
@@ -211,6 +220,9 @@ func start_level(number: int) -> void:
 	capture_puddle_active = false
 	capture_puddle_points.clear()
 	capture_splats.clear()
+	capture_shockwave_radius = 0.0
+	capture_chromatic = 0.0
+	capture_noise = 0.0
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
 	generate_floor(number)
@@ -866,6 +878,9 @@ func _begin_capture(message: String, color: Color) -> void:
 	capture_puddle_active = false
 	capture_puddle_points.clear()
 	capture_splats.clear()
+	capture_shockwave_radius = 0.0
+	capture_chromatic = 0.0
+	capture_noise = 0.0
 	player_from = capture_origin
 	player_to = capture_origin
 	player_anim = 1.0
@@ -892,11 +907,14 @@ func _trigger_capture_burst() -> void:
 		capture_splats.append({"pos": capture_origin + offset, "radius": rng.randf_range(2.5, 8.0)})
 	_spawn_blood_burst(capture_origin)
 	audio.play("balloon_pop")
-	shake_time = 0.48
-	shake_strength = 18.0
-	flash_time = 0.26
+	shake_time = 0.55
+	shake_strength = 22.0
+	flash_time = 0.28
 	flash_color = Color("ff224d")
 	capture_flash = 1.0
+	capture_shockwave_radius = 0.05
+	capture_chromatic = 1.0
+	capture_noise = 0.85
 
 
 func _make_puddle_outline() -> PackedVector2Array:
@@ -904,20 +922,51 @@ func _make_puddle_outline() -> PackedVector2Array:
 	var points := 28
 	for i in points:
 		var angle := TAU * float(i) / points
-		var roughness := rng.randf_range(0.955, 1.045)
-		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.30 * roughness, sin(angle) * CELL * 1.18 * roughness))
+		var roughness := rng.randf_range(0.965, 1.035)
+		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.28 * roughness, sin(angle) * CELL * 1.16 * roughness))
 	return outline
 
 
 func _spawn_blood_burst(origin: Vector2) -> void:
-	for i in 64:
-		var angle := TAU * float(i) / 64.0 + rng.randf_range(-0.16, 0.16)
-		var speed := rng.randf_range(72.0, 245.0)
-		var color := Color("ff3154") if i % 4 == 0 else Color("b60d31") if i % 3 == 0 else Color("e81e43")
-		particles.append({"kind": "blood", "pos": origin, "velocity": Vector2(cos(angle), sin(angle)) * speed, "life": rng.randf_range(0.48, 1.05), "max_life": 1.05, "color": color, "size": rng.randf_range(2.8, 6.2), "gravity": rng.randf_range(175.0, 330.0)})
-	for i in 18:
-		var offset := Vector2(rng.randf_range(-CELL * 0.56, CELL * 0.56), rng.randf_range(-CELL * 0.48, CELL * 0.48))
-		particles.append({"kind": "blood", "pos": origin + offset, "velocity": Vector2(rng.randf_range(-42.0, 42.0), rng.randf_range(-52.0, 28.0)), "life": rng.randf_range(0.3, 0.62), "max_life": 0.62, "color": Color("ff5b70"), "size": rng.randf_range(1.6, 3.4), "gravity": 120.0})
+	# Onda de choque no sistema de partículas
+	particles.append({
+		"kind": "shockwave",
+		"pos": origin,
+		"velocity": Vector2.ZERO,
+		"radius": 10.0,
+		"max_radius": CELL * 3.2,
+		"life": 0.45,
+		"max_life": 0.45,
+		"color": Color("ff3b65")
+	})
+	# Estilhaços arteriais em alta velocidade
+	for i in 75:
+		var angle := TAU * float(i) / 75.0 + rng.randf_range(-0.18, 0.18)
+		var speed := rng.randf_range(90.0, 310.0)
+		var color := Color("ff3154") if i % 4 == 0 else Color("8a051e") if i % 3 == 0 else Color("d6123a")
+		particles.append({
+			"kind": "blood",
+			"pos": origin,
+			"velocity": Vector2(cos(angle), sin(angle)) * speed,
+			"life": rng.randf_range(0.55, 1.15),
+			"max_life": 1.15,
+			"color": color,
+			"size": rng.randf_range(3.2, 7.5),
+			"gravity": rng.randf_range(160.0, 360.0)
+		})
+	# Gotas pesadas viscosas perto do ponto de impacto
+	for i in 25:
+		var offset := Vector2(rng.randf_range(-CELL * 0.65, CELL * 0.65), rng.randf_range(-CELL * 0.55, CELL * 0.55))
+		particles.append({
+			"kind": "blood",
+			"pos": origin + offset,
+			"velocity": Vector2(rng.randf_range(-55.0, 55.0), rng.randf_range(-65.0, 35.0)),
+			"life": rng.randf_range(0.35, 0.8),
+			"max_life": 0.8,
+			"color": Color("ff637b"),
+			"size": rng.randf_range(2.0, 4.5),
+			"gravity": 140.0
+		})
 
 
 func _update_capture_sequence(delta: float) -> void:
@@ -927,21 +976,30 @@ func _update_capture_sequence(delta: float) -> void:
 			var progress := clampf(capture_time / CAPTURE_POP_TIME, 0.0, 1.0)
 			capture_darkness = lerpf(0.0, 0.44, progress * progress)
 			capture_flash = 0.035 + absf(sin(capture_time * 36.0)) * 0.11 if progress > 0.28 else 0.0
+			capture_chromatic = progress * 0.25
+			capture_noise = progress * 0.20
 		else:
 			if not capture_popped:
 				_trigger_capture_burst()
 			var aftermath := clampf((capture_time - CAPTURE_POP_TIME) / (CAPTURE_END_TIME - CAPTURE_POP_TIME), 0.0, 1.0)
 			capture_darkness = lerpf(0.44, 0.91, smoothstep(0.0, 1.0, aftermath))
 			capture_flash = maxf(0.0, 1.0 - (capture_time - CAPTURE_POP_TIME) / 0.22)
+			capture_shockwave_radius += delta * 1.6
+			capture_chromatic = maxf(0.0, 1.0 - (capture_time - CAPTURE_POP_TIME) / 0.65)
+			capture_noise = lerpf(0.65, 0.25, aftermath)
 		if capture_time >= CAPTURE_END_TIME:
 			game_state = "game_over"
 			capture_darkness = 0.91
 			capture_flash = 0.0
+			capture_chromatic = 0.0
+			capture_noise = 0.25
 			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
 			_save_resume(floor_number, coins_at_floor_start)
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
+		capture_chromatic = 0.0
+		capture_noise = 0.20
 	_update_capture_overlay()
 
 
@@ -958,6 +1016,9 @@ func _update_capture_overlay() -> void:
 	capture_material.set_shader_parameter("darkness", capture_darkness)
 	capture_material.set_shader_parameter("red_flash", capture_flash)
 	capture_material.set_shader_parameter("focus_uv", focus)
+	capture_material.set_shader_parameter("shockwave_radius", capture_shockwave_radius)
+	capture_material.set_shader_parameter("chromatic_aberration", capture_chromatic)
+	capture_material.set_shader_parameter("noise_strength", capture_noise)
 
 
 func _check_portal() -> void:
@@ -1086,12 +1147,17 @@ func _process(delta: float) -> void:
 	for i in range(particles.size() - 1, -1, -1):
 		var particle: Dictionary = particles[i]
 		particle.life -= delta
-		particle.pos += particle.velocity * delta
+		var vel: Vector2 = particle.get("velocity", Vector2.ZERO)
+		particle.pos += vel * delta
 		if particle.get("kind", "") == "blood":
-			particle.velocity += Vector2(0.0, float(particle.get("gravity", 220.0))) * delta
-			particle.velocity *= pow(0.38, delta)
+			vel += Vector2(0.0, float(particle.get("gravity", 220.0))) * delta
+			vel *= pow(0.38, delta)
+			particle["velocity"] = vel
+		elif particle.get("kind", "") == "shockwave":
+			pass
 		else:
-			particle.velocity *= pow(0.08, delta)
+			vel *= pow(0.08, delta)
+			particle["velocity"] = vel
 		if particle.life <= 0.0:
 			particles.remove_at(i)
 		else:
@@ -1282,61 +1348,125 @@ func _draw_cell(point: Vector2i, tile_type: int) -> void:
 	var rect := Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0))
 	var floor_a := Color("11182c")
 	var floor_b := Color("141d33")
-	var floor_glint := Color("6a80bd", 0.075)
+	var floor_glint := Color("6a80bd", 0.08)
 	var wall_frame := Color("252e47")
 	var wall_face := Color("384260")
-	var wall_glint := Color("8290ad", 0.32)
-	match get_biome_index(floor_number):
+	var wall_glint := Color("8290ad", 0.35)
+	var neon_accent := Color("4de3ff")
+	var biome_idx := get_biome_index(floor_number)
+	match biome_idx:
 		1:
-			floor_a = Color("10242a"); floor_b = Color("132c31"); floor_glint = Color("77d9c8", 0.075)
-			wall_frame = Color("243d43"); wall_face = Color("35545a"); wall_glint = Color("9ae2d3", 0.28)
+			floor_a = Color("10242a"); floor_b = Color("132c31"); floor_glint = Color("77d9c8", 0.08)
+			wall_frame = Color("243d43"); wall_face = Color("35545a"); wall_glint = Color("9ae2d3", 0.30)
+			neon_accent = Color("4effd2")
 		2:
-			floor_a = Color("241a2d"); floor_b = Color("2b1e32"); floor_glint = Color("e68a87", 0.075)
-			wall_frame = Color("493044"); wall_face = Color("60404a"); wall_glint = Color("f0a08e", 0.28)
+			floor_a = Color("241a2d"); floor_b = Color("2b1e32"); floor_glint = Color("e68a87", 0.08)
+			wall_frame = Color("493044"); wall_face = Color("60404a"); wall_glint = Color("f0a08e", 0.30)
+			neon_accent = Color("ff7e5a")
 		3:
-			floor_a = Color("132239"); floor_b = Color("172941"); floor_glint = Color("71d9ee", 0.08)
-			wall_frame = Color("263956"); wall_face = Color("374b6b"); wall_glint = Color("a8d8ef", 0.3)
+			floor_a = Color("132239"); floor_b = Color("172941"); floor_glint = Color("71d9ee", 0.09)
+			wall_frame = Color("263956"); wall_face = Color("374b6b"); wall_glint = Color("a8d8ef", 0.32)
+			neon_accent = Color("6de9ff")
 		4:
-			floor_a = Color("211934"); floor_b = Color("2a1d3c"); floor_glint = Color("e8bf72", 0.08)
-			wall_frame = Color("43304c"); wall_face = Color("5c415e"); wall_glint = Color("e9bd7c", 0.3)
+			floor_a = Color("211934"); floor_b = Color("2a1d3c"); floor_glint = Color("e8bf72", 0.09)
+			wall_frame = Color("43304c"); wall_face = Color("5c415e"); wall_glint = Color("e9bd7c", 0.32)
+			neon_accent = Color("f5ca68")
 	if tile_type == TILE_WATER:
-		_draw_water_tile(point, top_left)
+		if biome_idx == 3:
+			_draw_ice_tile(point, top_left)
+		else:
+			_draw_water_tile(point, top_left)
 		return
 	if tile_type != TILE_FLOOR:
 		var border := tile_type == TILE_BORDER
-		var frame_color := wall_frame if not border else floor_a.darkened(0.12)
-		var face_color := wall_face if not border else floor_b.darkened(0.15)
+		var frame_color := wall_frame if not border else floor_a.darkened(0.15)
+		var face_color := wall_face if not border else floor_b.darkened(0.18)
 		var top_glint := wall_glint
 		top_glint.a *= 0.16 if border else 1.0
-		var side_glint := wall_glint
-		side_glint.a *= 0.09
+		# Sombra 3D-ish inferior
+		draw_rect(Rect2(top_left + Vector2(0, CELL - 4), Vector2(CELL, 6)), Color(0, 0, 0, 0.45), true)
+		# Estrutura do bloco
 		draw_rect(rect, frame_color, true)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 8)), face_color, true)
-		draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 8, 2)), top_glint, true)
-		draw_rect(Rect2(top_left + Vector2(4, CELL - 5), Vector2(CELL - 9, 1)), Color("11172d", 0.82), true)
+		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 9)), face_color, true)
+		# Topo chanfrado e iluminado
+		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 3)), top_glint, true)
+		draw_rect(Rect2(top_left + Vector2(3, CELL - 7), Vector2(CELL - 7, 2)), Color("0a0f1e", 0.85), true)
 		if not border:
-			draw_rect(Rect2(top_left + Vector2(4, 7), Vector2(1, CELL - 14)), side_glint, true)
+			# Tubos e condutas de néon tecnológicas
+			var wall_variant := (point.x * 23 + point.y * 41) % 4
+			if wall_variant == 1:
+				# Cabo néon horizontal
+				draw_line(top_left + Vector2(5, CELL * 0.5), top_left + Vector2(CELL - 6, CELL * 0.5), Color(neon_accent, 0.45), 2.0, true)
+				draw_line(top_left + Vector2(5, CELL * 0.5), top_left + Vector2(CELL - 6, CELL * 0.5), Color("ffffff", 0.65), 1.0, true)
+			elif wall_variant == 2:
+				# Painel de ventilação / grelha no bloco
+				draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 18)), Color("111624", 0.8), true)
+				for g in 3:
+					draw_line(top_left + Vector2(10, 12 + g * 8), top_left + Vector2(CELL - 11, 12 + g * 8), Color(neon_accent, 0.35), 1.2, true)
+			elif wall_variant == 3:
+				# Nicho luminoso vertical
+				draw_rect(Rect2(top_left + Vector2(CELL * 0.5 - 2, 8), Vector2(4, CELL - 18)), Color(neon_accent, 0.28), true)
+				draw_line(top_left + Vector2(CELL * 0.5, 8), top_left + Vector2(CELL * 0.5, CELL - 10), Color("ffffff", 0.7), 1.2, true)
 	else:
 		var base := floor_a if (point.x + point.y) % 2 == 0 else floor_b
 		draw_rect(rect, base, true)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 1)), floor_glint, true)
-		var side_glint := floor_glint
-		side_glint.a *= 0.65
-		draw_rect(Rect2(top_left + Vector2(CELL - 4, 4), Vector2(1, CELL - 8)), side_glint, true)
+		# Grelha de borda subtil
+		draw_rect(rect, Color("080d1a", 0.5), false, 1.0)
+		var floor_variant := (point.x * 37 + point.y * 19) % 6
+		match floor_variant:
+			0:
+				# Parafusos/rebites nos 4 cantos
+				var rivet_color := Color(floor_glint.r, floor_glint.g, floor_glint.b, 0.45)
+				draw_circle(top_left + Vector2(6, 6), 1.5, rivet_color)
+				draw_circle(top_left + Vector2(CELL - 7, 6), 1.5, rivet_color)
+				draw_circle(top_left + Vector2(6, CELL - 7), 1.5, rivet_color)
+				draw_circle(top_left + Vector2(CELL - 7, CELL - 7), 1.5, rivet_color)
+			1:
+				# Grelha de ventilação com brilho do subsolo
+				var vent_rect := Rect2(top_left + Vector2(8, 8), Vector2(CELL - 17, CELL - 17))
+				draw_rect(vent_rect, Color("070b16", 0.75), true)
+				draw_rect(vent_rect, Color(neon_accent, 0.06), true)
+				for i in 4:
+					draw_line(top_left + Vector2(10, 11 + i * 8), top_left + Vector2(CELL - 11, 11 + i * 8), Color(neon_accent, 0.22), 1.2, true)
+			2:
+				# Fio condutor de dados com pulso
+				var pulse := 0.15 + 0.15 * sin(animation_clock * 2.5 + point.x * 0.5 + point.y * 0.3)
+				draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 5), Color(neon_accent, pulse), 1.4, true)
+			3:
+				# Placa chanfrada dupla
+				draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 5, CELL * 0.5), Color("080d1c", 0.65), 1.5, true)
+				draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 9, CELL * 0.5 - 5)), Color(floor_glint, 0.035), true)
+			4:
+				# Ranhura diagonal tática
+				draw_line(top_left + Vector2(6, CELL - 8), top_left + Vector2(CELL - 8, 6), Color(floor_glint, 0.12), 1.2, true)
+			_:
+				# Glint subtil padrão
+				draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 1)), floor_glint, true)
+				var side_glint := floor_glint
+				side_glint.a *= 0.65
+				draw_rect(Rect2(top_left + Vector2(CELL - 4, 4), Vector2(1, CELL - 8)), side_glint, true)
 
 
 func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
 	var is_garden := get_biome_index(floor_number) == 1
-	var deep := Color("0d3b45") if is_garden else Color("173d59")
-	var water := Color("176570") if is_garden else Color("347b9a")
-	var ripple := Color("8be8d7", 0.34) if is_garden else Color("b5f2ff", 0.36)
-	var shore := Color("b7ddad", 0.62) if is_garden else Color("b8e9f4", 0.6)
+	var deep := Color("082029") if is_garden else Color("0d2538")
+	var water := Color("134c56") if is_garden else Color("21536b")
+	var caustic := Color("7bf6e4", 0.32) if is_garden else Color("8de4ff", 0.34)
+	var shore := Color("8bfad0", 0.65) if is_garden else Color("9fe9ff", 0.68)
+	# Fundo abissal
 	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
-	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 6)), water, true)
-	var phase := animation_clock * 1.15 + point.x * 0.73 + point.y * 0.49
-	var ripple_y := 17.0 + sin(phase) * 2.4
-	draw_line(top_left + Vector2(9, ripple_y), top_left + Vector2(22, ripple_y + 1.5), ripple, 1.4, true)
-	draw_line(top_left + Vector2(31, ripple_y + 13.0), top_left + Vector2(45, ripple_y + 11.5), ripple, 1.2, true)
+	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
+	# Caustics procedurais animadas (redes de luz de água)
+	var phase := animation_clock * 1.6 + point.x * 0.8 + point.y * 0.6
+	var cy1 := 14.0 + sin(phase) * 3.2
+	var cy2 := 32.0 + cos(phase * 1.3) * 3.0
+	draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
+	draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
+	draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
+	# Bolhas de luz cintilantes
+	var bubble_y := fposmod(CELL - 6.0 - (animation_clock * 16.0 + (point.x + point.y) * 12.0), CELL - 8.0)
+	draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
+	# Contornos de margem e espuma neon
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
 		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER:
@@ -1344,18 +1474,51 @@ func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
 		var start := Vector2.ZERO
 		var finish := Vector2.ZERO
 		if direction == Vector2i.UP:
-			start = top_left + Vector2(4, 2)
-			finish = top_left + Vector2(CELL - 5, 2)
+			start = top_left + Vector2(3, 2); finish = top_left + Vector2(CELL - 4, 2)
 		elif direction == Vector2i.DOWN:
-			start = top_left + Vector2(4, CELL - 4)
-			finish = top_left + Vector2(CELL - 5, CELL - 4)
+			start = top_left + Vector2(3, CELL - 3); finish = top_left + Vector2(CELL - 4, CELL - 3)
 		elif direction == Vector2i.LEFT:
-			start = top_left + Vector2(2, 4)
-			finish = top_left + Vector2(2, CELL - 5)
+			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
 		else:
-			start = top_left + Vector2(CELL - 4, 4)
-			finish = top_left + Vector2(CELL - 4, CELL - 5)
-		draw_line(start, finish, shore, 1.8, true)
+			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
+		draw_line(start, finish, shore, 2.2, true)
+
+
+func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
+	var ice_deep := Color("0b1e33")
+	var ice_surface := Color("1a3d5e")
+	var crack_color := Color("c6f3ff", 0.65)
+	var glow := Color("6ee3ff", 0.40)
+	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), ice_deep, true)
+	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), ice_surface, true)
+	# Rachas cristalinas procedurais deterministas
+	var seed_val := (point.x * 47 + point.y * 89)
+	var r1 := float(seed_val % 10) / 10.0
+	var r2 := float((seed_val / 10) % 10) / 10.0
+	draw_line(top_left + Vector2(6, 8 + r1 * 10), top_left + Vector2(24, 22), crack_color, 1.4, true)
+	draw_line(top_left + Vector2(24, 22), top_left + Vector2(CELL - 8, 16 + r2 * 14), crack_color, 1.2, true)
+	draw_line(top_left + Vector2(24, 22), top_left + Vector2(18 + r1 * 8, CELL - 8), Color(crack_color, 0.45), 1.0, true)
+	# Brilho especular dinâmico que desliza sobre o gelo
+	var sweep := fposmod(animation_clock * 0.45 + point.x * 0.12 - point.y * 0.08, 1.8)
+	if sweep < 1.0:
+		var glint_x := top_left.x + sweep * (CELL + 16.0) - 8.0
+		draw_line(Vector2(glint_x, top_left.y + 4), Vector2(glint_x - 14.0, top_left.y + CELL - 4), Color("ffffff", 0.28), 2.5, true)
+	# Contorno de geada e cristalização nas margens
+	for direction in FOUR_WAY:
+		var neighbor: Vector2i = point + direction
+		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER:
+			continue
+		var start := Vector2.ZERO
+		var finish := Vector2.ZERO
+		if direction == Vector2i.UP:
+			start = top_left + Vector2(3, 2); finish = top_left + Vector2(CELL - 4, 2)
+		elif direction == Vector2i.DOWN:
+			start = top_left + Vector2(3, CELL - 3); finish = top_left + Vector2(CELL - 4, CELL - 3)
+		elif direction == Vector2i.LEFT:
+			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
+		else:
+			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
+		draw_line(start, finish, glow, 2.0, true)
 
 
 func _draw_coin(point: Vector2i) -> void:
@@ -1435,47 +1598,128 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	var center: Vector2 = enemy.from.lerp(enemy.to, t)
 	var role: String = enemy.get("role", "hunter")
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
-	var size_scale := 1.24 if role == "warden" else 0.86 if role == "wisp" else 0.94 if role == "rusher" else 1.0
-	var bob := sin(animation_clock * (5.2 if alert else 2.8) + center.x * 0.013) * (2.2 if role == "wisp" else 1.2)
+	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.05 if role == "sentry" else 1.0
+	var bob := sin(animation_clock * (5.5 if alert else 3.0) + center.x * 0.015) * (3.0 if role == "wisp" else 1.4)
 	center.y += bob
-	var color := Color("ff914d") if role == "rusher" else Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("c65bff") if role == "warden" else Color("ff526f")
+	var color := Color("ff914d") if role == "rusher" else Color("ffb64d") if role == "sentry" else Color("c088ff") if role == "wisp" else Color("b84eff") if role == "warden" else Color("ff3e5e")
 	var face: Vector2i = enemy.get("face", Vector2i(signi(player_position.x - enemy.pos.x), signi(player_position.y - enemy.pos.y)))
-	var face_offset := Vector2(face) * (1.8 if alert else 0.7)
-	var half_size := 15.4 * size_scale
-	var shell_alpha := 0.83 if role == "wisp" else 1.0
-	var glow := Color(color, 0.22 if alert else 0.075)
-	draw_circle(center + Vector2(0, 10), half_size * 1.05, Color("020611", 0.35))
-	draw_circle(center, half_size * (1.43 if alert else 1.25), glow)
-	var shell := _chamfered_square_points(center + Vector2(0, bob * 0.18), half_size, half_size * 0.20)
-	var shell_color := color.darkened(0.33)
-	shell_color.a *= shell_alpha
-	draw_colored_polygon(shell, shell_color)
-	var face_points := _chamfered_square_points(center + Vector2(-0.6, -1.4 + bob * 0.18), half_size * 0.84, half_size * 0.18)
-	var face_color := color
-	face_color.a *= shell_alpha
-	draw_colored_polygon(face_points, face_color)
-	draw_line(center + Vector2(-half_size * 0.60, -half_size * 0.57), center + Vector2(half_size * 0.48, -half_size * 0.57), Color("fff1dc", 0.38 * shell_alpha), 1.4 * size_scale, true)
-	var eye_y := center.y - 2.0 * size_scale + face_offset.y
-	var left_eye := Vector2(center.x - 5.0 * size_scale + face_offset.x, eye_y)
-	var right_eye := Vector2(center.x + 5.0 * size_scale + face_offset.x, eye_y)
-	var eye_white := Color("fff2df", shell_alpha)
-	var pupil := Color("351b33", shell_alpha)
-	for eye in [left_eye, right_eye]:
-		draw_circle(eye, 3.2 * size_scale, eye_white)
-		draw_circle(eye + Vector2(face.x, face.y) * 1.0 * size_scale, 1.45 * size_scale, pupil)
-	if alert:
-		draw_line(left_eye + Vector2(-2.4, -4.2) * size_scale, left_eye + Vector2(2.1, -3.0) * size_scale, Color("481c38", shell_alpha), 2.0 * size_scale, true)
-		draw_line(right_eye + Vector2(-2.1, -3.0) * size_scale, right_eye + Vector2(2.4, -4.2) * size_scale, Color("481c38", shell_alpha), 2.0 * size_scale, true)
-		draw_rect(Rect2(center + Vector2(-3.0, 6.0) * size_scale, Vector2(6.0, 2.4) * size_scale), Color("481c38", shell_alpha), true)
-	else:
-		draw_arc(center + Vector2(0, 5.2) * size_scale, 3.5 * size_scale, 0.18, PI - 0.18, 16, Color("481c38", shell_alpha), 1.35 * size_scale, true)
+	var face_offset := Vector2(face) * (2.2 if alert else 0.9)
+	var half_size := 15.5 * size_scale
+	var shell_alpha := 0.85 if role == "wisp" else 1.0
+	var glow := Color(color, 0.28 if alert else 0.10)
+	
+	# Sombra de chão dinâmica
+	draw_circle(center + Vector2(0, 11 * size_scale), half_size * 1.05, Color("020611", 0.45))
+	# Halo de alerta / emissivo
+	draw_circle(center, half_size * (1.55 if alert else 1.25), glow)
+	
+	if role == "wisp":
+		# Fantasma flutuante etéreo com cauda fluida
+		var flame_wobble := sin(animation_clock * 8.0 + center.x) * 2.5
+		var wisp_radius := half_size * 0.95
+		draw_circle(center, wisp_radius * 1.15, Color(color, 0.25))
+		draw_circle(center, wisp_radius, Color(color.lightened(0.2), 0.85))
+		draw_circle(center + Vector2(0, -2), wisp_radius * 0.65, Color("ffffff", 0.75))
+		# Cauda de plasma
+		var tail := PackedVector2Array([
+			center + Vector2(-wisp_radius * 0.6, 2),
+			center + Vector2(wisp_radius * 0.6, 2),
+			center + Vector2(flame_wobble, wisp_radius * 1.6 + 4)
+		])
+		draw_colored_polygon(tail, Color(color, 0.7))
+		# Olhos místicos de Wisp
+		var eye_col := Color("ffffff") if alert else Color("f5e8ff")
+		draw_circle(center + Vector2(-4.5, -1) + face_offset * 0.7, 2.8, eye_col)
+		draw_circle(center + Vector2(4.5, -1) + face_offset * 0.7, 2.8, eye_col)
+		draw_circle(center + Vector2(-4.5, -1) + face_offset * 1.2, 1.4, Color("340a45"))
+		draw_circle(center + Vector2(4.5, -1) + face_offset * 1.2, 1.4, Color("340a45"))
+		return
+	
+	if role == "hunter":
+		# Drone tático agressivo com armadura angular e cornos/antenas
+		var shell := _chamfered_square_points(center, half_size, half_size * 0.28)
+		draw_colored_polygon(shell, Color("1d0914"))
+		var inner := _chamfered_square_points(center, half_size * 0.82, half_size * 0.22)
+		draw_colored_polygon(inner, color)
+		# Chifres/Antenas mecânicas superiores
+		draw_line(center + Vector2(-half_size * 0.7, -half_size * 0.8), center + Vector2(-half_size * 1.0, -half_size * 1.3), color, 2.5, true)
+		draw_line(center + Vector2(half_size * 0.7, -half_size * 0.8), center + Vector2(half_size * 1.0, -half_size * 1.3), color, 2.5, true)
+		# Olhos angulares ferozes
+		var eye_y := center.y - 1.5 + face_offset.y
+		var le := Vector2(center.x - 5.0 + face_offset.x, eye_y)
+		var re := Vector2(center.x + 5.0 + face_offset.x, eye_y)
+		draw_line(le + Vector2(-3, -2), le + Vector2(3, 1), Color("ffffff"), 2.2, true)
+		draw_line(re + Vector2(-3, 1), re + Vector2(3, -2), Color("ffffff"), 2.2, true)
+		if alert:
+			draw_circle(le, 1.6, Color("ffe085"))
+			draw_circle(re, 1.6, Color("ffe085"))
+		return
+		
 	if role == "sentry":
-		draw_line(center + Vector2(-9.0, 10.4) * size_scale, center + Vector2(9.0, 10.4) * size_scale, Color("ffe2a4", 0.88), 1.8 * size_scale, true)
-	elif role == "warden":
-		draw_circle(center + Vector2(0, 10.5) * size_scale, 2.6 * size_scale, Color("f6d6ff", 0.9))
-	elif role == "rusher":
-		draw_line(center + Vector2(-8, -8) * size_scale, center + Vector2(-2, -2) * size_scale, Color("ffe0ad", 0.92), 2.0 * size_scale, true)
-		draw_line(center + Vector2(2, 2) * size_scale, center + Vector2(8, 8) * size_scale, Color("ffe0ad", 0.92), 2.0 * size_scale, true)
+		# Sentinela blindada pesada com visor horizontal dourado
+		var shell := _chamfered_square_points(center, half_size * 1.1, half_size * 0.15)
+		draw_colored_polygon(shell, Color("201b0b"))
+		var plate := _chamfered_square_points(center, half_size * 0.88, half_size * 0.12)
+		draw_colored_polygon(plate, color.darkened(0.2))
+		# Placas de ombro blindadas
+		draw_rect(Rect2(center + Vector2(-half_size * 1.15, -4), Vector2(3, 8)), color, true)
+		draw_rect(Rect2(center + Vector2(half_size * 1.15 - 3, -4), Vector2(3, 8)), color, true)
+		# Visor scanner cilíndrico
+		var visor_rect := Rect2(center + Vector2(-half_size * 0.65, -3) + face_offset, Vector2(half_size * 1.3, 6))
+		draw_rect(visor_rect, Color("0b0c10"), true)
+		var scan_pos := center.x + sin(animation_clock * 6.0) * (half_size * 0.45) + face_offset.x
+		draw_circle(Vector2(scan_pos, center.y + face_offset.y), 2.8, Color("fff6bd"))
+		draw_circle(Vector2(scan_pos, center.y + face_offset.y), 1.2, Color("ffffff"))
+		return
+		
+	if role == "rusher":
+		# Assassino pontiagudo aerodinâmico em lâmina
+		var nose := center + Vector2(face.x, face.y) * (half_size * 1.25)
+		var left_wing := center + Vector2(-face.y, face.x) * (half_size * 0.95) - Vector2(face.x, face.y) * (half_size * 0.6)
+		var right_wing := center + Vector2(face.y, -face.x) * (half_size * 0.95) - Vector2(face.x, face.y) * (half_size * 0.6)
+		var ship := PackedVector2Array([nose, left_wing, center - Vector2(face.x, face.y) * (half_size * 0.4), right_wing])
+		draw_colored_polygon(ship, Color("291102"))
+		var inner_ship := PackedVector2Array([
+			nose - Vector2(face.x, face.y) * 2,
+			left_wing + Vector2(face.x, face.y) * 3 + Vector2(face.y, -face.x) * 2,
+			center - Vector2(face.x, face.y) * 3,
+			right_wing + Vector2(face.x, face.y) * 3 - Vector2(face.y, -face.x) * 2
+		])
+		draw_colored_polygon(inner_ship, color)
+		# Rastro de chamas/plasma traseiro
+		var flame := center - Vector2(face.x, face.y) * (half_size * 0.8 + sin(animation_clock * 20.0) * 4.0)
+		draw_line(center - Vector2(face.x, face.y) * (half_size * 0.4), flame, Color("ffe37a"), 3.0, true)
+		# Visor vermelho afiado
+		draw_circle(center + Vector2(face.x, face.y) * 3, 2.5, Color("ffffff"))
+		return
+		
+	if role == "warden":
+		# Boss colossal com anéis orbitais, espinhos e núcleo de fusão
+		var shell := _chamfered_square_points(center, half_size, half_size * 0.35)
+		draw_colored_polygon(shell, Color("1f0933"))
+		var plate := _chamfered_square_points(center, half_size * 0.85, half_size * 0.28)
+		draw_colored_polygon(plate, color.darkened(0.25))
+		# Espinhos flutuantes / Spikes de Boss
+		for s in 4:
+			var angle := animation_clock * 1.5 + float(s) * TAU / 4.0
+			var spike_pos := center + Vector2(cos(angle), sin(angle)) * (half_size * 1.4)
+			draw_circle(spike_pos, 3.5, Color("ff7bf0"))
+			draw_line(center, spike_pos, Color("df52ff", 0.4), 1.2, true)
+		# Anel de contenção gravitacional
+		draw_arc(center, half_size * 1.25, animation_clock * 3.0, animation_clock * 3.0 + TAU * 0.7, 24, Color("f1b5ff", 0.75), 2.0, true)
+		# Núcleo pulsante no centro
+		var core_pulse := 1.0 + sin(animation_clock * 8.0) * 0.25
+		draw_circle(center, 6.0 * core_pulse, Color("ffffff"))
+		draw_circle(center, 4.0 * core_pulse, Color("f48aff"))
+		return
+	
+	# Fallback para outros tipos
+	var shell := _chamfered_square_points(center, half_size, half_size * 0.20)
+	draw_colored_polygon(shell, color.darkened(0.3))
+	var face_points := _chamfered_square_points(center, half_size * 0.8, half_size * 0.18)
+	draw_colored_polygon(face_points, color)
+	draw_circle(center + Vector2(-4, -2) + face_offset, 2.5, Color("ffffff"))
+	draw_circle(center + Vector2(4, -2) + face_offset, 2.5, Color("ffffff"))
 
 
 func _chamfered_square_points(center: Vector2, half_size: float, cut: float) -> PackedVector2Array:
@@ -1517,8 +1761,19 @@ func _draw_player() -> void:
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if charges > 0:
 		for i in mini(charges, 3):
-			var radius := (19.0 + i * 4.0 + sin(animation_clock * 5.0 + i) * 1.5) * size_scale
-			draw_arc(center, radius, animation_clock * (0.9 + i * 0.1), animation_clock * (0.9 + i * 0.1) + TAU * 0.77, 32, Color("63eeff", (0.43 - i * 0.08) * visibility), 1.7 * size_scale, true)
+			var hex_radius := (20.0 + i * 4.5 + sin(animation_clock * 4.0 + i) * 1.5) * size_scale
+			var rot := animation_clock * (0.8 + i * 0.3)
+			var hex_points := PackedVector2Array()
+			for v in 6:
+				var a := rot + float(v) * TAU / 6.0
+				hex_points.append(center + Vector2(cos(a), sin(a)) * hex_radius)
+			hex_points.append(hex_points[0])
+			var hex_alpha := (0.55 - i * 0.12) * visibility
+			draw_polyline(hex_points, Color("52f4ff", hex_alpha), 1.6 * size_scale, true)
+			# Vértices de energia cibernética
+			for v in 6:
+				var a := rot + float(v) * TAU / 6.0
+				draw_circle(center + Vector2(cos(a), sin(a)) * hex_radius, 1.8 * size_scale, Color("ffffff", hex_alpha * 1.2))
 	var bob := sin(animation_clock * 8.5) * 1.0
 	var shell_transform := center + Vector2(0, bob - hop)
 	draw_set_transform(shell_transform, roll, stretch * size_scale)
@@ -1555,17 +1810,42 @@ func _draw_player() -> void:
 func _draw_blood_puddle() -> void:
 	if not capture_puddle_active or capture_puddle_points.size() < 3:
 		return
-	draw_colored_polygon(capture_puddle_points, Color("6f0922", 0.96))
+	# Sombra profunda sob a poça
+	var shadow_outline := PackedVector2Array()
+	for point in capture_puddle_points:
+		shadow_outline.append(point + Vector2(0, 3.5))
+	draw_colored_polygon(shadow_outline, Color("000000", 0.45))
+	
+	# Camada viscosa base
+	draw_colored_polygon(capture_puddle_points, Color("590519", 0.98))
+	
+	# Camada interna arterial
 	var inset := PackedVector2Array()
 	for point in capture_puddle_points:
-		inset.append(capture_origin + (point - capture_origin) * 0.72)
-	draw_colored_polygon(inset, Color("a80d2d", 0.93))
+		inset.append(capture_origin + (point - capture_origin) * 0.74)
+	draw_colored_polygon(inset, Color("a10b2a", 0.95))
+	
+	# Centro líquido reflexivo
+	var center_inset := PackedVector2Array()
+	for point in capture_puddle_points:
+		center_inset.append(capture_origin + (point - capture_origin) * 0.48)
+	draw_colored_polygon(center_inset, Color("c91638", 0.90))
+	
+	# Reflexos especulares de líquido fresco
+	var spec1 := capture_origin + Vector2(-CELL * 0.35, -CELL * 0.28)
+	draw_circle(spec1, 4.2, Color("ffffff", 0.65))
+	draw_circle(spec1 + Vector2(7, 2), 2.2, Color("ffffff", 0.45))
+	
+	# Contorno neon arterial pulsante
 	var outline := capture_puddle_points.duplicate()
 	outline.append(capture_puddle_points[0])
-	draw_polyline(outline, Color("ff3a5c", 0.82), 2.2, true)
+	draw_polyline(outline, Color("ff365c", 0.88), 2.4, true)
+	
+	# Gotículas e respingos periféricos com mini-brilho
 	for splat in capture_splats:
-		draw_circle(splat.pos, splat.radius, Color("b90e31", 0.95))
-		draw_circle(splat.pos + Vector2(-splat.radius * 0.22, -splat.radius * 0.28), splat.radius * 0.28, Color("ff5268", 0.75))
+		draw_circle(splat.pos + Vector2(0, 1.5), splat.radius, Color("000000", 0.35))
+		draw_circle(splat.pos, splat.radius, Color("ab0c2e", 0.96))
+		draw_circle(splat.pos + Vector2(-splat.radius * 0.25, -splat.radius * 0.25), maxf(1.0, splat.radius * 0.35), Color("ff6379", 0.85))
 
 
 func _player_is_frightened() -> bool:
@@ -1580,11 +1860,21 @@ func _draw_particles() -> void:
 		var strength: float = clampf(particle.life / particle.max_life, 0.0, 1.0)
 		var color: Color = particle.color
 		color.a *= strength
+		var kind: String = particle.get("kind", "")
+		
+		if kind == "shockwave":
+			var progress := 1.0 - strength
+			var cur_radius: float = lerpf(particle.radius, particle.max_radius, progress)
+			draw_arc(particle.pos, cur_radius, 0.0, TAU, 36, Color(color, strength * 0.85), 3.5 * strength, true)
+			draw_arc(particle.pos, cur_radius * 0.88, 0.0, TAU, 30, Color("ffffff", strength * 0.65), 1.8 * strength, true)
+			continue
+			
 		var radius: float = particle.size * strength
-		if particle.get("kind", "") == "blood":
+		if kind == "blood":
 			var velocity: Vector2 = particle.velocity
 			if velocity.length_squared() > 4.0:
-				draw_line(particle.pos, particle.pos - velocity.normalized() * radius * 2.2, color, maxf(1.0, radius * 0.72), true)
+				draw_line(particle.pos, particle.pos - velocity.normalized() * radius * 2.5, color, maxf(1.2, radius * 0.75), true)
 			draw_circle(particle.pos, radius, color)
+			draw_circle(particle.pos + Vector2(-radius * 0.25, -radius * 0.25), maxf(0.8, radius * 0.3), Color("ffffff", 0.6 * strength))
 		else:
 			draw_circle(particle.pos, radius, color)
