@@ -126,7 +126,7 @@ func _draw_title(screen: Vector2) -> void:
 	var music_label := "MUSICA  /  LIGADA" if not game.audio.music_muted else "MUSICA  /  DESLIGADA"
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), music_label, "music", "menu")
 	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), "CLIQUE  SELECIONAR     ENTER  JOGAR / CONTINUAR     N  NOVO JOGO     M  SOM", HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
-	draw_string(font, Vector2(screen.x - 22, 30), "DIARIO  %d / 05 ANDARES" % game.furthest_floor, HORIZONTAL_ALIGNMENT_RIGHT, 260, 9, Color("d7e5ef", 0.78))
+	draw_string(font, Vector2(screen.x - 22, 30), "%d ANDARES DESBLOQUEADOS" % game.furthest_floor, HORIZONTAL_ALIGNMENT_RIGHT, 280, 9, Color("d7e5ef", 0.78))
 
 
 func _draw_level_select(screen: Vector2) -> void:
@@ -136,7 +136,7 @@ func _draw_level_select(screen: Vector2) -> void:
 	var panel := Rect2((screen - Vector2(panel_width, panel_height)) * 0.5, Vector2(panel_width, panel_height))
 	_draw_panel(panel, Color("61e9f3", 0.38))
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 48), "DIARIO DAS RUINAS", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 26, Color("f0f7ff"))
-	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 74), "Escolhe um andar desbloqueado. As estrelas guardam o teu melhor resultado.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 11, Color("aab7d0"))
+	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 74), "Campanha procedural sem fim  /  cada andar guarda as tuas estrelas.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 11, Color("aab7d0"))
 	var gap := 10.0
 	var card_width := minf(150.0, (panel.size.x - 64.0 - gap * 4.0) / 5.0)
 	var card_height := minf(190.0, panel.size.y - 150.0)
@@ -144,9 +144,16 @@ func _draw_level_select(screen: Vector2) -> void:
 	var row_x := screen.x * 0.5 - row_width * 0.5
 	var row_y := panel.position.y + 112.0
 	for index in 5:
-		_draw_floor_card(Rect2(row_x + index * (card_width + gap), row_y, card_width, card_height), index + 1)
-	_draw_button(Rect2(panel.position.x + 30, panel.position.y + panel.size.y - 48, 168, 34), "VOLTAR AO MENU", "menu", "secondary")
-	draw_string(font, Vector2(panel.position.x + panel.size.x - 230, panel.position.y + panel.size.y - 25), "TECLAS  1–5   /   ESC VOLTAR", HORIZONTAL_ALIGNMENT_RIGHT, 200, 9, Color("71829e"))
+		_draw_floor_card(Rect2(row_x + index * (card_width + gap), row_y, card_width, card_height), game.level_page_start + index)
+	var nav_y := panel.position.y + panel.size.y - 48
+	_draw_button(Rect2(panel.position.x + 22, nav_y, 142, 34), "VOLTAR AO MENU", "menu", "secondary")
+	if panel.size.x >= 650.0:
+		if game.level_page_start > 1:
+			_draw_button(Rect2(panel.position.x + 180, nav_y, 124, 34), "← ANTERIORES", "levels_previous", "secondary")
+		if game.level_page_start + 4 < game.furthest_floor:
+			_draw_button(Rect2(panel.position.x + 312, nav_y, 120, 34), "SEGUINTES →", "levels_next", "secondary")
+		draw_string(font, Vector2(panel.position.x + 448, panel.position.y + panel.size.y - 25), "ANDARES %d–%d  /  %d" % [game.level_page_start, game.level_page_start + 4, game.furthest_floor], HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 470, 9, Color("71829e"))
+	draw_string(font, Vector2(panel.position.x + panel.size.x - 225, panel.position.y + 24), "1–5 ESCOLHER  /  ← → PAGINAR", HORIZONTAL_ALIGNMENT_RIGHT, 205, 9, Color("71829e"))
 
 
 func _draw_floor_card(rect: Rect2, number: int) -> void:
@@ -184,9 +191,9 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	var panel_height := minf(410.0, screen.y - 32.0)
 	var panel := Rect2((screen - Vector2(panel_width, panel_height)) * 0.5, Vector2(panel_width, panel_height))
 	_draw_panel(panel, Color("bd78ff", 0.45))
-	var title := "LIA ESTA AQUI" if rescued else "ANDAR %02d CONCLUIDO" % game.floor_number
+	var title := ("LIA ESTA AQUI" if game.floor_number == 5 else "NOVO CICLO CONCLUIDO") if rescued else "ANDAR %02d CONCLUIDO" % game.floor_number
 	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 54), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 26, Color("e8faff"))
-	var subtitle: String = "A tua amada esta a salvo. Juntos, voces deixam as ruinas." if rescued else game.get_floor_name(game.floor_number)
+	var subtitle: String = ("A tua amada esta a salvo. A jornada continua para alem das ruinas." if game.floor_number == 5 else "Novo conjunto de salas, inimigos e objetivos desbloqueado.") if rescued else game.get_floor_name(game.floor_number)
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 80), subtitle, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 12, Color("9caecc"))
 	var star_y := panel.position.y + 139
 	for index in 5:
@@ -198,7 +205,7 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	var button_width := minf(170.0, (panel.size.x - 58.0) / 3.0)
 	var gap := 10.0
 	var row_x := screen.x * 0.5 - (button_width * 3.0 + gap * 2.0) * 0.5
-	_draw_button(Rect2(row_x, button_y, button_width, 42), "JOGAR DE NOVO" if rescued else "PROXIMO ANDAR", "new_run" if rescued else "next_floor", "primary")
+	_draw_button(Rect2(row_x, button_y, button_width, 42), "PROXIMO SETOR" if rescued else "PROXIMO ANDAR", "next_floor", "primary")
 	_draw_button(Rect2(row_x + button_width + gap, button_y, button_width, 42), "DIARIO", "levels", "secondary")
 	_draw_button(Rect2(row_x + (button_width + gap) * 2.0, button_y, button_width, 42), "MENU", "menu", "secondary")
 

@@ -13,6 +13,7 @@ const CHALLENGES := [
 ]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
 const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA", "CATEDRAL DE GELO", "TRONO DO GUARDIAO"]
+const LEVELS_PER_PAGE := 5
 const CAPTURE_POP_TIME := 0.92
 const CAPTURE_END_TIME := 1.95
 const Generator = preload("res://level_generator.gd")
@@ -82,6 +83,7 @@ var challenge_complete := false
 var last_notice := ""
 var notice_timer := 0.0
 var floor_history: Array[int] = []
+var level_page_start := 1
 var animation_clock := 0.0
 var shake_time := 0.0
 var shake_strength := 0.0
@@ -222,6 +224,14 @@ func handle_hud_action(action: String) -> void:
 		continue_game()
 	elif action == "levels":
 		open_level_select()
+	elif action == "levels_previous":
+		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
+	elif action == "levels_next":
+		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
+	elif action == "levels_previous":
+		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
+	elif action == "levels_next":
+		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
 	elif action == "menu":
 		capture_darkness = 0.0
 		capture_flash = 0.0
@@ -244,16 +254,37 @@ func handle_hud_action(action: String) -> void:
 func open_level_select() -> void:
 	capture_darkness = 0.0
 	capture_flash = 0.0
+	level_page_start = maxi(1, furthest_floor - LEVELS_PER_PAGE + 1)
 	game_state = "level_select"
 
 
+func get_biome_index(number: int) -> int:
+	return posmod(maxi(1, number) - 1, FLOOR_NAMES.size())
+
+
 func get_floor_name(number: int) -> String:
-	return FLOOR_NAMES[clampi(number - 1, 0, FLOOR_NAMES.size() - 1)]
+	var safe_number := maxi(1, number)
+	var name: String = FLOOR_NAMES[get_biome_index(safe_number)]
+	var cycle := floori(float(safe_number - 1) / FLOOR_NAMES.size()) + 1
+	return name if cycle == 1 else "%s / CICLO %d" % [name, cycle]
+
+
+func get_floor_size(number: int) -> Vector2i:
+	var safe_number := maxi(1, number)
+	if safe_number <= MAP_SIZES.size():
+		return MAP_SIZES[safe_number - 1]
+	var growth := safe_number - MAP_SIZES.size()
+	var max_width_growth := 14
+	var max_height_growth := 8
+	var width_growth := mini(max_width_growth, ceili(float(growth) / 2.0))
+	var height_growth := mini(max_height_growth, floori(float(growth) / 3.0))
+	var last_size: Vector2i = MAP_SIZES[MAP_SIZES.size() - 1]
+	return Vector2i(last_size.x + width_growth, last_size.y + height_growth)
 
 
 func _save_resume(number: int, coins: int) -> void:
 	has_resume = true
-	resume_floor = clampi(number, 1, MAP_SIZES.size())
+	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
 	resume_seed = active_seed
 	resume_history = floor_history.duplicate()
@@ -261,12 +292,12 @@ func _save_resume(number: int, coins: int) -> void:
 
 
 func generate_floor(number: int) -> void:
-	floor_number = clampi(number, 1, MAP_SIZES.size())
-	world_size = MAP_SIZES[mini(number - 1, MAP_SIZES.size() - 1)]
+	floor_number = maxi(1, number)
+	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
 	rng.seed = level_seed
 	coins_at_floor_start = total_coins
-	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, mini(number - 1, 4))
+	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
 	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
 	if result.ok:
 		grid = result.grid
@@ -313,7 +344,7 @@ func generate_floor(number: int) -> void:
 		if position != Vector2i(-1, -1):
 			switches.append({"pos": position, "active": false})
 			occupied.append(position)
-	for i in mini(1 + number / 2, 5):
+	for i in mini(1 + int(number / 2), 7):
 		var position: Vector2i = _pick_spaced(walkable, occupied, 5)
 		if position != Vector2i(-1, -1):
 			var role := "hunter"
@@ -321,9 +352,11 @@ func generate_floor(number: int) -> void:
 				role = "sentry"
 			elif number >= 4 and i % 3 == 2:
 				role = "wisp"
+			if number >= 6 and i % 4 == 3:
+				role = "rusher"
 			enemies.append({"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position), "t": 1.0, "role": role, "phase": rng.randi_range(0, 1)})
 			occupied.append(position)
-	if number == 5:
+	if number % 5 == 0:
 		var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
 		if boss_position != Vector2i(-1, -1):
 			enemies.append({"pos": boss_position, "next": boss_position, "from": _cell_center(boss_position), "to": _cell_center(boss_position), "t": 1.0, "role": "warden", "phase": 0})
@@ -365,21 +398,22 @@ func generate_floor(number: int) -> void:
 
 
 func _add_biome_landmarks(number: int) -> void:
-	if number != 2 and number != 4:
+	var biome_index := get_biome_index(number)
+	if biome_index != 1 and biome_index != 3:
 		return
 	var candidates: Array[Dictionary] = []
 	for room in rooms:
 		var rect: Rect2i = room.rect
-		if (number == 2 and rect.size.x >= 4 and rect.size.y >= 4) or (number == 4 and rect.size.x >= 6 and rect.size.y >= 5):
+		if (biome_index == 1 and rect.size.x >= 4 and rect.size.y >= 4) or (biome_index == 3 and rect.size.x >= 6 and rect.size.y >= 5):
 			candidates.append(room)
-	var feature_count := mini(2 if number == 2 else 3, candidates.size())
+	var feature_count := mini(2 if biome_index == 1 else 3, candidates.size())
 	for _index in feature_count:
 		if candidates.is_empty():
 			break
 		var room_index := rng.randi_range(0, candidates.size() - 1)
 		var rect: Rect2i = candidates[room_index].rect
 		candidates.remove_at(room_index)
-		var shape_rows: PackedStringArray = PackedStringArray(["011", "111", "011"]) if number == 2 else PackedStringArray(["0110", "1111", "1111", "0110"])
+		var shape_rows: PackedStringArray = PackedStringArray(["011", "111", "011"]) if biome_index == 1 else PackedStringArray(["0110", "1111", "1111", "0110"])
 		var feature_size := Vector2i(shape_rows[0].length(), shape_rows.size())
 		var low := rect.position
 		var high := rect.end - feature_size
@@ -498,6 +532,21 @@ func _update_enemy_intents() -> void:
 		if role == "wisp" and (turn_number + phase) % 2 == 1:
 			enemy.next = enemy.pos
 			continue
+		if role == "rusher" and enemy.alert:
+			var delta_to_player: Vector2i = player_position - origin
+			var distance := absi(delta_to_player.x) + absi(delta_to_player.y)
+			var dash_direction := Vector2i.ZERO
+			if delta_to_player.x == 0 and distance >= 2 and distance <= 5:
+				dash_direction.y = signi(delta_to_player.y)
+			elif delta_to_player.y == 0 and distance >= 2 and distance <= 5:
+				dash_direction.x = signi(delta_to_player.x)
+			if dash_direction != Vector2i.ZERO:
+				var middle := origin + dash_direction
+				var landing := origin + dash_direction * 2
+				if _inside(middle) and _inside(landing) and grid[middle.y][middle.x] == TILE_FLOOR and grid[landing.y][landing.x] == TILE_FLOOR and not _enemy_at(middle, enemy) and not _enemy_at(landing, enemy) and not reserved.has(middle) and not reserved.has(landing):
+					enemy.next = landing
+					reserved.append(landing)
+					continue
 		var best := origin
 		var target := player_position
 		if role == "sentry":
@@ -937,21 +986,23 @@ func _check_portal() -> void:
 		best_score = total_coins
 	_spawn_burst(_cell_center(portal_position), Color("c476ff"), 42, 240.0)
 	audio.play("portal")
-	if floor_number >= 5:
+	var rescue_milestone := floor_number % 5 == 0
+	if rescue_milestone:
 		game_state = "rescued"
-		rescues_completed += 1
-		furthest_floor = maxi(furthest_floor, 5)
-		has_resume = false
-		last_notice = "ENCONTRASTE LIA — JUNTOS, VOCES DEIXAM AS RUINAS"
+		if floor_number == 5:
+			rescues_completed += 1
+			last_notice = "ENCONTRASTE LIA — A JORNADA CONTINUA"
+		else:
+			last_notice = "CICLO %d CONCLUIDO — SETOR SEGUINTE DESBLOQUEADO" % (floori(float(floor_number - 1) / 5.0) + 1)
 	else:
 		game_state = "floor_clear"
-		furthest_floor = maxi(furthest_floor, floor_number + 1)
-		resume_floor = floor_number + 1
-		resume_coins = total_coins
-		resume_seed = active_seed
-		resume_history = floor_history.duplicate()
-		has_resume = true
 		last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
+	furthest_floor = maxi(furthest_floor, floor_number + 1)
+	resume_floor = floor_number + 1
+	resume_coins = total_coins
+	resume_seed = active_seed
+	resume_history = floor_history.duplicate()
+	has_resume = true
 	var star_key := str(floor_number)
 	floor_stars[star_key] = maxi(int(floor_stars.get(star_key, 0)), stars_last_floor)
 	notice_timer = 999.0
@@ -959,7 +1010,7 @@ func _check_portal() -> void:
 
 
 func advance_floor() -> void:
-	if game_state == "floor_clear":
+	if game_state == "floor_clear" or game_state == "rescued":
 		generate_floor(floor_number + 1)
 		game_state = "playing"
 
@@ -986,17 +1037,27 @@ func _load_profile() -> void:
 	if profile.load(profile_path) == OK:
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
-		furthest_floor = clampi(int(profile.get_value("progress", "furthest_floor", 1)), 1, MAP_SIZES.size())
+		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
 		var stored_stars = profile.get_value("progress", "floor_stars", {})
 		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
 		has_resume = bool(profile.get_value("progress", "has_resume", false))
-		resume_floor = clampi(int(profile.get_value("progress", "resume_floor", 1)), 1, MAP_SIZES.size())
+		resume_floor = maxi(1, int(profile.get_value("progress", "resume_floor", 1)))
 		resume_coins = int(profile.get_value("progress", "resume_coins", 0))
 		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
 		var stored_history = profile.get_value("progress", "resume_history", [])
 		resume_history.clear()
 		for value in stored_history:
 			resume_history.append(int(value))
+		# Old saves treated floor five as the campaign ending. Open the next procedural floor for those players.
+		if rescues_completed > 0 and furthest_floor <= 5:
+			furthest_floor = 6
+			if not has_resume:
+				has_resume = true
+				resume_floor = 6
+				resume_coins = 0
+				resume_seed = int(Time.get_ticks_usec()) ^ randi()
+				resume_history.clear()
+			_save_profile()
 
 
 func _save_profile() -> void:
@@ -1121,8 +1182,12 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if game_state == "level_select":
 		if event.keycode == KEY_ESCAPE:
 			game_state = "title"
+		elif event.keycode == KEY_LEFT:
+			level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
+		elif event.keycode == KEY_RIGHT:
+			level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_5:
-			start_level(event.keycode - KEY_0)
+			start_level(level_page_start + event.keycode - KEY_1)
 		return
 	if game_state == "paused":
 		if event.keycode in [KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER]:
@@ -1149,7 +1214,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			game_state = "title"
 		return
 	if game_state == "rescued":
-		if event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_N]:
+		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
+			advance_floor()
+		elif event.keycode == KEY_N:
 			new_game()
 		elif event.keycode == KEY_ESCAPE:
 			game_state = "title"
@@ -1219,17 +1286,17 @@ func _draw_cell(point: Vector2i, tile_type: int) -> void:
 	var wall_frame := Color("252e47")
 	var wall_face := Color("384260")
 	var wall_glint := Color("8290ad", 0.32)
-	match floor_number:
-		2:
+	match get_biome_index(floor_number):
+		1:
 			floor_a = Color("10242a"); floor_b = Color("132c31"); floor_glint = Color("77d9c8", 0.075)
 			wall_frame = Color("243d43"); wall_face = Color("35545a"); wall_glint = Color("9ae2d3", 0.28)
-		3:
+		2:
 			floor_a = Color("241a2d"); floor_b = Color("2b1e32"); floor_glint = Color("e68a87", 0.075)
 			wall_frame = Color("493044"); wall_face = Color("60404a"); wall_glint = Color("f0a08e", 0.28)
-		4:
+		3:
 			floor_a = Color("132239"); floor_b = Color("172941"); floor_glint = Color("71d9ee", 0.08)
 			wall_frame = Color("263956"); wall_face = Color("374b6b"); wall_glint = Color("a8d8ef", 0.3)
-		5:
+		4:
 			floor_a = Color("211934"); floor_b = Color("2a1d3c"); floor_glint = Color("e8bf72", 0.08)
 			wall_frame = Color("43304c"); wall_face = Color("5c415e"); wall_glint = Color("e9bd7c", 0.3)
 	if tile_type == TILE_WATER:
@@ -1259,10 +1326,11 @@ func _draw_cell(point: Vector2i, tile_type: int) -> void:
 
 
 func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
-	var deep := Color("0d3b45") if floor_number == 2 else Color("173d59")
-	var water := Color("176570") if floor_number == 2 else Color("347b9a")
-	var ripple := Color("8be8d7", 0.34) if floor_number == 2 else Color("b5f2ff", 0.36)
-	var shore := Color("b7ddad", 0.62) if floor_number == 2 else Color("b8e9f4", 0.6)
+	var is_garden := get_biome_index(floor_number) == 1
+	var deep := Color("0d3b45") if is_garden else Color("173d59")
+	var water := Color("176570") if is_garden else Color("347b9a")
+	var ripple := Color("8be8d7", 0.34) if is_garden else Color("b5f2ff", 0.36)
+	var shore := Color("b7ddad", 0.62) if is_garden else Color("b8e9f4", 0.6)
 	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
 	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 6)), water, true)
 	var phase := animation_clock * 1.15 + point.x * 0.73 + point.y * 0.49
@@ -1367,10 +1435,10 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	var center: Vector2 = enemy.from.lerp(enemy.to, t)
 	var role: String = enemy.get("role", "hunter")
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
-	var size_scale := 1.24 if role == "warden" else 0.86 if role == "wisp" else 1.0
+	var size_scale := 1.24 if role == "warden" else 0.86 if role == "wisp" else 0.94 if role == "rusher" else 1.0
 	var bob := sin(animation_clock * (5.2 if alert else 2.8) + center.x * 0.013) * (2.2 if role == "wisp" else 1.2)
 	center.y += bob
-	var color := Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("c65bff") if role == "warden" else Color("ff526f")
+	var color := Color("ff914d") if role == "rusher" else Color("ffb64d") if role == "sentry" else Color("b985ff") if role == "wisp" else Color("c65bff") if role == "warden" else Color("ff526f")
 	var face: Vector2i = enemy.get("face", Vector2i(signi(player_position.x - enemy.pos.x), signi(player_position.y - enemy.pos.y)))
 	var face_offset := Vector2(face) * (1.8 if alert else 0.7)
 	var half_size := 15.4 * size_scale
@@ -1405,6 +1473,9 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		draw_line(center + Vector2(-9.0, 10.4) * size_scale, center + Vector2(9.0, 10.4) * size_scale, Color("ffe2a4", 0.88), 1.8 * size_scale, true)
 	elif role == "warden":
 		draw_circle(center + Vector2(0, 10.5) * size_scale, 2.6 * size_scale, Color("f6d6ff", 0.9))
+	elif role == "rusher":
+		draw_line(center + Vector2(-8, -8) * size_scale, center + Vector2(-2, -2) * size_scale, Color("ffe0ad", 0.92), 2.0 * size_scale, true)
+		draw_line(center + Vector2(2, 2) * size_scale, center + Vector2(8, 8) * size_scale, Color("ffe0ad", 0.92), 2.0 * size_scale, true)
 
 
 func _chamfered_square_points(center: Vector2, half_size: float, cut: float) -> PackedVector2Array:
