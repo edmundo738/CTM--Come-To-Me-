@@ -39,6 +39,9 @@ var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
 var rooms: Array[Dictionary] = []
 var room_graph_edges: Array[Dictionary] = []
+var nav_chevrons: Array[Dictionary] = []
+var player_sphere_texture: ImageTexture = null
+var radial_light_texture: ImageTexture = null
 var particles: Array[Dictionary] = []
 var camera: Camera2D
 var hud: Control
@@ -132,6 +135,8 @@ func _ready() -> void:
 	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	audio = AudioScript.new()
 	add_child(audio)
+	_init_player_sphere_texture()
+	_init_radial_light_texture()
 	_load_profile()
 	camera = Camera2D.new()
 	camera.name = "Camera2D"
@@ -378,8 +383,8 @@ func generate_floor(number: int) -> void:
 		if position != Vector2i(-1, -1):
 			shields.append(position)
 			occupied.append(position)
-	if number >= 3 and number % 2 == 1:
-		var breaker_position: Vector2i = _pick_spaced(walkable, occupied, 8)
+	if (number == 1 or number >= 3) and number % 2 == 1:
+		var breaker_position: Vector2i = _pick_spaced(walkable, occupied, 6)
 		if breaker_position != Vector2i(-1, -1):
 			breakers.append(breaker_position)
 			occupied.append(breaker_position)
@@ -395,6 +400,7 @@ func generate_floor(number: int) -> void:
 			if position != Vector2i(-1, -1):
 				traps.append({"pos": position, "armed": true, "revealed": false})
 				occupied.append(position)
+	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
 	jumps_this_floor = 0
@@ -407,6 +413,112 @@ func generate_floor(number: int) -> void:
 	_update_enemy_intents()
 	_update_camera(1.0)
 	queue_redraw()
+
+
+func _build_nav_chevrons() -> void:
+	nav_chevrons.clear()
+	if world_size == Vector2i.ZERO:
+		return
+	var queue: Array[Vector2i] = [player_position]
+	var parent: Dictionary = {}
+	parent[player_position] = player_position
+	var found := false
+	while not queue.is_empty():
+		var current: Vector2i = queue.pop_front()
+		if current == portal_position:
+			found = true
+			break
+		for dir in FOUR_WAY:
+			var next_pos: Vector2i = current + dir
+			if not _inside(next_pos) or parent.has(next_pos):
+				continue
+			var tile: int = grid[next_pos.y][next_pos.x]
+			if tile == TILE_FLOOR or tile == TILE_WATER:
+				parent[next_pos] = current
+				queue.append(next_pos)
+	if not found:
+		return
+	var path: Array[Vector2i] = []
+	var curr: Vector2i = portal_position
+	while curr != player_position:
+		path.append(curr)
+		curr = parent[curr]
+	path.reverse()
+	if path.size() >= 4:
+		var step: int = maxi(4, path.size() / 4)
+		for i in range(step - 1, path.size() - 1, step):
+			var cell: Vector2i = path[i]
+			var next_cell: Vector2i = path[i + 1]
+			var dir := Vector2(next_cell - cell).normalized()
+			if dir.length_squared() > 0.1 and cell != player_position and cell != portal_position:
+				nav_chevrons.append({"pos": cell, "dir": dir})
+
+
+func _init_radial_light_texture() -> void:
+	var size := 128
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center := Vector2(float(size) * 0.5, float(size) * 0.5)
+	var max_r := float(size) * 0.5 - 2.0
+	for y in size:
+		for x in size:
+			var d := (Vector2(x, y) - center).length()
+			if d >= max_r:
+				img.set_pixel(x, y, Color(1, 1, 1, 0))
+			else:
+				var t := d / max_r
+				var alpha := smoothstep(1.0, 0.0, t) * pow(1.0 - t, 0.85)
+				img.set_pixel(x, y, Color(1, 1, 1, alpha))
+	radial_light_texture = ImageTexture.create_from_image(img)
+
+
+func _init_player_sphere_texture() -> void:
+	var size := 96
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var center := Vector2(float(size) * 0.5, float(size) * 0.5)
+	var radius := 41.0
+	var light_dir := Vector3(-0.55, -0.62, 0.56).normalized()
+	var view_dir := Vector3(0.0, 0.0, 1.0)
+	var half_vec := (light_dir + view_dir).normalized()
+	var col_deep := Color("380410")
+	var col_mid := Color("d81636")
+	var col_bright := Color("ff3b5c")
+	var col_rim := Color("ff8ca3")
+	
+	for y in size:
+		for x in size:
+			var diff_vec := Vector2(x, y) - center
+			var dist := diff_vec.length()
+			if dist >= radius + 1.0:
+				img.set_pixel(x, y, Color(0, 0, 0, 0))
+				continue
+			var nx := diff_vec.x / radius
+			var ny := diff_vec.y / radius
+			var nz := sqrt(maxf(0.0, 1.0 - nx * nx - ny * ny))
+			var norm := Vector3(nx, ny, nz)
+			
+			var n_dot_l := norm.dot(light_dir)
+			var half_lambert := clampf(n_dot_l * 0.55 + 0.45, 0.0, 1.0)
+			var diff := pow(half_lambert, 1.8)
+			
+			var n_dot_h := maxf(0.0, norm.dot(half_vec))
+			var spec := pow(n_dot_h, 36.0)
+			var soft_spec := pow(n_dot_h, 8.0) * 0.35
+			
+			var fresnel := pow(1.0 - nz, 2.8) * maxf(0.0, ny * 0.6 + nx * 0.3 + 0.4)
+			
+			var base_col: Color
+			if diff < 0.5:
+				base_col = col_deep.lerp(col_mid, diff * 2.0)
+			else:
+				base_col = col_mid.lerp(col_bright, (diff - 0.5) * 2.0)
+				
+			base_col = base_col.lerp(col_rim, fresnel * 0.5)
+			var final_rgb := base_col + Color(1.0, 1.0, 1.0, 0.0) * (spec * 0.95 + soft_spec * 0.3)
+			var alpha := 1.0
+			if dist > radius - 1.0:
+				alpha = clampf((radius + 1.0 - dist) / 2.0, 0.0, 1.0)
+			img.set_pixel(x, y, Color(final_rgb.r, final_rgb.g, final_rgb.b, alpha))
+	player_sphere_texture = ImageTexture.create_from_image(img)
 
 
 func _add_biome_landmarks(number: int) -> void:
@@ -1332,18 +1444,17 @@ func _draw() -> void:
 	var biome_idx := get_biome_index(floor_number)
 	var pal := _get_biome_palette(biome_idx)
 	
-	# CAMADA 1: Chão estruturado e Água/Gelo (Steel Plates & Terrain)
+	# CAMADA 1: Chão estruturado (Steel Plates & Terrain)
 	for y in range(first_y, last_y + 1):
 		for x in range(first_x, last_x + 1):
 			var pt := Vector2i(x, y)
 			var tcell: int = grid[y][x]
-			if tcell == TILE_FLOOR:
+			if tcell == TILE_FLOOR or tcell == TILE_WATER:
 				_draw_floor_tile(pt, Vector2(pt) * CELL, pal)
-			elif tcell == TILE_WATER:
-				if biome_idx == 3:
-					_draw_ice_tile(pt, Vector2(pt) * CELL)
-				else:
-					_draw_water_tile(pt, Vector2(pt) * CELL)
+	
+	# CAMADA 1.5: Setas de Navegação Direcionadas (Indicam Portas e Portal)
+	for nav in nav_chevrons:
+		_draw_nav_chevron(nav.pos, nav.dir, pal)
 	
 	# CAMADA 2: Sombras 2.5D projetadas das paredes sobre o chão
 	for y in range(first_y, last_y + 1):
@@ -1524,23 +1635,52 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 			var vy := top_left.y + 15.0 + float(i) * 7.0
 			draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
 	elif tile_hash == 2:
-		# Setas direcionais néon (<<) ou (>>) — sentido alternado por colunas
-		var cx := top_left.x + CELL * 0.5
-		var cy := top_left.y + CELL * 0.5
-		var dir := 1.0 if (point.x % 2 == 0) else -1.0
-		# Dois chevrons
-		for ci in 2:
-			var ox := (float(ci) - 0.5) * 10.0 * dir
-			var p := PackedVector2Array([
-				Vector2(cx + ox - 4.5 * dir, cy - 7),
-				Vector2(cx + ox + 2.0 * dir, cy),
-				Vector2(cx + ox - 4.5 * dir, cy + 7)
-			])
-			draw_polyline(p, Color(pal.neon_accent, 0.22), 3.5, true)
-			draw_polyline(p, Color(pal.neon_accent, 0.90), 1.5, true)
+		# Painel rebaixado decorativo com rebordo fino
+		draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
+		draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
 	elif tile_hash == 3:
 		# Chanfro diagonal decorativo (raramente)
 		draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
+
+
+func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
+	var center := _cell_center(point)
+	var angle := dir.angle()
+	var pulse := 0.85 + sin(animation_clock * 4.5 + float(point.x + point.y)) * 0.15
+	var chevron_col: Color = pal.neon_accent
+	
+	draw_set_transform(center, angle, Vector2.ONE)
+	for ci in 2:
+		var ox := (float(ci) - 0.5) * 9.0
+		var p := PackedVector2Array([
+			Vector2(ox - 5.0, -7.0),
+			Vector2(ox + 3.0, 0.0),
+			Vector2(ox - 5.0, 7.0)
+		])
+		# Halo emissivo de fundo
+		draw_polyline(p, Color(chevron_col, 0.25 * pulse), 4.5, true)
+		# Linha néon principal intensa
+		draw_polyline(p, Color(chevron_col, 0.95 * pulse), 1.8, true)
+		# Centro branco puro de incandescência
+		draw_polyline(p, Color("ffffff", 0.75 * pulse), 0.8, true)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_radial_light(pos: Vector2, radius: float, core_color: Color, glow_color: Color, pulse: float = 1.0) -> void:
+	if radial_light_texture == null:
+		return
+	var r := radius * pulse
+	# Halo difuso exterior (dispersão ambiental suave)
+	var outer_rect := Rect2(pos - Vector2(r, r), Vector2(r * 2.0, r * 2.0))
+	draw_texture_rect(radial_light_texture, outer_rect, false, glow_color)
+	# Manto de iluminação intermediário saturado
+	var mr := r * 0.62
+	var mid_rect := Rect2(pos - Vector2(mr, mr), Vector2(mr * 2.0, mr * 2.0))
+	draw_texture_rect(radial_light_texture, mid_rect, false, Color(glow_color.r, glow_color.g, glow_color.b, minf(1.0, glow_color.a * 1.5)))
+	# Núcleo quente incandescente
+	var cr := r * 0.32
+	var core_rect := Rect2(pos - Vector2(cr, cr), Vector2(cr * 2.0, cr * 2.0))
+	draw_texture_rect(radial_light_texture, core_rect, false, core_color)
 
 
 func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
@@ -1555,30 +1695,35 @@ func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
 
 
 func _draw_floor_neon_glow() -> void:
-	# Halo néon da bola vermelha (com anel de luz circular idêntico ao mockup)
-	var p_pos := _player_visual_position()
-	draw_circle(p_pos, 32.0, Color("ff2244", 0.16))
-	var pulse := 1.0 + sin(animation_clock * 4.0) * 0.06
-	draw_arc(p_pos, 18.0 * pulse, 0.0, TAU, 32, Color("ff3355", 0.65), 1.6, true)
+	var pulse := 1.0 + sin(animation_clock * 3.8) * 0.07
 	
-	# Halo dos cristais de escudo
+	# Halo néon da bola vermelha do jogador
+	var p_pos := _player_visual_position()
+	_draw_radial_light(p_pos, 54.0, Color("ff6080", 0.92), Color("ff1038", 0.45), pulse)
+	# Anel de energia circundante (emissivo e pulsante)
+	draw_arc(p_pos, 19.0 * pulse, 0.0, TAU, 36, Color("ff3b5c", 0.90), 1.8, true)
+	
+	# Halo dos escudos cibernéticos (ciano radiante)
 	for s in shields:
 		var sc := _cell_center(s)
-		draw_circle(sc + Vector2(0, 8), 24.0, Color("3ae6ff", 0.20))
+		_draw_radial_light(sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
 		
-	# Halo do baú breaker
+	# Halo dos baús breaker (âmbar / dourado quente)
 	for b in breakers:
 		var bc := _cell_center(b)
-		draw_circle(bc + Vector2(0, 6), 26.0, Color("ffaa33", 0.18))
+		_draw_radial_light(bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
 		
-	# Halo das moedas
+	# Halo das moedas (dourado compacto)
 	for c in coins:
 		var cc := _cell_center(c)
-		draw_circle(cc + Vector2(0, 5), 16.0, Color("ffd35e", 0.15))
+		_draw_radial_light(cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
 		
-	# Halo do portal dimensional
+	# Halo do portal dimensional (vórtice violeta/ciano expansivo)
 	var pc := _cell_center(portal_position)
-	draw_circle(pc, 48.0, Color("b84eff", 0.25))
+	var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
+	var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
+	var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
+	_draw_radial_light(pc, 96.0, portal_core, portal_glow, portal_pulse)
 
 
 func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
@@ -1775,46 +1920,84 @@ func _draw_coin(point: Vector2i) -> void:
 
 func _draw_shield(point: Vector2i) -> void:
 	var center := _cell_center(point)
-	var bob := sin(animation_clock * 3.2 + float(point.x)) * 3.0
-	var cy := center.y - 7.0 + bob
+	var bob := sin(animation_clock * 3.4 + float(point.x)) * 3.0
+	var cy := center.y - 3.0 + bob
+	var cx := center.x
 	
-	# Coluna de luz vertical cibernética
-	draw_rect(Rect2(center.x - 7.0, center.y - 48.0, 14.0, 48.0), Color("3ae6ff", 0.08), true)
-	draw_rect(Rect2(center.x - 2.5, center.y - 48.0, 5.0, 48.0), Color("ffffff", 0.18), true)
-	
-	# Pedestal metálico na base
+	# Pedestal de contenção cibernético na base
 	var ped_poly := PackedVector2Array([
-		center + Vector2(-12.0, 8.0), center + Vector2(12.0, 8.0),
-		center + Vector2(8.0, 15.0), center + Vector2(-8.0, 15.0)
+		Vector2(cx - 10.0, center.y + 10.0), Vector2(cx + 10.0, center.y + 10.0),
+		Vector2(cx + 7.0, center.y + 15.0), Vector2(cx - 7.0, center.y + 15.0)
 	])
-	draw_colored_polygon(ped_poly, Color("142236"))
-	draw_polyline(ped_poly, Color("457aa8"), 1.2, true)
+	draw_colored_polygon(ped_poly, Color("111a29"))
+	draw_polyline(ped_poly, Color("355b80"), 1.2, true)
 	
-	# Cristal Prismático 3D (Octaedro com faces facetadas)
-	var top := Vector2(center.x, cy - 15.0)
-	var left := Vector2(center.x - 11.0, cy)
-	var right := Vector2(center.x + 11.0, cy)
-	var mid := Vector2(center.x, cy + 2.0)
-	var bottom := Vector2(center.x, cy + 15.0)
+	# Coluna vertical de contenção holográfica
+	draw_rect(Rect2(cx - 5.0, cy - 18.0, 10.0, 36.0), Color("3ae6ff", 0.07), true)
 	
-	# Faceta superior esquerda (mais iluminada)
-	draw_colored_polygon(PackedVector2Array([top, left, mid]), Color("9ef5ff"))
-	# Faceta superior direita (iluminação média)
-	draw_colored_polygon(PackedVector2Array([top, mid, right]), Color("4ed7f2"))
-	# Faceta inferior esquerda (sombra média)
-	draw_colored_polygon(PackedVector2Array([mid, left, bottom]), Color("269bb8"))
-	# Faceta inferior direita (sombra profunda)
-	draw_colored_polygon(PackedVector2Array([mid, right, bottom]), Color("176f85"))
+	# Sombra projetada do escudo no chão
+	draw_circle(Vector2(cx, center.y + 11.0), 9.0, Color("020610", 0.45))
 	
-	# Contorno afiado do cristal
-	draw_polyline(PackedVector2Array([top, left, bottom, right, top]), Color("dffffc"), 1.4, true)
-	draw_line(top, mid, Color("ffffff", 0.8), 1.0, true)
-	draw_line(mid, bottom, Color("20788f"), 1.0, true)
-	draw_line(left, mid, Color("dffffc", 0.8), 1.0, true)
-	draw_line(mid, right, Color("35a9c4"), 1.0, true)
+	# ── CORPO PRINCIPAL DO ESCUDO DE COMBATE (Heraldic Cyber-Shield) ──
+	var shield_outer := PackedVector2Array([
+		Vector2(cx - 11.0, cy - 12.0),
+		Vector2(cx, cy - 9.5),
+		Vector2(cx + 11.0, cy - 12.0),
+		Vector2(cx + 12.5, cy - 2.0),
+		Vector2(cx + 9.0, cy + 7.0),
+		Vector2(cx, cy + 15.0),
+		Vector2(cx - 9.0, cy + 7.0),
+		Vector2(cx - 12.5, cy - 2.0)
+	])
+	draw_colored_polygon(shield_outer, Color("141c2c"))
 	
-	# Ponto especular de reflexo no topo esquerdo
-	draw_circle(Vector2(center.x - 3.5, cy - 6.5), 2.0, Color("ffffff"))
+	var shield_inner := PackedVector2Array([
+		Vector2(cx - 8.5, cy - 9.5),
+		Vector2(cx, cy - 7.5),
+		Vector2(cx + 8.5, cy - 9.5),
+		Vector2(cx + 9.5, cy - 1.5),
+		Vector2(cx + 6.8, cy + 5.5),
+		Vector2(cx, cy + 12.0),
+		Vector2(cx - 6.8, cy + 5.5),
+		Vector2(cx - 9.5, cy - 1.5)
+	])
+	draw_colored_polygon(shield_inner, Color("1e2a3f"))
+	
+	# Bordas metálicas de reforço com rebites dourados nos cantos
+	draw_polyline(shield_outer, Color("5b83ad"), 1.5, true)
+	draw_circle(Vector2(cx - 9.5, cy - 9.5), 1.2, Color("ffe07a"))
+	draw_circle(Vector2(cx + 9.5, cy - 9.5), 1.2, Color("ffe07a"))
+	draw_circle(Vector2(cx, cy + 12.5), 1.2, Color("ffe07a"))
+	
+	# ── GEMA PRECIOSA CENTRAL INCRUSTADA (Radiant Cyan Power Gem) ──
+	var gem_top := Vector2(cx, cy - 7.0)
+	var gem_left := Vector2(cx - 5.5, cy - 1.0)
+	var gem_right := Vector2(cx + 5.5, cy - 1.0)
+	var gem_bottom := Vector2(cx, cy + 6.0)
+	var gem_center := Vector2(cx, cy - 1.5)
+	
+	draw_colored_polygon(PackedVector2Array([gem_top, gem_left, gem_center]), Color("a6f8ff"))
+	draw_colored_polygon(PackedVector2Array([gem_top, gem_center, gem_right]), Color("5ce4ff"))
+	draw_colored_polygon(PackedVector2Array([gem_center, gem_left, gem_bottom]), Color("21a8cc"))
+	draw_colored_polygon(PackedVector2Array([gem_center, gem_right, gem_bottom]), Color("106a85"))
+	
+	var gem_poly := PackedVector2Array([gem_top, gem_left, gem_bottom, gem_right, gem_top])
+	draw_polyline(gem_poly, Color("e5ffff"), 1.2, true)
+	draw_circle(Vector2(cx - 1.5, cy - 4.0), 1.2, Color("ffffff"))
+	
+	# Gemas menores incrustadas nos flancos
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(cx - 8.0, cy - 1.0), Vector2(cx - 6.5, cy - 3.5),
+		Vector2(cx - 5.0, cy - 1.0), Vector2(cx - 6.5, cy + 1.5)
+	]), Color("5ae1ff"))
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(cx + 8.0, cy - 1.0), Vector2(cx + 6.5, cy - 3.5),
+		Vector2(cx + 5.0, cy - 1.0), Vector2(cx + 6.5, cy + 1.5)
+	]), Color("5ae1ff"))
+	
+	# Campo de força pulsante sutil
+	var shield_pulse := 1.0 + sin(animation_clock * 5.0) * 0.08
+	draw_arc(Vector2(cx, cy), 16.0 * shield_pulse, 0.0, TAU, 32, Color("5ef4ff", 0.35), 1.2, true)
 
 
 func _draw_breaker(point: Vector2i) -> void:
@@ -1857,35 +2040,62 @@ func _draw_breaker(point: Vector2i) -> void:
 
 func _draw_portal() -> void:
 	var center := _cell_center(portal_position)
-	var pulse := sin(animation_clock * 2.8) * 3.5
+	var pulse := sin(animation_clock * 2.8) * 3.0
 	var main_color := Color("c37aff") if portal_open else Color("c05e79")
 	var sec_color := Color("4eeeff") if portal_open else Color("ff7990")
+	var cx := center.x
+	var cy := center.y
 	
-	# Plataforma de saída com marcas chanfradas
-	draw_circle(center, 28.0 + pulse, Color(main_color, 0.12))
-	# Anéis de energia em rotação oposta
-	draw_arc(center, 21.0 + pulse, animation_clock * 0.9, animation_clock * 0.9 + TAU * 0.80, 48, Color(main_color, 0.9), 3.0, true)
-	draw_arc(center, 15.0 - pulse * 0.3, -animation_clock * 1.2, -animation_clock * 1.2 + TAU * 0.75, 40, Color(sec_color, 0.85), 2.0, true)
+	# Pilares emissores laterais (Stargate Pylons)
+	var pylon_w := 6.0
+	var pylon_h := 28.0
+	# Pilar esquerdo
+	draw_rect(Rect2(cx - 24.0, cy - pylon_h * 0.5, pylon_w, pylon_h), Color("120f26"), true)
+	draw_rect(Rect2(cx - 24.0, cy - pylon_h * 0.5, pylon_w, pylon_h), Color("3f2d6b"), false, 1.2)
+	draw_rect(Rect2(cx - 23.0, cy - 8.0, 4.0, 16.0), Color(sec_color, 0.75), true)
+	# Pilar direito
+	draw_rect(Rect2(cx + 18.0, cy - pylon_h * 0.5, pylon_w, pylon_h), Color("120f26"), true)
+	draw_rect(Rect2(cx + 18.0, cy - pylon_h * 0.5, pylon_w, pylon_h), Color("3f2d6b"), false, 1.2)
+	draw_rect(Rect2(cx + 19.0, cy - 8.0, 4.0, 16.0), Color(sec_color, 0.75), true)
 	
-	# Horizonte de eventos (buraco de transporte)
-	draw_circle(center, 11.5, Color("070414", 0.95))
-	draw_circle(center, 6.0 + sin(animation_clock * 6.0) * 1.5, Color("ffffff", 0.95))
+	# Arco estrutural superior
+	var arch_pts := PackedVector2Array([
+		Vector2(cx - 21.0, cy - pylon_h * 0.5),
+		Vector2(cx, cy - 22.0),
+		Vector2(cx + 21.0, cy - pylon_h * 0.5)
+	])
+	draw_polyline(arch_pts, Color("4a357d"), 2.4, true)
+	draw_circle(Vector2(cx, cy - 22.0), 2.5, Color(main_color, 0.9))
 	
-	# Setas holográficas ascendentes dentro do portal (estilo elevador sci-fi)
-	var arrow_y := fposmod(-animation_clock * 18.0, 16.0) - 8.0
+	# Plataforma de ancoragem no chão
+	draw_circle(center, 28.0 + pulse, Color(main_color, 0.10))
+	
+	# Anéis de energia em rotação contrária
+	draw_arc(center, 21.0 + pulse, animation_clock * 1.1, animation_clock * 1.1 + TAU * 0.75, 48, Color(main_color, 0.9), 2.8, true)
+	draw_arc(center, 15.0 - pulse * 0.3, -animation_clock * 1.4, -animation_clock * 1.4 + TAU * 0.75, 40, Color(sec_color, 0.85), 2.0, true)
+	
+	# Horizonte de eventos (vórtice gravitacional profundo)
+	draw_circle(center, 12.0, Color("050210", 0.98))
+	draw_circle(center, 7.0 + sin(animation_clock * 5.0) * 1.2, Color(main_color, 0.7))
+	draw_circle(center, 3.5 + sin(animation_clock * 7.0) * 0.8, Color("ffffff", 0.95))
+	
+	# Setas holográficas verticais ascendentes
+	var arrow_y := fposmod(-animation_clock * 20.0, 16.0) - 8.0
 	var arrow_pts := PackedVector2Array([
 		center + Vector2(-5, arrow_y + 3), center + Vector2(0, arrow_y - 2), center + Vector2(5, arrow_y + 3)
 	])
-	draw_polyline(arrow_pts, Color("ffffff", 0.7), 1.5, true)
+	draw_polyline(arrow_pts, Color("ffffff", 0.75), 1.5, true)
 	
-	# Partículas orbitais
-	for i in 6:
-		var angle := animation_clock * 0.8 + float(i) * TAU / 6.0
-		var orbit := Vector2(cos(angle), sin(angle) * 0.65) * (26.0 + pulse)
-		draw_circle(center + orbit, 1.8, Color(sec_color, 0.85))
+	# Glifos / Runas orbitais holográficas
+	for i in 4:
+		var angle := animation_clock * 0.75 + float(i) * TAU / 4.0
+		var orbit := Vector2(cos(angle), sin(angle) * 0.7) * (25.0 + pulse)
+		draw_circle(center + orbit, 2.0, Color(sec_color, 0.85))
+		draw_circle(center + orbit, 0.8, Color("ffffff"))
+		
 	if not portal_open:
-		draw_circle(center, 7.0, Color("251323", 0.92))
-		draw_arc(center, 17.0, 0.0, TAU, 40, Color("ff7990"), 2.0, true)
+		draw_circle(center, 8.0, Color("200918", 0.92))
+		draw_arc(center, 18.0, 0.0, TAU, 40, Color("ff7990"), 2.2, true)
 
 
 func _draw_switch(item: Dictionary) -> void:
@@ -2092,24 +2302,16 @@ func _draw_player() -> void:
 			for v in 6:
 				var a := rot + float(v) * TAU / 6.0
 				draw_circle(center + Vector2(cos(a), sin(a)) * hex_radius, 1.8 * size_scale, Color("ffffff", hex_alpha * 1.2))
-	# Esfera 3D da Bola Vermelha
+	# Esfera 3D Volumétrica da Bola Vermelha
 	var bob := sin(animation_clock * 8.5) * 1.0
-	var shell_transform := center + Vector2(0, bob - hop)
-	draw_set_transform(shell_transform, roll, stretch * size_scale)
-	
-	# Camada 1: Base de sombra esferóide carmesim profunda
-	draw_circle(Vector2.ZERO, 16.5, Color("5c081e", visibility))
-	# Camada 2: Corpo principal vermelho vibrante
-	draw_circle(Vector2(-0.4, -0.6), 15.2, Color("e01b3c", visibility))
-	# Camada 3: Gradiente de luz radiante superior-esquerda
-	draw_circle(Vector2(-2.2, -2.5), 12.0, Color("f93254", 0.95 * visibility))
-	# Camada 4: Luz de borda / Rim light suave na extremidade inferior
-	draw_arc(Vector2.ZERO, 15.6, 0.3, 2.6, 28, Color("ff8299", 0.40 * visibility), 1.5, true)
-	# Camada 5: Brilho especular difuso
-	draw_circle(Vector2(-5.5, -6.5), 4.2, Color("ffccd6", 0.45 * visibility))
-	# Camada 6: Ponto quente especular branco puro
-	draw_circle(Vector2(-6.8, -7.8), 2.2, Color("ffffff", 0.95 * visibility))
-	
+	var sphere_pos := center + Vector2(0, bob - hop)
+	draw_set_transform(sphere_pos, roll, stretch * size_scale)
+	if player_sphere_texture != null:
+		var diameter := 32.0
+		var tex_rect := Rect2(-diameter * 0.5, -diameter * 0.5, diameter, diameter)
+		draw_texture_rect(player_sphere_texture, tex_rect, false, Color(1, 1, 1, visibility))
+	else:
+		draw_circle(Vector2.ZERO, 15.5, Color("e01b3c", visibility))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	
 	# Olhos cibernéticos expressivos

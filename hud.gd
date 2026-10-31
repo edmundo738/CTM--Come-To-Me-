@@ -174,13 +174,6 @@ func _draw_footer(screen: Vector2) -> void:
 	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("06091a", 0.92))
 	draw_rect(Rect2(0, screen.y - footer_height, screen.x, 1.5), Color("8040c0", 0.6))
 	
-	# ── Corações (vidas) no lado esquerdo ──────────────────────────────────────
-	var heart_y := screen.y - footer_height * 0.5 + 2.0
-	var max_hp := 3 # pode ser expandido futuramente
-	for i in max_hp:
-		var hx := 18.0 + float(i) * 28.0
-		_draw_heart(Vector2(hx, heart_y), true)
-	
 	# ── Controlos centrais ──────────────────────────────────────────────────────
 	var controls := "W A S D  MOVER     ESPACO  SALTAR     B  DEMOLIR     ESC  PAUSA     R  REPETIR     M  MUSICA"
 	draw_string(font, Vector2(screen.x * 0.5, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x * 0.6, 9, Color("6050a0"))
@@ -414,11 +407,42 @@ func _draw_coin_icon(x: float, y: float, scale: float = 1.0) -> void:
 
 
 func _draw_shield_icon(x: float, y: float, scale: float = 1.0) -> void:
-	var polygon := PackedVector2Array([Vector2(x, y - 10 * scale), Vector2(x + 8 * scale, y - 5 * scale), Vector2(x + 6 * scale, y + 6 * scale), Vector2(x, y + 10 * scale), Vector2(x - 6 * scale, y + 6 * scale), Vector2(x - 8 * scale, y - 5 * scale)])
-	draw_colored_polygon(polygon, Color("4ce5f4"))
-	var outline := polygon.duplicate()
-	outline.append(polygon[0])
-	draw_polyline(outline, Color("d5fcff"), 1.2 * scale, true)
+	# Escudo de combate com armação de titânio e gema incrustada
+	var shield_outer := PackedVector2Array([
+		Vector2(x - 9.0 * scale, y - 10.0 * scale),
+		Vector2(x, y - 8.0 * scale),
+		Vector2(x + 9.0 * scale, y - 10.0 * scale),
+		Vector2(x + 10.0 * scale, y - 2.0 * scale),
+		Vector2(x + 7.0 * scale, y + 6.0 * scale),
+		Vector2(x, y + 12.0 * scale),
+		Vector2(x - 7.0 * scale, y + 6.0 * scale),
+		Vector2(x - 10.0 * scale, y - 2.0 * scale)
+	])
+	draw_colored_polygon(shield_outer, Color("142236"))
+	var shield_inner := PackedVector2Array([
+		Vector2(x - 6.5 * scale, y - 7.5 * scale),
+		Vector2(x, y - 6.0 * scale),
+		Vector2(x + 6.5 * scale, y - 7.5 * scale),
+		Vector2(x + 7.5 * scale, y - 1.5 * scale),
+		Vector2(x + 5.0 * scale, y + 4.5 * scale),
+		Vector2(x, y + 9.5 * scale),
+		Vector2(x - 5.0 * scale, y + 4.5 * scale),
+		Vector2(x - 7.5 * scale, y - 1.5 * scale)
+	])
+	draw_colored_polygon(shield_inner, Color("1f334d"))
+	var outline := shield_outer.duplicate()
+	outline.append(shield_outer[0])
+	draw_polyline(outline, Color("6de9ff"), 1.2 * scale, true)
+	
+	# Gema ciano lapidada no centro do ícone
+	var gem_pts := PackedVector2Array([
+		Vector2(x, y - 5.0 * scale),
+		Vector2(x - 4.0 * scale, y),
+		Vector2(x, y + 5.0 * scale),
+		Vector2(x + 4.0 * scale, y)
+	])
+	draw_colored_polygon(gem_pts, Color("5ae1ff"))
+	draw_circle(Vector2(x - 1.0 * scale, y - 2.0 * scale), 1.0 * scale, Color("ffffff"))
 
 
 func _draw_switch_icon(x: float, y: float, scale: float = 1.0) -> void:
