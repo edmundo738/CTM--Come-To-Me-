@@ -73,6 +73,10 @@ var resume_floor := 1
 var resume_coins := 0
 var resume_seed := 0
 var resume_history: Array[int] = []
+var dev_menu_open: bool = false
+var dev_god_mode: bool = false
+var dev_noclip: bool = false
+var joy_axis_cooldown: float = 0.0
 var coins_at_floor_start := 0
 var persistence_enabled := true
 var profile_path := "user://come_to_me_profile.cfg"
@@ -265,7 +269,189 @@ func handle_hud_action(action: String) -> void:
 		audio.toggle_music()
 	elif action.begins_with("floor:"):
 		start_level(int(action.trim_prefix("floor:")))
+	elif action == "dev_toggle":
+		dev_toggle_menu()
+	elif action == "dev_god":
+		dev_toggle_god_mode()
+	elif action == "dev_noclip":
+		dev_toggle_noclip()
+	elif action == "dev_floor_minus_10":
+		dev_jump_floor(floor_number - 10)
+	elif action == "dev_floor_minus_1":
+		dev_jump_floor(floor_number - 1)
+	elif action == "dev_floor_plus_1":
+		dev_jump_floor(floor_number + 1)
+	elif action == "dev_floor_plus_10":
+		dev_jump_floor(floor_number + 10)
+	elif action.begins_with("dev_floor:"):
+		dev_jump_floor(int(action.trim_prefix("dev_floor:")))
+	elif action.begins_with("dev_spawn:"):
+		dev_spawn_enemy(action.trim_prefix("dev_spawn:"))
+	elif action == "dev_clear_mobs":
+		dev_clear_enemies()
+	elif action == "dev_resources":
+		dev_give_resources()
+	elif action == "dev_open_portal":
+		dev_open_portal()
+	elif action == "dev_arena":
+		dev_load_sandbox_arena()
 	queue_redraw()
+
+
+func dev_toggle_menu() -> void:
+	dev_menu_open = not dev_menu_open
+	last_notice = "MENU DEV: %s [F1]" % ("ABERTO" if dev_menu_open else "FECHADO")
+	notice_timer = 2.0
+	queue_redraw()
+
+
+func dev_toggle_god_mode() -> void:
+	dev_god_mode = not dev_god_mode
+	last_notice = "MODO DEUS: %s" % ("ATIVADO (IMORTAL)" if dev_god_mode else "DESATIVADO")
+	notice_timer = 2.0
+	queue_redraw()
+
+
+func dev_toggle_noclip() -> void:
+	dev_noclip = not dev_noclip
+	last_notice = "NO-CLIP: %s" % ("ATIVADO (ATRAVESSA PAREDES)" if dev_noclip else "DESATIVADO")
+	notice_timer = 2.0
+	queue_redraw()
+
+
+func dev_jump_floor(target_floor: int) -> void:
+	target_floor = clampi(target_floor, 1, 200)
+	floor_number = target_floor
+	generate_floor(target_floor)
+	game_state = "playing"
+	dev_menu_open = false
+	last_notice = "TELEPORTE DEV: ANDAR %02d" % target_floor
+	notice_timer = 2.5
+	queue_redraw()
+
+
+func dev_spawn_enemy(role: String) -> void:
+	var spawn_pos: Vector2i = player_position + facing
+	if not _inside(spawn_pos) or _enemy_at(spawn_pos):
+		for dir in FOUR_WAY:
+			var cand: Vector2i = player_position + dir
+			if _inside(cand) and not _enemy_at(cand):
+				spawn_pos = cand
+				break
+	enemies.append({
+		"pos": spawn_pos,
+		"from": _cell_center(spawn_pos),
+		"to": _cell_center(spawn_pos),
+		"next": spawn_pos,
+		"t": 1.0,
+		"role": role,
+		"phase": 0
+	})
+	_spawn_burst(_cell_center(spawn_pos), Color("ff59c7"), 20, 120.0)
+	last_notice = "SPAWN DEV: %s" % role.to_upper()
+	notice_timer = 2.0
+	_update_enemy_intents()
+	queue_redraw()
+
+
+func dev_clear_enemies() -> void:
+	enemies.clear()
+	last_notice = "INIMIGOS ELIMINADOS"
+	notice_timer = 2.0
+	queue_redraw()
+
+
+func dev_give_resources() -> void:
+	total_coins += 10
+	charges = mini(charges + 1, 3)
+	breach_charges = mini(breach_charges + 1, 3)
+	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, +1 ESCUDO, +1 DEMOLIR)"
+	notice_timer = 2.5
+	audio.play("coin")
+	queue_redraw()
+
+
+func dev_open_portal() -> void:
+	portal_open = true
+	last_notice = "PORTAL DESTRANCADO"
+	notice_timer = 2.5
+	_spawn_shockwave(_cell_center(portal_position), 10.0, 60.0, Color("c37aff"), 0.5)
+	queue_redraw()
+
+
+func dev_load_sandbox_arena() -> void:
+	world_size = Vector2i(18, 14)
+	grid.clear()
+	for y in world_size.y:
+		var row: Array[int] = []
+		for x in world_size.x:
+			if x == 0 or x == world_size.x - 1 or y == 0 or y == world_size.y - 1:
+				row.append(TILE_BORDER)
+			else:
+				row.append(TILE_FLOOR)
+		grid.append(row)
+	player_position = Vector2i(9, 7)
+	player_from = _cell_center(player_position)
+	player_to = player_from
+	player_anim = 1.0
+	portal_position = Vector2i(15, 7)
+	portal_open = true
+	enemies.clear()
+	enemies.append({"pos": Vector2i(5, 5), "from": _cell_center(Vector2i(5, 5)), "to": _cell_center(Vector2i(5, 5)), "next": Vector2i(5, 5), "t": 1.0, "role": "hunter", "phase": 0})
+	enemies.append({"pos": Vector2i(13, 5), "from": _cell_center(Vector2i(13, 5)), "to": _cell_center(Vector2i(13, 5)), "next": Vector2i(13, 5), "t": 1.0, "role": "sentry", "phase": 0})
+	enemies.append({"pos": Vector2i(5, 9), "from": _cell_center(Vector2i(5, 9)), "to": _cell_center(Vector2i(5, 9)), "next": Vector2i(5, 9), "t": 1.0, "role": "wisp", "phase": 0})
+	enemies.append({"pos": Vector2i(13, 9), "from": _cell_center(Vector2i(13, 9)), "to": _cell_center(Vector2i(13, 9)), "next": Vector2i(13, 9), "t": 1.0, "role": "rusher", "phase": 0})
+	coins.clear()
+	shields.clear()
+	breakers.clear()
+	switches.clear()
+	traps.clear()
+	nav_chevrons.clear()
+	charges = 2
+	breach_charges = 2
+	game_state = "playing"
+	dev_menu_open = false
+	last_notice = "SALA DE TESTES DEV CARREGADA (ARENA LIMPA)"
+	notice_timer = 3.0
+	_update_enemy_intents()
+	_update_camera(1.0)
+	queue_redraw()
+
+
+func _trigger_shake(time: float, strength: float) -> void:
+	shake_time = maxf(shake_time, time)
+	shake_strength = maxf(shake_strength, strength)
+	var rumble := clampf(strength / 15.0, 0.2, 1.0)
+	Input.start_joy_vibration(0, rumble * 0.4, rumble, time)
+
+
+func _handle_world_click(screen_pos: Vector2) -> void:
+	if game_state != "playing" or camera == null:
+		return
+	var viewport := get_viewport_rect().size
+	var world_pos := camera.global_position - (viewport * 0.5) + screen_pos
+	var cell := Vector2i(int(floor(world_pos.x / CELL)), int(floor(world_pos.y / CELL)))
+	var diff := cell - player_position
+	if diff in [Vector2i.UP, Vector2i.DOWN, Vector2i.LEFT, Vector2i.RIGHT]:
+		facing = diff
+		try_move(diff.x, diff.y)
+	elif diff in [Vector2i(0, 2), Vector2i(0, -2), Vector2i(2, 0), Vector2i(-2, 0)]:
+		facing = diff / 2
+		try_jump()
+
+
+func _handle_swipe(start_pos: Vector2, end_pos: Vector2) -> void:
+	if game_state != "playing":
+		return
+	var diff := end_pos - start_pos
+	if diff.length() < 30.0:
+		return
+	if absf(diff.x) > absf(diff.y):
+		facing = Vector2i(signi(diff.x), 0)
+		try_move(signi(diff.x), 0)
+	else:
+		facing = Vector2i(0, signi(diff.y))
+		try_move(0, signi(diff.y))
 
 
 func open_level_select() -> void:
@@ -605,7 +791,7 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 		result.append(point)
 		for direction in FOUR_WAY:
 			var next: Vector2i = point + direction
-			if _inside(next) and grid[next.y][next.x] == 0 and not visited.has(next):
+			if _inside(next) and _is_floor(next) and not visited.has(next):
 				visited[next] = true
 				queue.append(next)
 	return result
@@ -667,7 +853,7 @@ func _update_enemy_intents() -> void:
 			if dash_direction != Vector2i.ZERO:
 				var middle := origin + dash_direction
 				var landing := origin + dash_direction * 2
-				if _inside(middle) and _inside(landing) and grid[middle.y][middle.x] == TILE_FLOOR and grid[landing.y][landing.x] == TILE_FLOOR and not _enemy_at(middle, enemy) and not _enemy_at(landing, enemy) and not reserved.has(middle) and not reserved.has(landing):
+				if _inside(middle) and _inside(landing) and _is_floor(middle) and _is_floor(landing) and not _enemy_at(middle, enemy) and not _enemy_at(landing, enemy) and not reserved.has(middle) and not reserved.has(landing):
 					enemy.next = landing
 					reserved.append(landing)
 					continue
@@ -680,7 +866,7 @@ func _update_enemy_intents() -> void:
 		var best_distance: int = _manhattan(origin, target)
 		for direction in FOUR_WAY:
 			var candidate: Vector2i = origin + direction
-			if not _inside(candidate) or grid[candidate.y][candidate.x] != 0:
+			if not _inside(candidate) or not _is_floor(candidate):
 				continue
 			if _enemy_at(candidate, enemy) or reserved.has(candidate):
 				continue
@@ -713,7 +899,7 @@ func _enemy_sees_player(origin: Vector2i) -> bool:
 		if twice <= dx:
 			error += dx
 			y += sy
-		if (x != player_position.x or y != player_position.y) and grid[y][x] != TILE_FLOOR:
+		if (x != player_position.x or y != player_position.y) and not _is_floor(Vector2i(x, y)):
 			return false
 	return true
 
@@ -740,15 +926,15 @@ func try_move(dx: int, dy: int) -> void:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
-	if _inside(next) and grid[next.y][next.x] == 0:
+	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
+	if can_walk:
 		_begin_player_move(next)
 		moves_this_floor += 1
 		audio.play("step")
 	else:
 		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
 		notice_timer = 1.0
-		shake_time = 0.12
-		shake_strength = 5.0
+		_trigger_shake(0.12, 5.0)
 		audio.play("blocked")
 		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
 	_take_turn()
@@ -772,11 +958,13 @@ func try_jump() -> void:
 		return
 	var middle := player_position + facing
 	var landing := player_position + facing * 2
-	if not _inside(middle) or not _inside(landing) or grid[middle.y][middle.x] != TILE_FLOOR or grid[landing.y][landing.x] != TILE_FLOOR:
+	var can_jump: bool = _inside(middle) and _inside(landing) and _is_floor(middle) and _is_floor(landing)
+	if dev_noclip and _inside(middle) and _inside(landing):
+		can_jump = true
+	if not can_jump:
 		last_notice = "Precisas de duas casas livres para saltar"
 		notice_timer = 1.5
-		shake_time = 0.12
-		shake_strength = 3.5
+		_trigger_shake(0.12, 3.5)
 		audio.play("blocked")
 		queue_redraw()
 		return
@@ -793,11 +981,41 @@ func try_break_wall() -> void:
 	if game_state != "playing":
 		return
 	var target := player_position + facing
-	if not _inside(target) or grid[target.y][target.x] == TILE_BORDER:
+	if not _inside(target):
+		return
+		
+	# Verificar se há um inimigo na célula à frente para demolir
+	var enemy_idx := -1
+	for i in enemies.size():
+		if enemies[i].pos == target:
+			enemy_idx = i
+			break
+	if enemy_idx >= 0:
+		if breach_charges <= 0:
+			last_notice = "CARGA DE DEMOLICAO EM FALTA PARA DESTRUIR INIMIGO"
+			notice_timer = 1.4
+			audio.play("blocked")
+			queue_redraw()
+			return
+		breach_charges -= 1
+		var dead_role: String = enemies[enemy_idx].get("role", "hunter")
+		enemies.remove_at(enemy_idx)
+		moves_this_floor += 1
+		_trigger_shake(0.28, 14.0)
+		flash_time = 0.12
+		flash_color = Color("ff4d73")
+		last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
+		notice_timer = 2.0
+		_spawn_burst(_cell_center(target), Color("ff3366"), 42, 220.0)
+		_spawn_shockwave(_cell_center(target), 8.0, 52.0, Color("ff6b8b"), 0.4)
+		audio.play("break_wall")
+		_take_turn()
+		return
+
+	if grid[target.y][target.x] == TILE_BORDER:
 		last_notice = "A FRONTEIRA DAS RUINAS NAO CEDE"
 		notice_timer = 1.2
-		shake_time = 0.1
-		shake_strength = 4.0
+		_trigger_shake(0.1, 4.0)
 		audio.play("blocked")
 		queue_redraw()
 		return
@@ -816,8 +1034,7 @@ func try_break_wall() -> void:
 	breach_charges -= 1
 	grid[target.y][target.x] = TILE_FLOOR
 	moves_this_floor += 1
-	shake_time = 0.22
-	shake_strength = 10.0
+	_trigger_shake(0.22, 10.0)
 	flash_time = 0.08
 	flash_color = Color("ffb365")
 	last_notice = "PAREDE ABERTA — OS PERSEGUIDORES AVANCAM"
@@ -919,6 +1136,8 @@ func _trigger_traps() -> void:
 
 
 func _check_enemy_collision() -> void:
+	if dev_god_mode:
+		return
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		if enemy.pos != player_position:
@@ -939,7 +1158,7 @@ func _stagger_warden(index: int) -> void:
 	var best_distance := _manhattan(enemy.pos, player_position)
 	for direction in FOUR_WAY:
 		var candidate: Vector2i = enemy.pos + direction
-		if not _inside(candidate) or grid[candidate.y][candidate.x] != TILE_FLOOR or _enemy_at(candidate, enemy):
+		if not _inside(candidate) or not _is_floor(candidate) or _enemy_at(candidate, enemy):
 			continue
 		var distance := _manhattan(candidate, player_position)
 		if distance > best_distance:
@@ -1037,6 +1256,19 @@ func _make_puddle_outline() -> PackedVector2Array:
 		var roughness := rng.randf_range(0.965, 1.035)
 		outline.append(capture_origin + Vector2(cos(angle) * CELL * 1.28 * roughness, sin(angle) * CELL * 1.16 * roughness))
 	return outline
+
+
+func _spawn_shockwave(origin: Vector2, start_r: float, max_r: float, col: Color, duration: float) -> void:
+	particles.append({
+		"kind": "shockwave",
+		"pos": origin,
+		"velocity": Vector2.ZERO,
+		"radius": start_r,
+		"max_radius": max_r,
+		"life": duration,
+		"max_life": duration,
+		"color": col
+	})
 
 
 func _spawn_blood_burst(origin: Vector2) -> void:
@@ -1291,6 +1523,19 @@ func _process(delta: float) -> void:
 	_update_capture_sequence(delta)
 	if audio != null and audio.has_method("set_threat"):
 		audio.set_threat(_current_threat_level())
+	joy_axis_cooldown = maxf(0.0, joy_axis_cooldown - delta)
+	if joy_axis_cooldown == 0.0 and game_state == "playing":
+		var stick_x := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
+		var stick_y := Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)
+		var stick := Vector2(stick_x, stick_y)
+		if stick.length_squared() > 0.35:
+			if absf(stick.x) > absf(stick.y):
+				facing = Vector2i(signi(stick.x), 0)
+				try_move(signi(stick.x), 0)
+			else:
+				facing = Vector2i(0, signi(stick.y))
+				try_move(0, signi(stick.y))
+			joy_axis_cooldown = 0.22
 	_update_camera(delta)
 	queue_redraw()
 
@@ -1327,6 +1572,42 @@ func _update_camera(delta: float) -> void:
 		camera.global_position = desired
 	else:
 		camera.global_position = camera.global_position.lerp(desired, 1.0 - exp(-delta * 8.5))
+	
+	# Tremer a câmara inteira uniformemente (chão, paredes, itens, inimigos)
+	if shake_time > 0.0:
+		camera.offset = Vector2(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0)) * shake_strength * (shake_time / 0.25)
+	else:
+		camera.offset = Vector2.ZERO
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventJoypadButton and event.pressed:
+		if game_state == "captured":
+			return
+		match event.button_index:
+			JOY_BUTTON_DPAD_UP:
+				facing = Vector2i.UP
+				try_move(0, -1)
+			JOY_BUTTON_DPAD_DOWN:
+				facing = Vector2i.DOWN
+				try_move(0, 1)
+			JOY_BUTTON_DPAD_LEFT:
+				facing = Vector2i.LEFT
+				try_move(-1, 0)
+			JOY_BUTTON_DPAD_RIGHT:
+				facing = Vector2i.RIGHT
+				try_move(1, 0)
+			JOY_BUTTON_A:
+				try_jump()
+			JOY_BUTTON_X:
+				try_break_wall()
+			JOY_BUTTON_START:
+				if game_state == "playing":
+					game_state = "paused"
+				elif game_state == "paused":
+					game_state = "playing"
+			JOY_BUTTON_BACK, JOY_BUTTON_Y:
+				dev_toggle_menu()
 
 
 func _player_visual_position() -> Vector2:
@@ -1350,6 +1631,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey:
 		return
 	if not event.pressed or event.echo:
+		return
+	if event.keycode == KEY_F1:
+		dev_toggle_menu()
 		return
 	if game_state == "captured":
 		return
@@ -1431,10 +1715,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _draw() -> void:
 	if world_size == Vector2i.ZERO:
 		return
-	var shake := Vector2.ZERO
-	if shake_time > 0.0:
-		shake = Vector2(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0)) * shake_strength * shake_time / 0.25
-	draw_set_transform(shake)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	var half_view := get_viewport_rect().size * 0.5
 	var first_x := maxi(0, int(floor((camera.global_position.x - half_view.x) / CELL)) - 1)
 	var last_x := mini(world_size.x - 1, int(ceil((camera.global_position.x + half_view.x) / CELL)) + 1)
@@ -1694,14 +1975,18 @@ func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
 		draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
 
 
+func _enemy_visual_position(enemy: Dictionary) -> Vector2:
+	var t: float = enemy.get("t", 1.0)
+	t = t * t * (3.0 - 2.0 * t)
+	return enemy.from.lerp(enemy.to, t)
+
+
 func _draw_floor_neon_glow() -> void:
 	var pulse := 1.0 + sin(animation_clock * 3.8) * 0.07
 	
-	# Halo néon da bola vermelha do jogador
+	# Halo néon suave da bola vermelha do jogador no chão (sem anel ruidoso)
 	var p_pos := _player_visual_position()
-	_draw_radial_light(p_pos, 54.0, Color("ff6080", 0.92), Color("ff1038", 0.45), pulse)
-	# Anel de energia circundante (emissivo e pulsante)
-	draw_arc(p_pos, 19.0 * pulse, 0.0, TAU, 36, Color("ff3b5c", 0.90), 1.8, true)
+	_draw_radial_light(p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
 	
 	# Halo dos escudos cibernéticos (ciano radiante)
 	for s in shields:
@@ -1717,6 +2002,45 @@ func _draw_floor_neon_glow() -> void:
 	for c in coins:
 		var cc := _cell_center(c)
 		_draw_radial_light(cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
+		
+	# Halo dos interruptores (azul/ciano inativo, verde esmeralda ativado)
+	for sw in switches:
+		var sc := _cell_center(sw.pos)
+		var sw_on: bool = sw.get("active", false)
+		var sw_core := Color("a0ffcf", 0.92) if sw_on else Color("6de9ff", 0.82)
+		var sw_glow := Color("15b565", 0.48) if sw_on else Color("1468b8", 0.38)
+		_draw_radial_light(sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
+		
+	# Halo dos inimigos no chão (luz volumétrica viva e colorida por tipo de mob)
+	for enemy in enemies:
+		var ec := _enemy_visual_position(enemy)
+		var role: String = enemy.get("role", "hunter")
+		var alert: bool = enemy.get("alert", false)
+		var e_radius := 44.0
+		var e_core := Color("ff4865", 0.90)
+		var e_glow := Color("b50824", 0.45)
+		match role:
+			"hunter":
+				e_radius = 42.0
+				e_core = Color("ff4865", 0.90) if alert else Color("e62a4a", 0.75)
+				e_glow = Color("b50824", 0.45)
+			"sentry":
+				e_radius = 45.0
+				e_core = Color("ffd043", 0.92) if alert else Color("e6a520", 0.75)
+				e_glow = Color("a65c00", 0.42)
+			"wisp":
+				e_radius = 48.0
+				e_core = Color("da8aff", 0.92)
+				e_glow = Color("8520cb", 0.46)
+			"rusher":
+				e_radius = 46.0
+				e_core = Color("ff8b3d", 0.95) if alert else Color("e66a1a", 0.80)
+				e_glow = Color("b33500", 0.46)
+			"warden":
+				e_radius = 62.0
+				e_core = Color("c95eff", 0.95)
+				e_glow = Color("680ca8", 0.52)
+		_draw_radial_light(ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
 		
 	# Halo do portal dimensional (vórtice violeta/ciano expansivo)
 	var pc := _cell_center(portal_position)
@@ -2100,12 +2424,50 @@ func _draw_portal() -> void:
 
 func _draw_switch(item: Dictionary) -> void:
 	var center := _cell_center(item.pos)
-	var color := Color("61edfa") if not item.active else Color("b0fb8b")
-	var pulse := 1.0 + sin(animation_clock * 4.0 + center.x) * 0.08
-	draw_circle(center, 21.0 * pulse, Color(color, 0.1))
-	draw_rect(Rect2(center - Vector2(13, 10), Vector2(26, 20)), Color("202944"), true)
-	draw_rect(Rect2(center - Vector2(10, 7), Vector2(20, 14)), color, true)
-	draw_circle(center, 4.0, Color("f5ffff"))
+	var is_active: bool = item.active
+	var state_col := Color("5ef59f") if is_active else Color("52e3ff")
+	var pulse := 1.0 + sin(animation_clock * 4.2 + center.x * 0.05) * 0.08
+	
+	# Sombra da consola projetada no chão
+	draw_circle(center + Vector2(0, 5), 14.0, Color("02050f", 0.45))
+	
+	# Placa base octogonal industrial chanfrada
+	var base_poly := _chamfered_square_points(center, 13.5, 4.0)
+	draw_colored_polygon(base_poly, Color("151a2d"))
+	var base_border := base_poly.duplicate()
+	base_border.append(base_poly[0])
+	draw_polyline(base_border, Color("35426b"), 1.2, true)
+	
+	# Parafusos / rebites nos 4 cantos
+	var bolt_offsets := [Vector2(-9, -9), Vector2(9, -9), Vector2(-9, 9), Vector2(9, 9)]
+	for bo in bolt_offsets:
+		draw_circle(center + bo, 1.4, Color("4a5987"))
+		draw_circle(center + bo + Vector2(-0.4, -0.4), 0.5, Color("9ab0e6"))
+	
+	# Ranhuras de conduta nos 4 lados ligando ao chão
+	draw_line(center + Vector2(0, -13), center + Vector2(0, -8), Color(state_col, 0.7), 1.6, true)
+	draw_line(center + Vector2(0, 8), center + Vector2(0, 13), Color(state_col, 0.7), 1.6, true)
+	draw_line(center + Vector2(-13, 0), center + Vector2(-8, 0), Color(state_col, 0.7), 1.6, true)
+	draw_line(center + Vector2(8, 0), center + Vector2(13, 0), Color(state_col, 0.7), 1.6, true)
+	
+	# Anel metálico interno elevado (cilindro 2.5D)
+	draw_circle(center + Vector2(0, 1), 8.2, Color("0c101e"))
+	draw_circle(center, 8.0, Color("202842"))
+	draw_circle(center, 7.0, Color("10162a"))
+	
+	# Cristal / Pilar holográfico central pulsante
+	var crystal_radius := 4.6 * (pulse if is_active else 1.0)
+	draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
+	draw_circle(center, crystal_radius, state_col)
+	# Núcleo branco brilhante de alta energia
+	draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
+	
+	# Anel de status circular giratório
+	if is_active:
+		var rot := animation_clock * 2.4
+		draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
+	else:
+		draw_arc(center, 10.5, 0.0, TAU, 24, Color("3488aa", 0.5), 1.0, true)
 
 
 func _draw_trap(trap: Dictionary) -> void:
@@ -2121,132 +2483,237 @@ func _draw_trap(trap: Dictionary) -> void:
 
 
 func _draw_enemy(enemy: Dictionary) -> void:
-	var t: float = enemy.t
-	t = t * t * (3.0 - 2.0 * t)
-	var center: Vector2 = enemy.from.lerp(enemy.to, t)
+	var center := _enemy_visual_position(enemy)
 	var role: String = enemy.get("role", "hunter")
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
-	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.05 if role == "sentry" else 1.0
-	var bob := sin(animation_clock * (5.5 if alert else 3.0) + center.x * 0.015) * (3.0 if role == "wisp" else 1.4)
+	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.08 if role == "sentry" else 1.02
+	var bob := sin(animation_clock * (5.5 if alert else 3.2) + center.x * 0.015) * (3.0 if role == "wisp" else 1.4)
 	center.y += bob
-	var color := Color("ff914d") if role == "rusher" else Color("ffb64d") if role == "sentry" else Color("c088ff") if role == "wisp" else Color("b84eff") if role == "warden" else Color("ff3e5e")
 	var face: Vector2i = enemy.get("face", Vector2i(signi(player_position.x - enemy.pos.x), signi(player_position.y - enemy.pos.y)))
-	var face_offset := Vector2(face) * (2.2 if alert else 0.9)
+	if face == Vector2i.ZERO:
+		face = Vector2i.DOWN
+	var face_offset := Vector2(face) * (2.2 if alert else 1.2)
 	var half_size := 15.5 * size_scale
-	var shell_alpha := 0.85 if role == "wisp" else 1.0
-	var glow := Color(color, 0.28 if alert else 0.10)
 	
-	# Sombra de chão dinâmica
-	draw_circle(center + Vector2(0, 11 * size_scale), half_size * 1.05, Color("020611", 0.45))
-	# Halo de alerta / emissivo
-	draw_circle(center, half_size * (1.55 if alert else 1.25), glow)
-	
-	if role == "wisp":
-		# Fantasma flutuante etéreo com cauda fluida
-		var flame_wobble := sin(animation_clock * 8.0 + center.x) * 2.5
-		var wisp_radius := half_size * 0.95
-		draw_circle(center, wisp_radius * 1.15, Color(color, 0.25))
-		draw_circle(center, wisp_radius, Color(color.lightened(0.2), 0.85))
-		draw_circle(center + Vector2(0, -2), wisp_radius * 0.65, Color("ffffff", 0.75))
-		# Cauda de plasma
-		var tail := PackedVector2Array([
-			center + Vector2(-wisp_radius * 0.6, 2),
-			center + Vector2(wisp_radius * 0.6, 2),
-			center + Vector2(flame_wobble, wisp_radius * 1.6 + 4)
-		])
-		draw_colored_polygon(tail, Color(color, 0.7))
-		# Olhos místicos de Wisp
-		var eye_col := Color("ffffff") if alert else Color("f5e8ff")
-		draw_circle(center + Vector2(-4.5, -1) + face_offset * 0.7, 2.8, eye_col)
-		draw_circle(center + Vector2(4.5, -1) + face_offset * 0.7, 2.8, eye_col)
-		draw_circle(center + Vector2(-4.5, -1) + face_offset * 1.2, 1.4, Color("340a45"))
-		draw_circle(center + Vector2(4.5, -1) + face_offset * 1.2, 1.4, Color("340a45"))
-		return
-	
+	# Sombra de chão dinâmica e suave
+	draw_set_transform(center + Vector2(0, 12 * size_scale), 0.0, Vector2(1.0, 0.45))
+	draw_circle(Vector2.ZERO, half_size * 1.15, Color("020612", 0.48))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
 	if role == "hunter":
-		# Drone tático agressivo com armadura angular e cornos/antenas
-		var shell := _chamfered_square_points(center, half_size, half_size * 0.28)
-		draw_colored_polygon(shell, Color("1d0914"))
-		var inner := _chamfered_square_points(center, half_size * 0.82, half_size * 0.22)
-		draw_colored_polygon(inner, color)
-		# Chifres/Antenas mecânicas superiores
-		draw_line(center + Vector2(-half_size * 0.7, -half_size * 0.8), center + Vector2(-half_size * 1.0, -half_size * 1.3), color, 2.5, true)
-		draw_line(center + Vector2(half_size * 0.7, -half_size * 0.8), center + Vector2(half_size * 1.0, -half_size * 1.3), color, 2.5, true)
-		# Olhos angulares ferozes
-		var eye_y := center.y - 1.5 + face_offset.y
-		var le := Vector2(center.x - 5.0 + face_offset.x, eye_y)
-		var re := Vector2(center.x + 5.0 + face_offset.x, eye_y)
-		draw_line(le + Vector2(-3, -2), le + Vector2(3, 1), Color("ffffff"), 2.2, true)
-		draw_line(re + Vector2(-3, 1), re + Vector2(3, -2), Color("ffffff"), 2.2, true)
-		if alert:
-			draw_circle(le, 1.6, Color("ffe085"))
-			draw_circle(re, 1.6, Color("ffe085"))
-		return
+		# HUNTER: Drone de Assalto Tático (Armadura Titânio Carmesim, Antenas Chifres, Visor Angular)
+		# 1. Base / Chassi inferior
+		var base_hull := _chamfered_square_points(center + Vector2(0, 1), half_size, half_size * 0.35)
+		draw_colored_polygon(base_hull, Color("14161f"))
 		
-	if role == "sentry":
-		# Sentinela blindada pesada com visor horizontal dourado
-		var shell := _chamfered_square_points(center, half_size * 1.1, half_size * 0.15)
-		draw_colored_polygon(shell, Color("201b0b"))
-		var plate := _chamfered_square_points(center, half_size * 0.88, half_size * 0.12)
-		draw_colored_polygon(plate, color.darkened(0.2))
-		# Placas de ombro blindadas
-		draw_rect(Rect2(center + Vector2(-half_size * 1.15, -4), Vector2(3, 8)), color, true)
-		draw_rect(Rect2(center + Vector2(half_size * 1.15 - 3, -4), Vector2(3, 8)), color, true)
-		# Visor scanner cilíndrico
-		var visor_rect := Rect2(center + Vector2(-half_size * 0.65, -3) + face_offset, Vector2(half_size * 1.3, 6))
-		draw_rect(visor_rect, Color("0b0c10"), true)
-		var scan_pos := center.x + sin(animation_clock * 6.0) * (half_size * 0.45) + face_offset.x
-		draw_circle(Vector2(scan_pos, center.y + face_offset.y), 2.8, Color("fff6bd"))
-		draw_circle(Vector2(scan_pos, center.y + face_offset.y), 1.2, Color("ffffff"))
-		return
+		# 2. Carapaça carmesim 3D chanfrada com luz superior
+		var armor := _chamfered_square_points(center, half_size * 0.92, half_size * 0.32)
+		draw_colored_polygon(armor, Color("c41a37"))
+		var armor_rim := armor.duplicate()
+		armor_rim.append(armor[0])
+		draw_polyline(armor_rim, Color("ff4865"), 1.2, true)
 		
-	if role == "rusher":
-		# Assassino pontiagudo aerodinâmico em lâmina
-		var nose := center + Vector2(face.x, face.y) * (half_size * 1.25)
-		var left_wing := center + Vector2(-face.y, face.x) * (half_size * 0.95) - Vector2(face.x, face.y) * (half_size * 0.6)
-		var right_wing := center + Vector2(face.y, -face.x) * (half_size * 0.95) - Vector2(face.x, face.y) * (half_size * 0.6)
-		var ship := PackedVector2Array([nose, left_wing, center - Vector2(face.x, face.y) * (half_size * 0.4), right_wing])
-		draw_colored_polygon(ship, Color("291102"))
-		var inner_ship := PackedVector2Array([
-			nose - Vector2(face.x, face.y) * 2,
-			left_wing + Vector2(face.x, face.y) * 3 + Vector2(face.y, -face.x) * 2,
-			center - Vector2(face.x, face.y) * 3,
-			right_wing + Vector2(face.x, face.y) * 3 - Vector2(face.y, -face.x) * 2
+		# 3. Destaque especular na calota superior
+		var highlight_poly := PackedVector2Array([
+			center + Vector2(-half_size * 0.6, -half_size * 0.85),
+			center + Vector2(half_size * 0.6, -half_size * 0.85),
+			center + Vector2(half_size * 0.45, -half_size * 0.45),
+			center + Vector2(-half_size * 0.45, -half_size * 0.45)
 		])
-		draw_colored_polygon(inner_ship, color)
-		# Rastro de chamas/plasma traseiro
-		var flame := center - Vector2(face.x, face.y) * (half_size * 0.8 + sin(animation_clock * 20.0) * 4.0)
-		draw_line(center - Vector2(face.x, face.y) * (half_size * 0.4), flame, Color("ffe37a"), 3.0, true)
-		# Visor vermelho afiado
-		draw_circle(center + Vector2(face.x, face.y) * 3, 2.5, Color("ffffff"))
-		return
+		draw_colored_polygon(highlight_poly, Color("ff7a92", 0.65))
 		
-	if role == "warden":
-		# Boss colossal com anéis orbitais, espinhos e núcleo de fusão
-		var shell := _chamfered_square_points(center, half_size, half_size * 0.35)
-		draw_colored_polygon(shell, Color("1f0933"))
-		var plate := _chamfered_square_points(center, half_size * 0.85, half_size * 0.28)
-		draw_colored_polygon(plate, color.darkened(0.25))
-		# Espinhos flutuantes / Spikes de Boss
-		for s in 4:
-			var angle := animation_clock * 1.5 + float(s) * TAU / 4.0
-			var spike_pos := center + Vector2(cos(angle), sin(angle)) * (half_size * 1.4)
-			draw_circle(spike_pos, 3.5, Color("ff7bf0"))
-			draw_line(center, spike_pos, Color("df52ff", 0.4), 1.2, true)
-		# Anel de contenção gravitacional
-		draw_arc(center, half_size * 1.25, animation_clock * 3.0, animation_clock * 3.0 + TAU * 0.7, 24, Color("f1b5ff", 0.75), 2.0, true)
-		# Núcleo pulsante no centro
-		var core_pulse := 1.0 + sin(animation_clock * 8.0) * 0.25
-		draw_circle(center, 6.0 * core_pulse, Color("ffffff"))
-		draw_circle(center, 4.0 * core_pulse, Color("f48aff"))
+		# 4. Antenas / Chifres mecânicos laterais superiores com pontas neon
+		var horn_l := [center + Vector2(-half_size * 0.65, -half_size * 0.5), center + Vector2(-half_size * 1.1, -half_size * 1.3)]
+		var horn_r := [center + Vector2(half_size * 0.65, -half_size * 0.5), center + Vector2(half_size * 1.1, -half_size * 1.3)]
+		draw_line(horn_l[0], horn_l[1], Color("1f2333"), 3.0, true)
+		draw_line(horn_r[0], horn_r[1], Color("1f2333"), 3.0, true)
+		draw_line(horn_l[0], horn_l[1], Color("ff2e4e"), 1.5, true)
+		draw_line(horn_r[0], horn_r[1], Color("ff2e4e"), 1.5, true)
+		draw_circle(horn_l[1], 2.2, Color("ffffff") if alert else Color("ff4865"))
+		draw_circle(horn_r[1], 2.2, Color("ffffff") if alert else Color("ff4865"))
+		
+		# 5. Painel do visor frontal escurecido (recessed socket)
+		var visor_box := Rect2(center + Vector2(-half_size * 0.55, -2.5) + face_offset, Vector2(half_size * 1.1, 8.0))
+		draw_rect(visor_box, Color("08080e"), true)
+		
+		# 6. Olhos táticos angulares luminosos (lentes vermelhas penetrantes)
+		var eye_y := center.y + 1.5 + face_offset.y
+		var le := Vector2(center.x - 4.5 + face_offset.x, eye_y)
+		var re := Vector2(center.x + 4.5 + face_offset.x, eye_y)
+		var eye_col := Color("ffffff") if alert else Color("ff2040")
+		draw_line(le + Vector2(-3.5, -2.0), le + Vector2(2.5, 1.0), eye_col, 2.4, true)
+		draw_line(re + Vector2(-2.5, 1.0), re + Vector2(3.5, -2.0), eye_col, 2.4, true)
+		draw_circle(le, 1.4, Color("ffffff"))
+		draw_circle(re, 1.4, Color("ffffff"))
 		return
-	
-	# Fallback para outros tipos
-	var shell := _chamfered_square_points(center, half_size, half_size * 0.20)
-	draw_colored_polygon(shell, color.darkened(0.3))
-	var face_points := _chamfered_square_points(center, half_size * 0.8, half_size * 0.18)
-	draw_colored_polygon(face_points, color)
-	draw_circle(center + Vector2(-4, -2) + face_offset, 2.5, Color("ffffff"))
+
+	if role == "sentry":
+		# SENTRY: Tanque Mecânico Sentinela (Cúpula Dourada 3D, Ombros Blindados, Grande Scanner Cíclope)
+		# 1. Blindagem de ombro pesada (pauldrons esquerdo e direito)
+		draw_rect(Rect2(center + Vector2(-half_size * 1.35, -5), Vector2(6, 12)), Color("1c1912"), true)
+		draw_rect(Rect2(center + Vector2(-half_size * 1.35 + 1, -4), Vector2(4, 10)), Color("d6961a"), true)
+		draw_rect(Rect2(center + Vector2(half_size * 1.35 - 6, -5), Vector2(6, 12)), Color("1c1912"), true)
+		draw_rect(Rect2(center + Vector2(half_size * 1.35 - 5, -4), Vector2(4, 10)), Color("d6961a"), true)
+		
+		# 2. Cúpula esférica principal em bronze/ouro metálico
+		draw_circle(center + Vector2(0, 1.5), half_size * 0.95, Color("14120e"))
+		draw_circle(center, half_size * 0.92, Color("332408"))
+		draw_circle(center + Vector2(0, -1), half_size * 0.85, Color("df9b15"))
+		# Highlight curvado superior
+		draw_circle(center + Vector2(-half_size * 0.25, -half_size * 0.35), half_size * 0.45, Color("ffe775", 0.75))
+		
+		# 3. Cavidade do visor central em preto profundo
+		draw_circle(center + face_offset * 0.7, half_size * 0.52, Color("08080b"))
+		draw_arc(center + face_offset * 0.7, half_size * 0.52, 0.0, TAU, 24, Color("ffbd38"), 1.2, true)
+		
+		# 4. Olho óptico de scanner 3D com varredura horizontal contínua
+		var sweep := sin(animation_clock * (8.0 if alert else 4.0)) * (half_size * 0.22)
+		var eye_center := center + face_offset * 0.8 + Vector2(sweep, 0)
+		draw_circle(eye_center, 4.2, Color("ffaa00", 0.35))
+		draw_circle(eye_center, 3.2, Color("ffbc24"))
+		draw_circle(eye_center, 1.8, Color("fff8d1"))
+		draw_circle(eye_center + Vector2(-0.8, -0.8), 0.9, Color("ffffff"))
+		return
+
+	if role == "wisp":
+		# WISP: Esfera de Plasma Etérea (Camadas Translúcidas, Rastro de Cauda Fluido, Satélites Flutuantes)
+		var wisp_r := half_size * 0.95
+		var flame_w := sin(animation_clock * 9.0 + center.x * 0.03) * 3.5
+		
+		# 1. Cauda de plasma fluida ondulante
+		var tail_pts := PackedVector2Array([
+			center + Vector2(-wisp_r * 0.55, 3),
+			center + Vector2(wisp_r * 0.55, 3),
+			center + Vector2(flame_w * 0.5, wisp_r * 1.5),
+			center + Vector2(flame_w, wisp_r * 2.2 + 2)
+		])
+		draw_colored_polygon(tail_pts, Color("8020d0", 0.65))
+		var inner_tail := PackedVector2Array([
+			center + Vector2(-wisp_r * 0.3, 3),
+			center + Vector2(wisp_r * 0.3, 3),
+			center + Vector2(flame_w * 0.4, wisp_r * 1.4)
+		])
+		draw_colored_polygon(inner_tail, Color("da8aff", 0.85))
+		
+		# 2. Orbe de plasma volumétrico multicamada
+		draw_circle(center, wisp_r * 1.2, Color("9b36eb", 0.20))
+		draw_circle(center, wisp_r, Color("9230e0", 0.85))
+		draw_circle(center + Vector2(0, -1.5), wisp_r * 0.78, Color("c26aff", 0.92))
+		draw_circle(center + Vector2(-2, -3.5), wisp_r * 0.45, Color("f3d5ff", 0.88))
+		
+		# 3. Motes / Chamas satélites orbitando o Wisp
+		for s in 3:
+			var s_ang := animation_clock * 3.0 + float(s) * TAU / 3.0
+			var s_pos := center + Vector2(cos(s_ang) * (wisp_r * 1.35), sin(s_ang) * (wisp_r * 0.75))
+			draw_circle(s_pos, 2.2, Color("e3a4ff", 0.85))
+			draw_circle(s_pos, 1.0, Color("ffffff"))
+			
+		# 4. Rosto digital com visor expressivo
+		var eye_y := center.y - 1.0 + face_offset.y
+		var le := center + Vector2(-4.2, eye_y - center.y) + face_offset * 0.5
+		var re := center + Vector2(4.2, eye_y - center.y) + face_offset * 0.5
+		if alert:
+			# Olhos semicerrados agressivos
+			draw_line(le + Vector2(-2.5, 1), le + Vector2(2.5, -1), Color("ffffff"), 2.0, true)
+			draw_line(re + Vector2(-2.5, -1), re + Vector2(2.5, 1), Color("ffffff"), 2.0, true)
+		else:
+			# Olhinhos digitais felizes / curiosos ( ^  ^ )
+			draw_arc(le, 2.4, PI + 0.3, TAU - 0.3, 12, Color("ffffff"), 1.8, true)
+			draw_arc(re, 2.4, PI + 0.3, TAU - 0.3, 12, Color("ffffff"), 1.8, true)
+		return
+
+	if role == "rusher":
+		# RUSHER: Predador Supersónico / Fera Magmática (Asas Delta de Fogo, Afterburner, Lança Agressiva)
+		var f_dir := Vector2(face)
+		if f_dir.length_squared() < 0.1:
+			f_dir = Vector2.RIGHT
+		var perp := Vector2(-f_dir.y, f_dir.x)
+		
+		# 1. Chamas do Afterburner traseiro pulsantes
+		var flame_len := (half_size * 0.85 + sin(animation_clock * 25.0) * 5.0)
+		var thruster_pts := PackedVector2Array([
+			center - f_dir * (half_size * 0.3) + perp * 4,
+			center - f_dir * (half_size * 0.3) - perp * 4,
+			center - f_dir * (half_size * 0.3 + flame_len)
+		])
+		draw_colored_polygon(thruster_pts, Color("ff4800", 0.90))
+		draw_colored_polygon(PackedVector2Array([
+			center - f_dir * (half_size * 0.3) + perp * 2,
+			center - f_dir * (half_size * 0.3) - perp * 2,
+			center - f_dir * (half_size * 0.3 + flame_len * 0.6)
+		]), Color("ffee55", 0.95))
+		
+		# 2. Carapaça de ataque em asa delta obsidian + magma
+		var nose := center + f_dir * (half_size * 1.3)
+		var wing_l := center - f_dir * (half_size * 0.55) + perp * (half_size * 1.1)
+		var wing_r := center - f_dir * (half_size * 0.55) - perp * (half_size * 1.1)
+		var tail_notch := center - f_dir * (half_size * 0.3)
+		
+		# Casco exterior escuro
+		var hull_poly := PackedVector2Array([nose, wing_l, tail_notch, wing_r])
+		draw_colored_polygon(hull_poly, Color("201006"))
+		
+		# Blindagem interna magmática laranja-dourada
+		var inner_poly := PackedVector2Array([
+			nose - f_dir * 3.0,
+			wing_l + f_dir * 3.0 - perp * 2.5,
+			tail_notch + f_dir * 2.0,
+			wing_r + f_dir * 3.0 + perp * 2.5
+		])
+		draw_colored_polygon(inner_poly, Color("ff771a"))
+		var inner_outline := inner_poly.duplicate()
+		inner_outline.append(inner_poly[0])
+		draw_polyline(inner_outline, Color("ffd043"), 1.2, true)
+		
+		# 3. Núcleo afiado central
+		draw_circle(center + f_dir * 3, 3.2, Color("ffffff"))
+		draw_circle(center + f_dir * 3, 2.0, Color("ff3300"))
+		return
+
+	if role == "warden":
+		# WARDEN: Colosso Titã Boss (Gólem Mecha Violeta, Fagulhas Orbitais, Reator de Fusão Central)
+		# 1. Ombros / Punhos flutuantes pesados à esquerda e direita
+		var hand_bob := sin(animation_clock * 4.0) * 2.5
+		var hand_l := center + Vector2(-half_size * 1.35, hand_bob)
+		var hand_r := center + Vector2(half_size * 1.35, -hand_bob)
+		draw_circle(hand_l, 6.5, Color("1f0d36"))
+		draw_circle(hand_l, 5.0, Color("8024c7"))
+		draw_circle(hand_r, 6.5, Color("1f0d36"))
+		draw_circle(hand_r, 5.0, Color("8024c7"))
+		
+		# 2. Chassi do peitoral maciço chanfrado em titânio púrpura
+		var body_outer := _chamfered_square_points(center, half_size * 1.05, half_size * 0.35)
+		draw_colored_polygon(body_outer, Color("140824"))
+		var body_plate := _chamfered_square_points(center, half_size * 0.90, half_size * 0.30)
+		draw_colored_polygon(body_plate, Color("7b1ec7"))
+		var body_rim := body_plate.duplicate()
+		body_rim.append(body_plate[0])
+		draw_polyline(body_rim, Color("c96eff"), 1.5, true)
+		
+		# 3. Drones orbitais espiculados com conexão de raio
+		for s in 4:
+			var s_ang := animation_clock * 1.6 + float(s) * TAU / 4.0
+			var s_pos := center + Vector2(cos(s_ang), sin(s_ang)) * (half_size * 1.45)
+			draw_circle(s_pos, 3.5, Color("f49aff"))
+			draw_circle(s_pos, 1.5, Color("ffffff"))
+			draw_line(center, s_pos, Color("c25eff", 0.35), 1.0, true)
+			
+		# 4. Anel de contenção gravitacional
+		draw_arc(center, half_size * 1.25, animation_clock * 3.5, animation_clock * 3.5 + TAU * 0.7, 24, Color("f1b5ff", 0.7), 2.0, true)
+		
+		# 5. Núcleo do Reator de Fusão central (olho estelar)
+		var core_p := 1.0 + sin(animation_clock * 9.0) * 0.22
+		draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
+		draw_circle(center, 5.0 * core_p, Color("ffffff"))
+		draw_circle(center, 3.0 * core_p, Color("ef75ff"))
+		return
+
+	# Fallback para outros mobs
+	var fallback_shell := _chamfered_square_points(center, half_size, half_size * 0.22)
+	draw_colored_polygon(fallback_shell, Color("1a1424"))
+	var fallback_inner := _chamfered_square_points(center, half_size * 0.85, half_size * 0.20)
+	draw_colored_polygon(fallback_inner, Color("ff3355"))
+	draw_circle(center + face_offset, 3.0, Color("ffffff"))
 	draw_circle(center + Vector2(4, -2) + face_offset, 2.5, Color("ffffff"))
 
 
@@ -2324,20 +2791,47 @@ func _draw_player() -> void:
 	var sclera := Color("fff5e6", face_visibility)
 	var pupil := Color("2a0814", face_visibility)
 	
-	draw_circle(eye_left, eye_radius * size_scale, sclera)
-	draw_circle(eye_right, eye_radius * size_scale, sclera)
 	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
-	draw_circle(eye_left + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
-	draw_circle(eye_right + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
-	# Ponto especular na pupila
-	draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-	draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
 	if frightened:
-		draw_line(eye_left + Vector2(-2.0, -5.6) * size_scale, eye_left + Vector2(1.0, -6.4) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)
-		draw_line(eye_right + Vector2(-1.0, -6.4) * size_scale, eye_right + Vector2(2.0, -5.6) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)
-		draw_circle(center + Vector2(0.0, 6.0 - hop + bob) * size_scale, (2.3 + sin(animation_clock * 10.0) * 0.35) * size_scale, Color("70243f", visibility))
-		draw_circle(center + Vector2(0, 5.5 - hop + bob) * size_scale, 0.8 * size_scale, Color("ffb184", visibility))
+		# Tremor de pânico nos olhos
+		var panic_jitter := Vector2(sin(animation_clock * 32.0), cos(animation_clock * 28.0)) * (0.6 * size_scale)
+		# Esclera branca bem nítida e ampla
+		draw_circle(eye_left + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
+		draw_circle(eye_right + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
+		# Pupilas contraídas de medo que tremem
+		draw_circle(eye_left + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
+		draw_circle(eye_right + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
+		# Ponto de reflexo especular na pupila
+		draw_circle(eye_left + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
+		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
+		
+		# Sobrancelhas levantadas em ângulo de aflição ( \   / )
+		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
+		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
+		
+		# Boca aberta de espanto (elipse vertical com fundo escuro e dentes/grito)
+		var mouth_pos := center + Vector2(0.0, 6.2 - hop + bob) * size_scale
+		draw_circle(mouth_pos, (2.6 + sin(animation_clock * 14.0) * 0.4) * size_scale, Color("4a0f1d", visibility))
+		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, Color("ff8aa5", visibility * 0.8))
+		
+		# Gota de suor ciano de pânico no lado da cabeça
+		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(animation_clock * 10.0) * 1.0) * size_scale)
+		var sweat_pts := PackedVector2Array([
+			sweat_pos + Vector2(0, -3.2 * size_scale),
+			sweat_pos + Vector2(2.2 * size_scale, 1.8 * size_scale),
+			sweat_pos + Vector2(-2.2 * size_scale, 1.8 * size_scale)
+		])
+		draw_colored_polygon(sweat_pts, Color("7ae7ff", visibility * 0.95))
+		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("7ae7ff", visibility * 0.95))
+		draw_circle(sweat_pos + Vector2(-0.7, 0.8) * size_scale, 0.8 * size_scale, Color("ffffff", visibility))
 	else:
+		draw_circle(eye_left, eye_radius * size_scale, sclera)
+		draw_circle(eye_right, eye_radius * size_scale, sclera)
+		draw_circle(eye_left + gaze, 1.45 * size_scale, pupil)
+		draw_circle(eye_right + gaze, 1.45 * size_scale, pupil)
+		# Ponto especular na pupila
+		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
+		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
 		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
 
 

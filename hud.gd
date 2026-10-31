@@ -6,6 +6,9 @@ var game: Node
 var font: Font
 var buttons: Array[Dictionary] = []
 var pointer := Vector2(-1000, -1000)
+var drag_start := Vector2.ZERO
+var dragging := false
+const SWIPE_THRESHOLD := 28.0
 
 
 func _ready() -> void:
@@ -19,14 +22,42 @@ func _process(_delta: float) -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
-	if not event is InputEventMouseButton or event.button_index != MOUSE_BUTTON_LEFT or not event.pressed:
-		return
-	for index in range(buttons.size() - 1, -1, -1):
-		var button: Dictionary = buttons[index]
-		if button.rect.has_point(event.position):
-			accept_event()
-			game.handle_hud_action(button.action)
-			return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		var mouse_event := event as InputEventMouseButton
+		if mouse_event.pressed:
+			for index in range(buttons.size() - 1, -1, -1):
+				var button: Dictionary = buttons[index]
+				if button.rect.has_point(mouse_event.position):
+					accept_event()
+					game.handle_hud_action(button.action)
+					return
+			drag_start = mouse_event.position
+			dragging = true
+		elif dragging:
+			dragging = false
+			var diff: Vector2 = mouse_event.position - drag_start
+			if diff.length() >= SWIPE_THRESHOLD:
+				game._handle_swipe(drag_start, mouse_event.position)
+			else:
+				game._handle_world_click(mouse_event.position)
+	elif event is InputEventScreenTouch:
+		var touch_event := event as InputEventScreenTouch
+		if touch_event.pressed:
+			for index in range(buttons.size() - 1, -1, -1):
+				var button: Dictionary = buttons[index]
+				if button.rect.has_point(touch_event.position):
+					accept_event()
+					game.handle_hud_action(button.action)
+					return
+			drag_start = touch_event.position
+			dragging = true
+		elif dragging:
+			dragging = false
+			var diff: Vector2 = touch_event.position - drag_start
+			if diff.length() >= SWIPE_THRESHOLD:
+				game._handle_swipe(drag_start, touch_event.position)
+			else:
+				game._handle_world_click(touch_event.position)
 
 
 func _draw() -> void:
@@ -58,6 +89,8 @@ func _draw() -> void:
 	if game.flash_time > 0.0:
 		var alpha: float = 0.16 * minf(1.0, game.flash_time / 0.14)
 		draw_rect(Rect2(Vector2.ZERO, screen), Color(game.flash_color, alpha))
+	if game.dev_menu_open:
+		_draw_dev_menu(screen)
 
 
 func _draw_header(screen: Vector2) -> void:
@@ -446,8 +479,95 @@ func _draw_shield_icon(x: float, y: float, scale: float = 1.0) -> void:
 
 
 func _draw_switch_icon(x: float, y: float, scale: float = 1.0) -> void:
-	draw_rect(Rect2(x - 8 * scale, y - 6 * scale, 16 * scale, 12 * scale), Color("7dec9c"))
-	draw_circle(Vector2(x, y), 2.5 * scale, Color("f4fff0"))
+	var center := Vector2(x, y)
+	var pts := PackedVector2Array([
+		center + Vector2(-6, -6) * scale,
+		center + Vector2(6, -6) * scale,
+		center + Vector2(6, 6) * scale,
+		center + Vector2(-6, 6) * scale
+	])
+	draw_colored_polygon(pts, Color("151a2d"))
+	var border := pts.duplicate()
+	border.append(pts[0])
+	draw_polyline(border, Color("35426b"), 1.0 * scale, true)
+	draw_circle(center + Vector2(-4, -4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(4, -4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(-4, 4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(4, 4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center, 3.2 * scale, Color("5ef59f"))
+	draw_circle(center + Vector2(-0.8, -0.8) * scale, 1.0 * scale, Color("ffffff"))
+
+
+func _draw_dev_menu(screen: Vector2) -> void:
+	# Fundo escuro com vinheta
+	draw_rect(Rect2(Vector2.ZERO, screen), Color("03050c", 0.82))
+	
+	var panel_w := minf(660.0, screen.x - 40.0)
+	var panel_h := minf(540.0, screen.y - 40.0)
+	var panel := Rect2((screen - Vector2(panel_w, panel_h)) * 0.5, Vector2(panel_w, panel_h))
+	
+	# Moldura estilizada cyberpunk com brilho néon magenta/ciano
+	_draw_panel(panel, Color("ff007f", 0.85))
+	
+	# Cabeçalho
+	var header_y := panel.position.y + 28.0
+	draw_string(font, Vector2(panel.position.x + 20, header_y), "/// CONSOLA DO DESENVOLVEDOR [F1] ///", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 16, Color("ff60b0"))
+	draw_string(font, Vector2(panel.position.x + 20, header_y + 18), "Atalhos de depuracao, teleporte e sandbox em tempo real", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 9, Color("88a0c0"))
+	
+	var cy := header_y + 36.0
+	
+	# SEÇÃO 1: TRAPAÇAS & MODOS ESPECIAIS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "MODOS DE JOGO:", HORIZONTAL_ALIGNMENT_LEFT, 200, 10, Color("5ce1e6"))
+	cy += 14.0
+	var btn_w := (panel.size.x - 56.0) / 2.0
+	var god_label := "IMORTALIDADE: ATIVADA" if game.dev_god_mode else "IMORTALIDADE: DESLIGADA"
+	_draw_button(Rect2(panel.position.x + 24, cy, btn_w, 32), god_label, "dev_god", "primary" if game.dev_god_mode else "secondary")
+	var noclip_label := "NO-CLIP: ATIVADO" if game.dev_noclip else "NO-CLIP: DESLIGADO"
+	_draw_button(Rect2(panel.position.x + 32 + btn_w, cy, btn_w, 32), noclip_label, "dev_noclip", "primary" if game.dev_noclip else "secondary")
+	cy += 40.0
+	
+	# SEÇÃO 2: TELEPORTE DE ANDARES (-10, -1, +1, +10 e Marcos)
+	draw_string(font, Vector2(panel.position.x + 24, cy), "TELEPORTE (ANDAR ATUAL: %d):" % game.floor_number, HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var step_w := (panel.size.x - 64.0) / 4.0
+	_draw_button(Rect2(panel.position.x + 24, cy, step_w, 28), "-10 ANDARES", "dev_floor_minus_10", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 1, cy, step_w, 28), "-1 ANDAR", "dev_floor_minus_1", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 2, cy, step_w, 28), "+1 ANDAR", "dev_floor_plus_1", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 3, cy, step_w, 28), "+10 ANDARES", "dev_floor_plus_10", "secondary")
+	cy += 34.0
+	
+	# Marcos de História
+	var mark_w := (panel.size.x - 68.0) / 5.0
+	_draw_button(Rect2(panel.position.x + 24, cy, mark_w, 26), "ANDAR 05 (LIA)", "dev_floor:5", "primary" if game.floor_number == 5 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 1, cy, mark_w, 26), "ANDAR 10", "dev_floor:10", "primary" if game.floor_number == 10 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 2, cy, mark_w, 26), "ANDAR 50", "dev_floor:50", "primary" if game.floor_number == 50 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 3, cy, mark_w, 26), "ANDAR 100", "dev_floor:100", "primary" if game.floor_number == 100 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 4, cy, mark_w, 26), "ANDAR 200", "dev_floor:200", "primary" if game.floor_number == 200 else "secondary")
+	cy += 38.0
+	
+	# SEÇÃO 3: SPAWN DE INIMIGOS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "SPAWN DE INIMIGOS NO TABULEIRO:", HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var mob_w := (panel.size.x - 72.0) / 6.0
+	_draw_button(Rect2(panel.position.x + 24, cy, mob_w, 28), "+ HUNTER", "dev_spawn:hunter", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 1, cy, mob_w, 28), "+ SENTRY", "dev_spawn:sentry", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 2, cy, mob_w, 28), "+ WISP", "dev_spawn:wisp", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 3, cy, mob_w, 28), "+ RUSHER", "dev_spawn:rusher", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 4, cy, mob_w, 28), "+ WARDEN", "dev_spawn:warden", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 5, cy, mob_w, 28), "LIMPAR", "dev_clear_mobs", "primary")
+	cy += 38.0
+	
+	# SEÇÃO 4: SANDBOX & RECURSOS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "SANDBOX & RECURSOS:", HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var res_w := (panel.size.x - 64.0) / 4.0
+	_draw_button(Rect2(panel.position.x + 24, cy, res_w, 28), "+10 MOEDAS/ESC", "dev_resources", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (res_w + 5) * 1, cy, res_w, 28), "ABRIR PORTAL", "dev_open_portal", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (res_w + 5) * 2, cy, res_w * 2.0 + 5, 28), "ARENA DE TESTES (VAZIA)", "dev_arena", "primary")
+	cy += 44.0
+	
+	# BOTÃO FECHAR
+	_draw_button(Rect2(panel.position.x + 24, panel.position.y + panel.size.y - 42, panel.size.x - 48, 32), "FECHAR MENU DEV [F1]", "dev_toggle", "secondary")
 
 
 func _draw_breaker_icon(x: float, y: float, scale: float = 1.0) -> void:
