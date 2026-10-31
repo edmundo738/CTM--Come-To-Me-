@@ -1052,7 +1052,10 @@ func _check_portal() -> void:
 		game_state = "rescued"
 		if floor_number == 5:
 			rescues_completed += 1
-			last_notice = "ENCONTRASTE LIA — A JORNADA CONTINUA"
+			last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
+		elif floor_number == 100:
+			rescues_completed += 1
+			last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
 		else:
 			last_notice = "CICLO %d CONCLUIDO — SETOR SEGUINTE DESBLOQUEADO" % (floori(float(floor_number - 1) / 5.0) + 1)
 	else:
@@ -1089,7 +1092,11 @@ func get_objective_text() -> String:
 	if objective_type == "switches":
 		return "INTERRUPTORES %d/%d   /   %s" % [_active_switches(), switches.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if game_state == "rescued":
-		return "LIA ESTA AQUI. ENCONTRASTE A TUA AMADA."
+		if floor_number == 5:
+			return "LIA FOI AVISTADA! ALCANCA O ANDAR 100 PARA A LIBERTAR."
+		elif floor_number == 100:
+			return "LIA FOI LIBERTADA! A JORNADA CONTINUA ATE AO ANDAR 200."
+		return "SETOR CONCLUIDO. SEGUE EM FRENTE."
 	return "OBJETIVO: ALCANCA O PORTAL E ENCONTRA LIA"
 
 
@@ -1321,130 +1328,353 @@ func _draw() -> void:
 	var last_x := mini(world_size.x - 1, int(ceil((camera.global_position.x + half_view.x) / CELL)) + 1)
 	var first_y := maxi(0, int(floor((camera.global_position.y - half_view.y) / CELL)) - 1)
 	var last_y := mini(world_size.y - 1, int(ceil((camera.global_position.y + half_view.y) / CELL)) + 1)
+	
+	var biome_idx := get_biome_index(floor_number)
+	var pal := _get_biome_palette(biome_idx)
+	
+	# CAMADA 1: Chão estruturado e Água/Gelo (Steel Plates & Terrain)
 	for y in range(first_y, last_y + 1):
 		for x in range(first_x, last_x + 1):
-			_draw_cell(Vector2i(x, y), grid[y][x])
+			var pt := Vector2i(x, y)
+			var tcell: int = grid[y][x]
+			if tcell == TILE_FLOOR:
+				_draw_floor_tile(pt, Vector2(pt) * CELL, pal)
+			elif tcell == TILE_WATER:
+				if biome_idx == 3:
+					_draw_ice_tile(pt, Vector2(pt) * CELL)
+				else:
+					_draw_water_tile(pt, Vector2(pt) * CELL)
+	
+	# CAMADA 2: Sombras 2.5D projetadas das paredes sobre o chão
+	for y in range(first_y, last_y + 1):
+		for x in range(first_x, last_x + 1):
+			var pt := Vector2i(x, y)
+			if _is_floor(pt):
+				_draw_floor_shadows(pt, Vector2(pt) * CELL)
+				
+	# CAMADA 3: Iluminação e Halos Néon no Chão (Radial Glows dos itens e player)
+	_draw_floor_neon_glow()
+	
+	# CAMADA 4: Elementos interativos de chão (Poça de sangue, armadilhas, botões)
 	_draw_blood_puddle()
 	for trap in traps:
 		_draw_trap(trap)
 	for item in switches:
 		_draw_switch(item)
-	for position in coins:
-		_draw_coin(position)
-	for position in shields:
-		_draw_shield(position)
-	for position in breakers:
-		_draw_breaker(position)
+		
+	# CAMADA 5: Paredes 2.5D com Topo + Frente com Conduta Néon contínua
+	for y in range(first_y, last_y + 1):
+		for x in range(first_x, last_x + 1):
+			var pt := Vector2i(x, y)
+			var twall: int = grid[y][x]
+			if twall == TILE_WALL or twall == TILE_BORDER:
+				_draw_wall_tile(pt, Vector2(pt) * CELL, pal, twall == TILE_BORDER)
+				
+	# CAMADA 6: Itens e Pickups 3D
+	for pos in coins:
+		_draw_coin(pos)
+	for pos in shields:
+		_draw_shield(pos)
+	for pos in breakers:
+		_draw_breaker(pos)
 	_draw_portal()
+	
+	# CAMADA 7: Inimigos
 	for enemy in enemies:
 		_draw_enemy(enemy)
+		
+	# CAMADA 8: Jogador (Bola vermelha 3D)
 	_draw_player()
+	
+	# CAMADA 9: Partículas e Efeitos
 	_draw_particles()
+	
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_cell(point: Vector2i, tile_type: int) -> void:
-	var top_left := Vector2(point) * CELL
-	var rect := Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0))
-	var floor_a := Color("11182c")
-	var floor_b := Color("141d33")
-	var floor_glint := Color("6a80bd", 0.08)
-	var wall_frame := Color("252e47")
-	var wall_face := Color("384260")
-	var wall_glint := Color("8290ad", 0.35)
-	var neon_accent := Color("4de3ff")
-	var biome_idx := get_biome_index(floor_number)
-	match biome_idx:
-		1:
-			floor_a = Color("10242a"); floor_b = Color("132c31"); floor_glint = Color("77d9c8", 0.08)
-			wall_frame = Color("243d43"); wall_face = Color("35545a"); wall_glint = Color("9ae2d3", 0.30)
-			neon_accent = Color("4effd2")
-		2:
-			floor_a = Color("241a2d"); floor_b = Color("2b1e32"); floor_glint = Color("e68a87", 0.08)
-			wall_frame = Color("493044"); wall_face = Color("60404a"); wall_glint = Color("f0a08e", 0.30)
-			neon_accent = Color("ff7e5a")
-		3:
-			floor_a = Color("132239"); floor_b = Color("172941"); floor_glint = Color("71d9ee", 0.09)
-			wall_frame = Color("263956"); wall_face = Color("374b6b"); wall_glint = Color("a8d8ef", 0.32)
-			neon_accent = Color("6de9ff")
-		4:
-			floor_a = Color("211934"); floor_b = Color("2a1d3c"); floor_glint = Color("e8bf72", 0.09)
-			wall_frame = Color("43304c"); wall_face = Color("5c415e"); wall_glint = Color("e9bd7c", 0.32)
-			neon_accent = Color("f5ca68")
-	if tile_type == TILE_WATER:
-		if biome_idx == 3:
-			_draw_ice_tile(point, top_left)
-		else:
-			_draw_water_tile(point, top_left)
-		return
-	if tile_type != TILE_FLOOR:
-		var border := tile_type == TILE_BORDER
-		var frame_color := wall_frame if not border else floor_a.darkened(0.15)
-		var face_color := wall_face if not border else floor_b.darkened(0.18)
-		var top_glint := wall_glint
-		top_glint.a *= 0.16 if border else 1.0
-		# Sombra 3D-ish inferior
-		draw_rect(Rect2(top_left + Vector2(0, CELL - 4), Vector2(CELL, 6)), Color(0, 0, 0, 0.45), true)
-		# Estrutura do bloco
-		draw_rect(rect, frame_color, true)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, CELL - 9)), face_color, true)
-		# Topo chanfrado e iluminado
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 3)), top_glint, true)
-		draw_rect(Rect2(top_left + Vector2(3, CELL - 7), Vector2(CELL - 7, 2)), Color("0a0f1e", 0.85), true)
-		if not border:
-			# Tubos e condutas de néon tecnológicas
-			var wall_variant := (point.x * 23 + point.y * 41) % 4
-			if wall_variant == 1:
-				# Cabo néon horizontal
-				draw_line(top_left + Vector2(5, CELL * 0.5), top_left + Vector2(CELL - 6, CELL * 0.5), Color(neon_accent, 0.45), 2.0, true)
-				draw_line(top_left + Vector2(5, CELL * 0.5), top_left + Vector2(CELL - 6, CELL * 0.5), Color("ffffff", 0.65), 1.0, true)
-			elif wall_variant == 2:
-				# Painel de ventilação / grelha no bloco
-				draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 18)), Color("111624", 0.8), true)
-				for g in 3:
-					draw_line(top_left + Vector2(10, 12 + g * 8), top_left + Vector2(CELL - 11, 12 + g * 8), Color(neon_accent, 0.35), 1.2, true)
-			elif wall_variant == 3:
-				# Nicho luminoso vertical
-				draw_rect(Rect2(top_left + Vector2(CELL * 0.5 - 2, 8), Vector2(4, CELL - 18)), Color(neon_accent, 0.28), true)
-				draw_line(top_left + Vector2(CELL * 0.5, 8), top_left + Vector2(CELL * 0.5, CELL - 10), Color("ffffff", 0.7), 1.2, true)
+func _is_wall(pos: Vector2i) -> bool:
+	if not _inside(pos):
+		return true
+	var t: int = grid[pos.y][pos.x]
+	return t == TILE_WALL or t == TILE_BORDER
+
+
+func _is_floor(pos: Vector2i) -> bool:
+	if not _inside(pos):
+		return false
+	var t: int = grid[pos.y][pos.x]
+	return t == TILE_FLOOR or t == TILE_WATER
+
+
+func _has_wall_front(pos: Vector2i) -> bool:
+	if not _is_wall(pos):
+		return false
+	return _is_floor(pos + Vector2i.DOWN)
+
+
+func _get_biome_palette(idx: int) -> Dictionary:
+	match idx:
+		1: # Jardim de Vidro (Bio-Lab)
+			return {
+				"floor_base": Color("0b1c20"),
+				"floor_alt": Color("0f242a"),
+				"floor_seam": Color("050f12"),
+				"floor_rivet": Color("47a898", 0.4),
+				"wall_roof": Color("1a3238"),
+				"wall_face": Color("122428"),
+				"wall_bevel": Color("457580"),
+				"neon_accent": Color("4effaa"),
+				"neon_glow": Color("4effaa", 0.45),
+				"has_vines": true,
+				"vine_color": Color("2e8a62")
+			}
+		2: # Fornalha Violeta (Industrial)
+			return {
+				"floor_base": Color("1a1420"),
+				"floor_alt": Color("22182b"),
+				"floor_seam": Color("0e0914"),
+				"floor_rivet": Color("a85565", 0.4),
+				"wall_roof": Color("382337"),
+				"wall_face": Color("261726"),
+				"wall_bevel": Color("80506e"),
+				"neon_accent": Color("ff7e3a"),
+				"neon_glow": Color("ff7e3a", 0.45),
+				"has_vines": false,
+				"vine_color": Color.TRANSPARENT
+			}
+		3: # Catedral de Gelo (Ruínas Glaciais)
+			return {
+				"floor_base": Color("0e1828"),
+				"floor_alt": Color("121f33"),
+				"floor_seam": Color("060b14"),
+				"floor_rivet": Color("589ec9", 0.4),
+				"wall_roof": Color("20334d"),
+				"wall_face": Color("152336"),
+				"wall_bevel": Color("4d77a8"),
+				"neon_accent": Color("6de9ff"),
+				"neon_glow": Color("6de9ff", 0.45),
+				"has_vines": false,
+				"vine_color": Color.TRANSPARENT
+			}
+		4: # Trono do Guardião (Místico)
+			return {
+				"floor_base": Color("171126"),
+				"floor_alt": Color("1f1633"),
+				"floor_seam": Color("0a0614"),
+				"floor_rivet": Color("9f78d4", 0.4),
+				"wall_roof": Color("36224d"),
+				"wall_face": Color("241436"),
+				"wall_bevel": Color("7c52a8"),
+				"neon_accent": Color("d56bff"),
+				"neon_glow": Color("d56bff", 0.45),
+				"has_vines": true,
+				"vine_color": Color("6a358c")
+			}
+		_: # 0: Neon Ruins (Urbano) — Roxo/Violeta dominante como nas imagens de referência
+			return {
+				"floor_base": Color("120c22"),
+				"floor_alt": Color("170f30"),
+				"floor_seam": Color("0a0615"),
+				"floor_rivet": Color("7050b0", 0.5),
+				"wall_roof": Color("1c133a"),
+				"wall_face": Color("100c24"),
+				"wall_bevel": Color("6040a0"),
+				"neon_accent": Color("c060ff"),
+				"neon_glow": Color("b050ff", 0.5),
+				"has_vines": true,
+				"vine_color": Color("2a5e42")
+			}
+
+
+func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
+	var base_col: Color = pal.floor_base if (point.x + point.y) % 2 == 0 else pal.floor_alt
+	# Preenchimento base da placa metálica (quadrado cheio)
+	draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
+	
+	# Borda 3D raised: borda superior/esquerda mais clara (luz), inferior/direita escura (sombra)
+	var bevel_light := Color(pal.wall_bevel, 0.30)
+	var bevel_shadow := Color(0, 0, 0, 0.65)
+	# Topo iluminado
+	draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
+	# Lado esquerdo iluminado
+	draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
+	# Fundo sombra
+	draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
+	# Direita sombra
+	draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
+	
+	# Linha de néon fina na borda inferior da placa (característica chave das imagens de referência)
+	draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.45), 1.2, true)
+	
+	# Parafusos/rebites nos cantos das placas
+	var rivet: Color = pal.floor_rivet
+	draw_circle(top_left + Vector2(4, 4), 1.5, rivet)
+	draw_circle(top_left + Vector2(CELL - 4, 4), 1.5, rivet)
+	draw_circle(top_left + Vector2(4, CELL - 4), 1.5, rivet)
+	draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.5, rivet)
+	
+	# Conteúdo lógico interior (esparso e coerente)
+	var tile_hash := (point.x * 37 + point.y * 79) % 18
+	if tile_hash == 1:
+		# Grelha de ventilação rebaixada com aletas horizontais
+		var vent_rect := Rect2(top_left + Vector2(10, 11), Vector2(CELL - 20, CELL - 22))
+		draw_rect(vent_rect, Color("040610", 0.95), true)
+		draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
+		for i in 4:
+			var vy := top_left.y + 15.0 + float(i) * 7.0
+			draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
+	elif tile_hash == 2:
+		# Setas direcionais néon (<<) ou (>>) — sentido alternado por colunas
+		var cx := top_left.x + CELL * 0.5
+		var cy := top_left.y + CELL * 0.5
+		var dir := 1.0 if (point.x % 2 == 0) else -1.0
+		# Dois chevrons
+		for ci in 2:
+			var ox := (float(ci) - 0.5) * 10.0 * dir
+			var p := PackedVector2Array([
+				Vector2(cx + ox - 4.5 * dir, cy - 7),
+				Vector2(cx + ox + 2.0 * dir, cy),
+				Vector2(cx + ox - 4.5 * dir, cy + 7)
+			])
+			draw_polyline(p, Color(pal.neon_accent, 0.22), 3.5, true)
+			draw_polyline(p, Color(pal.neon_accent, 0.90), 1.5, true)
+	elif tile_hash == 3:
+		# Chanfro diagonal decorativo (raramente)
+		draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
+
+
+func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
+	# Sombra profunda que cai das paredes ao norte sobre o chão
+	if _is_wall(point + Vector2i.UP):
+		draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
+		draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
+	# Sombra lateral projetada das paredes a oeste
+	if _is_wall(point + Vector2i.LEFT):
+		draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
+		draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
+
+
+func _draw_floor_neon_glow() -> void:
+	# Halo néon da bola vermelha (com anel de luz circular idêntico ao mockup)
+	var p_pos := _player_visual_position()
+	draw_circle(p_pos, 32.0, Color("ff2244", 0.16))
+	var pulse := 1.0 + sin(animation_clock * 4.0) * 0.06
+	draw_arc(p_pos, 18.0 * pulse, 0.0, TAU, 32, Color("ff3355", 0.65), 1.6, true)
+	
+	# Halo dos cristais de escudo
+	for s in shields:
+		var sc := _cell_center(s)
+		draw_circle(sc + Vector2(0, 8), 24.0, Color("3ae6ff", 0.20))
+		
+	# Halo do baú breaker
+	for b in breakers:
+		var bc := _cell_center(b)
+		draw_circle(bc + Vector2(0, 6), 26.0, Color("ffaa33", 0.18))
+		
+	# Halo das moedas
+	for c in coins:
+		var cc := _cell_center(c)
+		draw_circle(cc + Vector2(0, 5), 16.0, Color("ffd35e", 0.15))
+		
+	# Halo do portal dimensional
+	var pc := _cell_center(portal_position)
+	draw_circle(pc, 48.0, Color("b84eff", 0.25))
+
+
+func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
+	var has_front: bool = _has_wall_front(point) and not border
+	
+	if has_front:
+		# PAREDE 2.5D com Topo + Frente Vertical Neon (como no mockup das referências)
+		var front_h := 20.0
+		var roof_h := CELL - front_h
+		
+		# TOPO DA PAREDE (Roof — superfície plana superior, levemente texturizada)
+		var roof_rect := Rect2(top_left, Vector2(CELL, roof_h))
+		draw_rect(roof_rect, pal.wall_roof, true)
+		# Painel interno texturizado (inner surface com recuo)
+		draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, roof_h - 3)), pal.wall_roof.lightened(0.05), true)
+		# Linha de topo iluminada (aresta superior da parede)
+		draw_line(top_left + Vector2(0, 0), top_left + Vector2(CELL, 0), Color(pal.wall_bevel, 0.5), 1.5, true)
+		# Cornija — borda inferior do topo
+		draw_line(top_left + Vector2(0, roof_h), top_left + Vector2(CELL, roof_h), Color(0, 0, 0, 0.9), 2.0, true)
+		
+		# FRENTE DA PAREDE (Face vertical iluminada)
+		var face_top := top_left.y + roof_h
+		var face_rect := Rect2(Vector2(top_left.x, face_top), Vector2(CELL, front_h))
+		draw_rect(face_rect, pal.wall_face, true)
+		# Linha central de divisória
+		draw_line(Vector2(top_left.x + CELL * 0.5, face_top), Vector2(top_left.x + CELL * 0.5, face_top + front_h), Color(0, 0, 0, 0.55), 1.0, true)
+		
+		# BORDA SUPERIOR ILUMINADA DA FACE FRONTAL (cornija neon)
+		draw_rect(Rect2(Vector2(top_left.x, face_top), Vector2(CELL, 2.0)), Color(pal.wall_bevel, 0.6), true)
+		
+		# CONDUTA NÉON HORIZONTAL CONTÍNUA (na metade da frente)
+		var tube_y := face_top + float(front_h) * 0.55
+		var left_conn := _has_wall_front(point + Vector2i.LEFT)
+		var right_conn := _has_wall_front(point + Vector2i.RIGHT)
+		var x_start := top_left.x if left_conn else top_left.x + 6.0
+		var x_end := top_left.x + CELL if right_conn else top_left.x + CELL - 6.0
+		
+		# Glow néon amplo externo
+		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), Color(pal.neon_accent, 0.30), 6.0, true)
+		# Tubo néon emissivo colorido
+		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), pal.neon_accent, 2.2, true)
+		# Núcleo branco brilhante
+		draw_line(Vector2(x_start + 2, tube_y), Vector2(x_end - 2, tube_y), Color("ffffff", 0.95), 0.8, true)
+		
+		# Terminações/Suportes nos extremos do tubo (se não continua)
+		if not left_conn:
+			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+		if not right_conn:
+			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+		
+		# Rodapé escuro de contacto com o chão
+		draw_rect(Rect2(Vector2(top_left.x, top_left.y + CELL - 2.0), Vector2(CELL, 2.0)), Color("02030a", 0.9), true)
+		
+		# Trepadeiras/Vegetação cibernética pendente (nas paredes com bioma verde)
+		if pal.has_vines and ((point.x * 29 + point.y * 61) % 5 == 0):
+			_draw_wall_vines(Vector2(top_left.x, face_top), pal.vine_color, pal.neon_accent)
 	else:
-		var base := floor_a if (point.x + point.y) % 2 == 0 else floor_b
-		draw_rect(rect, base, true)
-		# Grelha de borda subtil
-		draw_rect(rect, Color("080d1a", 0.5), false, 1.0)
-		var floor_variant := (point.x * 37 + point.y * 19) % 6
-		match floor_variant:
-			0:
-				# Parafusos/rebites nos 4 cantos
-				var rivet_color := Color(floor_glint.r, floor_glint.g, floor_glint.b, 0.45)
-				draw_circle(top_left + Vector2(6, 6), 1.5, rivet_color)
-				draw_circle(top_left + Vector2(CELL - 7, 6), 1.5, rivet_color)
-				draw_circle(top_left + Vector2(6, CELL - 7), 1.5, rivet_color)
-				draw_circle(top_left + Vector2(CELL - 7, CELL - 7), 1.5, rivet_color)
-			1:
-				# Grelha de ventilação com brilho do subsolo
-				var vent_rect := Rect2(top_left + Vector2(8, 8), Vector2(CELL - 17, CELL - 17))
-				draw_rect(vent_rect, Color("070b16", 0.75), true)
-				draw_rect(vent_rect, Color(neon_accent, 0.06), true)
-				for i in 4:
-					draw_line(top_left + Vector2(10, 11 + i * 8), top_left + Vector2(CELL - 11, 11 + i * 8), Color(neon_accent, 0.22), 1.2, true)
-			2:
-				# Fio condutor de dados com pulso
-				var pulse := 0.15 + 0.15 * sin(animation_clock * 2.5 + point.x * 0.5 + point.y * 0.3)
-				draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 5), Color(neon_accent, pulse), 1.4, true)
-			3:
-				# Placa chanfrada dupla
-				draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 5, CELL * 0.5), Color("080d1c", 0.65), 1.5, true)
-				draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 9, CELL * 0.5 - 5)), Color(floor_glint, 0.035), true)
-			4:
-				# Ranhura diagonal tática
-				draw_line(top_left + Vector2(6, CELL - 8), top_left + Vector2(CELL - 8, 6), Color(floor_glint, 0.12), 1.2, true)
-			_:
-				# Glint subtil padrão
-				draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 7, 1)), floor_glint, true)
-				var side_glint := floor_glint
-				side_glint.a *= 0.65
-				draw_rect(Rect2(top_left + Vector2(CELL - 4, 4), Vector2(1, CELL - 8)), side_glint, true)
+		# PAREDE SÓLIDA (não tem face frontal — parede interna ou borda)
+		var roof_col: Color = pal.wall_roof.darkened(0.05) if not border else pal.wall_roof.darkened(0.30)
+		var bevel_col: Color = pal.wall_bevel if not border else pal.wall_bevel.darkened(0.5)
+		draw_rect(Rect2(top_left, Vector2(CELL, CELL)), roof_col, true)
+		# Interior mais claro (raised effect)
+		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), roof_col.lightened(0.06), true)
+		# Bordas 3D raised: topo e esquerda iluminados
+		draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), Color(bevel_col, 0.45), 1.5, true)
+		draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), Color(bevel_col, 0.25), 1.0, true)
+		# Fundo e direita em sombra
+		draw_line(top_left + Vector2(0, CELL - 1), top_left + Vector2(CELL, CELL - 1), Color(0, 0, 0, 0.65), 1.5, true)
+		draw_line(top_left + Vector2(CELL - 1, 0), top_left + Vector2(CELL - 1, CELL), Color(0, 0, 0, 0.4), 1.0, true)
+		# Decoração interna (variar por tipo)
+		var wall_var := (point.x * 23 + point.y * 41) % 5
+		if wall_var == 0 and not border:
+			# Faixas horizontais de painel
+			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(bevel_col, 0.20), 1.0, true)
+		elif wall_var == 1 and not border:
+			# Grelha de ventilação
+			for gi in 3:
+				draw_line(top_left + Vector2(9, 13 + gi * 9), top_left + Vector2(CELL - 9, 13 + gi * 9), Color(bevel_col, 0.30), 1.2, true)
+
+
+func _draw_wall_vines(pos: Vector2, vine_col: Color, bio_glow: Color) -> void:
+	# Pequenas folhas e gavinhas que descem da borda da parede
+	var offsets := [Vector2(12, 0), Vector2(16, 6), Vector2(14, 13)]
+	for i in range(offsets.size() - 1):
+		draw_line(pos + offsets[i], pos + offsets[i+1], vine_col, 1.6, true)
+	draw_circle(pos + Vector2(13, 8), 2.2, vine_col)
+	draw_circle(pos + Vector2(17, 12), 1.8, vine_col)
+	draw_circle(pos + Vector2(14, 14), 1.2, bio_glow)
+	
+	var offsets2 := [Vector2(CELL - 16, 0), Vector2(CELL - 13, 5), Vector2(CELL - 15, 10)]
+	for i in range(offsets2.size() - 1):
+		draw_line(pos + offsets2[i], pos + offsets2[i+1], vine_col, 1.4, true)
+	draw_circle(pos + Vector2(CELL - 14, 6), 2.0, vine_col)
+	draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
 
 
 func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
@@ -1523,48 +1753,136 @@ func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
 
 func _draw_coin(point: Vector2i) -> void:
 	var center := _cell_center(point)
-	var pulse := 1.0 + sin(animation_clock * 4.4 + point.x * 0.7) * 0.1
-	var spin := 0.22 + absf(sin(animation_clock * 5.5 + point.y)) * 0.78
-	draw_circle(center, 19.0 * pulse, Color("ffcb47", 0.08))
-	draw_circle(center, 12.0 * pulse, Color("ffc843", 0.14))
-	draw_set_transform(center, 0.0, Vector2(spin, 1.0))
-	draw_circle(Vector2.ZERO, 8.5, Color("ffcc4e"))
-	draw_circle(Vector2(-2, -2), 3.4, Color("fff3b3"))
+	var bob := sin(animation_clock * 4.2 + float(point.x)) * 2.0
+	var spin := 0.30 + absf(sin(animation_clock * 5.0 + float(point.y))) * 0.70
+	
+	# Sombra projetada no chão
+	draw_set_transform(center + Vector2(0, 8.0), 0.0, Vector2(spin, 0.4))
+	draw_circle(Vector2.ZERO, 9.0, Color("04060c", 0.45))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	
+	# Moeda Dourada 3D em perspectiva
+	draw_set_transform(Vector2(center.x, center.y + bob), 0.0, Vector2(spin, 1.0))
+	draw_circle(Vector2.ZERO, 9.5, Color("c9871e"))
+	draw_circle(Vector2.ZERO, 8.0, Color("ffcb3d"))
+	draw_circle(Vector2.ZERO, 5.5, Color("ffe17d"))
+	# Gravação do símbolo cibernético central
+	draw_rect(Rect2(-2, -2, 4, 4), Color("c9871e"), true)
+	# Brilho especular no canto superior esquerdo
+	draw_circle(Vector2(-2.5, -2.5), 1.8, Color("ffffff", 0.85))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _draw_shield(point: Vector2i) -> void:
 	var center := _cell_center(point)
-	var bob := sin(animation_clock * 3.0 + point.x) * 2.8
-	draw_circle(center + Vector2(0, bob), 21.0, Color("38e8ff", 0.075))
-	var outline := PackedVector2Array([center + Vector2(0, -14 + bob), center + Vector2(12, -5 + bob), center + Vector2(9, 9 + bob), center + Vector2(0, 16 + bob), center + Vector2(-9, 9 + bob), center + Vector2(-12, -5 + bob)])
-	draw_colored_polygon(outline, Color("40ddf0"))
-	draw_polyline(PackedVector2Array([outline[0], outline[1], outline[2], outline[3], outline[4], outline[5], outline[0]]), Color("d1fcff"), 1.4, true)
+	var bob := sin(animation_clock * 3.2 + float(point.x)) * 3.0
+	var cy := center.y - 7.0 + bob
+	
+	# Coluna de luz vertical cibernética
+	draw_rect(Rect2(center.x - 7.0, center.y - 48.0, 14.0, 48.0), Color("3ae6ff", 0.08), true)
+	draw_rect(Rect2(center.x - 2.5, center.y - 48.0, 5.0, 48.0), Color("ffffff", 0.18), true)
+	
+	# Pedestal metálico na base
+	var ped_poly := PackedVector2Array([
+		center + Vector2(-12.0, 8.0), center + Vector2(12.0, 8.0),
+		center + Vector2(8.0, 15.0), center + Vector2(-8.0, 15.0)
+	])
+	draw_colored_polygon(ped_poly, Color("142236"))
+	draw_polyline(ped_poly, Color("457aa8"), 1.2, true)
+	
+	# Cristal Prismático 3D (Octaedro com faces facetadas)
+	var top := Vector2(center.x, cy - 15.0)
+	var left := Vector2(center.x - 11.0, cy)
+	var right := Vector2(center.x + 11.0, cy)
+	var mid := Vector2(center.x, cy + 2.0)
+	var bottom := Vector2(center.x, cy + 15.0)
+	
+	# Faceta superior esquerda (mais iluminada)
+	draw_colored_polygon(PackedVector2Array([top, left, mid]), Color("9ef5ff"))
+	# Faceta superior direita (iluminação média)
+	draw_colored_polygon(PackedVector2Array([top, mid, right]), Color("4ed7f2"))
+	# Faceta inferior esquerda (sombra média)
+	draw_colored_polygon(PackedVector2Array([mid, left, bottom]), Color("269bb8"))
+	# Faceta inferior direita (sombra profunda)
+	draw_colored_polygon(PackedVector2Array([mid, right, bottom]), Color("176f85"))
+	
+	# Contorno afiado do cristal
+	draw_polyline(PackedVector2Array([top, left, bottom, right, top]), Color("dffffc"), 1.4, true)
+	draw_line(top, mid, Color("ffffff", 0.8), 1.0, true)
+	draw_line(mid, bottom, Color("20788f"), 1.0, true)
+	draw_line(left, mid, Color("dffffc", 0.8), 1.0, true)
+	draw_line(mid, right, Color("35a9c4"), 1.0, true)
+	
+	# Ponto especular de reflexo no topo esquerdo
+	draw_circle(Vector2(center.x - 3.5, cy - 6.5), 2.0, Color("ffffff"))
 
 
 func _draw_breaker(point: Vector2i) -> void:
 	var center := _cell_center(point)
-	var bob := sin(animation_clock * 3.8 + point.y) * 2.2
-	draw_circle(center + Vector2(0, bob), 22.0, Color("ff9b5a", 0.11))
-	draw_arc(center + Vector2(0, bob), 15.0, animation_clock * 1.4, animation_clock * 1.4 + TAU * 0.78, 32, Color("ffd3a3", 0.72), 1.6, true)
-	draw_line(center + Vector2(-5, 7 + bob), center + Vector2(6, -6 + bob), Color("ffc276"), 4.2, true)
-	draw_line(center + Vector2(-6, -9 + bob), center + Vector2(7, -9 + bob), Color("fff0ca"), 4.0, true)
-	draw_line(center + Vector2(-6, -9 + bob), center + Vector2(-10, -3 + bob), Color("fff0ca"), 3.0, true)
+	var bob := sin(animation_clock * 3.6 + float(point.y)) * 2.2
+	var cy := center.y + bob
+	
+	# Baú do tesouro tecnológico Sci-Fi em cobre/ouro
+	var w := 26.0
+	var h := 18.0
+	var body_rect := Rect2(center.x - w * 0.5, cy - 2.0, w, h)
+	
+	# Corpo do baú (aço escuro/bronze)
+	draw_rect(body_rect, Color("261811"), true)
+	
+	# Borda e reforços dourados nos cantos
+	draw_rect(Rect2(center.x - w * 0.5, cy - 2.0, 4.0, h), Color("e6a832"), true)
+	draw_rect(Rect2(center.x + w * 0.5 - 4.0, cy - 2.0, 4.0, h), Color("e6a832"), true)
+	draw_rect(Rect2(center.x - w * 0.5, cy + h - 5.0, w, 3.0), Color("c78820"), true)
+	
+	# Tampa curva/chanfrada superior do baú
+	var lid_points := PackedVector2Array([
+		Vector2(center.x - w * 0.5 - 1.0, cy - 2.0),
+		Vector2(center.x - w * 0.5 + 2.0, cy - 9.0),
+		Vector2(center.x + w * 0.5 - 2.0, cy - 9.0),
+		Vector2(center.x + w * 0.5 + 1.0, cy - 2.0)
+	])
+	draw_colored_polygon(lid_points, Color("ffd45e"))
+	draw_polyline(lid_points, Color("fff1a8"), 1.2, true)
+	
+	# Fechadura cibernética dourada com luz âmbar a vazar
+	var lock_rect := Rect2(center.x - 4.0, cy + 1.0, 8.0, 8.0)
+	draw_rect(lock_rect, Color("ffd866"), true)
+	draw_rect(Rect2(center.x - 1.5, cy + 3.5, 3.0, 4.0), Color("120904"), true)
+	draw_circle(Vector2(center.x, cy + 4.5), 2.2, Color("fff4ba"))
+	
+	# Halo/Raio sutil de luz do fecho
+	draw_circle(Vector2(center.x, cy + 5.0), 6.0, Color("ffb84d", 0.35))
 
 
 func _draw_portal() -> void:
 	var center := _cell_center(portal_position)
-	var pulse := sin(animation_clock * 2.7) * 3.0
+	var pulse := sin(animation_clock * 2.8) * 3.5
 	var main_color := Color("c37aff") if portal_open else Color("c05e79")
-	draw_circle(center, 27.0 + pulse, Color(main_color, 0.10))
-	draw_arc(center, 20.0 + pulse, animation_clock * 0.7, animation_clock * 0.7 + TAU * 0.82, 48, Color(main_color, 0.88), 3.0, true)
-	draw_arc(center, 14.0 - pulse * 0.35, -animation_clock * 0.9, -animation_clock * 0.9 + TAU * 0.76, 40, Color("efb6ff", 0.8), 1.8, true)
-	draw_circle(center, 11.0, Color("591d82", 0.9))
-	draw_circle(center, 5.0 + sin(animation_clock * 6.0) * 1.4, Color("f5d7ff", 0.95))
-	for i in 5:
-		var angle := animation_clock * 0.75 + i * TAU / 5.0
-		var orbit := Vector2(cos(angle), sin(angle) * 0.65) * (25.0 + pulse)
-		draw_circle(center + orbit, 1.6 + float(i % 2), Color("edb8ff", 0.8))
+	var sec_color := Color("4eeeff") if portal_open else Color("ff7990")
+	
+	# Plataforma de saída com marcas chanfradas
+	draw_circle(center, 28.0 + pulse, Color(main_color, 0.12))
+	# Anéis de energia em rotação oposta
+	draw_arc(center, 21.0 + pulse, animation_clock * 0.9, animation_clock * 0.9 + TAU * 0.80, 48, Color(main_color, 0.9), 3.0, true)
+	draw_arc(center, 15.0 - pulse * 0.3, -animation_clock * 1.2, -animation_clock * 1.2 + TAU * 0.75, 40, Color(sec_color, 0.85), 2.0, true)
+	
+	# Horizonte de eventos (buraco de transporte)
+	draw_circle(center, 11.5, Color("070414", 0.95))
+	draw_circle(center, 6.0 + sin(animation_clock * 6.0) * 1.5, Color("ffffff", 0.95))
+	
+	# Setas holográficas ascendentes dentro do portal (estilo elevador sci-fi)
+	var arrow_y := fposmod(-animation_clock * 18.0, 16.0) - 8.0
+	var arrow_pts := PackedVector2Array([
+		center + Vector2(-5, arrow_y + 3), center + Vector2(0, arrow_y - 2), center + Vector2(5, arrow_y + 3)
+	])
+	draw_polyline(arrow_pts, Color("ffffff", 0.7), 1.5, true)
+	
+	# Partículas orbitais
+	for i in 6:
+		var angle := animation_clock * 0.8 + float(i) * TAU / 6.0
+		var orbit := Vector2(cos(angle), sin(angle) * 0.65) * (26.0 + pulse)
+		draw_circle(center + orbit, 1.8, Color(sec_color, 0.85))
 	if not portal_open:
 		draw_circle(center, 7.0, Color("251323", 0.92))
 		draw_arc(center, 17.0, 0.0, TAU, 40, Color("ff7990"), 2.0, true)
@@ -1774,17 +2092,27 @@ func _draw_player() -> void:
 			for v in 6:
 				var a := rot + float(v) * TAU / 6.0
 				draw_circle(center + Vector2(cos(a), sin(a)) * hex_radius, 1.8 * size_scale, Color("ffffff", hex_alpha * 1.2))
+	# Esfera 3D da Bola Vermelha
 	var bob := sin(animation_clock * 8.5) * 1.0
 	var shell_transform := center + Vector2(0, bob - hop)
 	draw_set_transform(shell_transform, roll, stretch * size_scale)
-	draw_circle(Vector2.ZERO, 17.2, Color("781c3b", visibility))
-	draw_circle(Vector2(-0.3, -0.7), 15.7, Color("ed4050", visibility))
-	draw_circle(Vector2(-1.7, 2.1), 12.6, Color("d82c49", 0.92 * visibility))
-	draw_arc(Vector2(-1.0, 0.0), 14.2, 0.20, 2.55, 28, Color("ff9a69", 0.84 * visibility), 2.1, true)
-	draw_arc(Vector2.ZERO, 17.1, 0.0, TAU, 40, Color("ffbd85", 0.52 * visibility), 1.1, true)
-	draw_circle(Vector2(-5.8, -7.0), 4.5, Color("fff1cb", 0.42 * visibility))
-	draw_circle(Vector2(-7.3, -8.3), 1.8, Color("ffffff", 0.76 * visibility))
+	
+	# Camada 1: Base de sombra esferóide carmesim profunda
+	draw_circle(Vector2.ZERO, 16.5, Color("5c081e", visibility))
+	# Camada 2: Corpo principal vermelho vibrante
+	draw_circle(Vector2(-0.4, -0.6), 15.2, Color("e01b3c", visibility))
+	# Camada 3: Gradiente de luz radiante superior-esquerda
+	draw_circle(Vector2(-2.2, -2.5), 12.0, Color("f93254", 0.95 * visibility))
+	# Camada 4: Luz de borda / Rim light suave na extremidade inferior
+	draw_arc(Vector2.ZERO, 15.6, 0.3, 2.6, 28, Color("ff8299", 0.40 * visibility), 1.5, true)
+	# Camada 5: Brilho especular difuso
+	draw_circle(Vector2(-5.5, -6.5), 4.2, Color("ffccd6", 0.45 * visibility))
+	# Camada 6: Ponto quente especular branco puro
+	draw_circle(Vector2(-6.8, -7.8), 2.2, Color("ffffff", 0.95 * visibility))
+	
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	
+	# Olhos cibernéticos expressivos
 	var eye_offset := Vector2(facing) * (2.0 * size_scale)
 	var eye_y := -2.6 - hop + bob
 	var eye_radius := 4.0 if frightened else 3.3
@@ -1792,12 +2120,16 @@ func _draw_player() -> void:
 	var eye_right := center + Vector2(5.1, eye_y) * size_scale + eye_offset
 	var face_visibility := visibility
 	var sclera := Color("fff5e6", face_visibility)
-	var pupil := Color("35203a", face_visibility)
+	var pupil := Color("2a0814", face_visibility)
+	
 	draw_circle(eye_left, eye_radius * size_scale, sclera)
 	draw_circle(eye_right, eye_radius * size_scale, sclera)
 	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
 	draw_circle(eye_left + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
 	draw_circle(eye_right + gaze, (1.75 if frightened else 1.45) * size_scale, pupil)
+	# Ponto especular na pupila
+	draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
+	draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
 	if frightened:
 		draw_line(eye_left + Vector2(-2.0, -5.6) * size_scale, eye_left + Vector2(1.0, -6.4) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)
 		draw_line(eye_right + Vector2(-1.0, -6.4) * size_scale, eye_right + Vector2(2.0, -5.6) * size_scale, Color("72253f", visibility), 1.5 * size_scale, true)

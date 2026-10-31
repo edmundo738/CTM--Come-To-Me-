@@ -61,47 +61,163 @@ func _draw() -> void:
 
 
 func _draw_header(screen: Vector2) -> void:
-	draw_rect(Rect2(Vector2.ZERO, Vector2(screen.x, 78)), Color("080d1c", 0.91))
-	draw_rect(Rect2(Vector2(0, 76), Vector2(screen.x, 2)), Color("48ddec", 0.52))
-	draw_string(font, Vector2(23, 31), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 205, 18, Color("edfaff"))
-	draw_string(font, Vector2(24, 54), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 235, 10, Color("68e8f4"))
-	var stats_width := 344.0
-	var stat_gap := 5.0
-	var stat_width := (stats_width - stat_gap * 3.0) / 4.0
-	var stat_x := screen.x - stats_width - 18.0
-	var objective_x := 275.0
-	var objective_width := maxf(160.0, stat_x - objective_x - 14.0)
-	draw_string(font, Vector2(objective_x, 30), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, objective_width, 9, Color("7789a8"))
-	draw_string(font, Vector2(objective_x, 52), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, objective_width, 12, Color("dce8fa"))
-	_draw_stat_chip(Rect2(stat_x, 17, stat_width, 44), "shield", "%d" % game.charges, Color("8cf4ff"))
-	_draw_stat_chip(Rect2(stat_x + stat_width + stat_gap, 17, stat_width, 44), "coin", "%03d" % game.total_coins, Color("ffe17a"))
-	var switch_value := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
-	_draw_stat_chip(Rect2(stat_x + (stat_width + stat_gap) * 2.0, 17, stat_width, 44), "switch", switch_value, Color("b9f39c"))
-	_draw_stat_chip(Rect2(stat_x + (stat_width + stat_gap) * 3.0, 17, stat_width, 44), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
+	# ── Fundo translúcido do header ──────────────────────────────────────────────
+	draw_rect(Rect2(Vector2.ZERO, Vector2(screen.x, 74)), Color("06091a", 0.93))
+	# Linha neon inferior do header
+	draw_rect(Rect2(Vector2(0, 72), Vector2(screen.x, 2)), Color("b060ff", 0.7))
+	draw_rect(Rect2(Vector2(0, 73), Vector2(screen.x, 1)), Color("e0a0ff", 0.25))
+	
+	# ── LOGO top-left: Diamante Neon + COME TO ME / NEON RUINS ───────────────────
+	var logo_cx := 22.0
+	var logo_cy := 36.0
+	# Diamante (dois triângulos)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(logo_cx, logo_cy - 12), Vector2(logo_cx + 9, logo_cy), Vector2(logo_cx, logo_cy + 12), Vector2(logo_cx - 9, logo_cy)
+	]), Color("c060ff", 0.9))
+	draw_polyline(PackedVector2Array([
+		Vector2(logo_cx, logo_cy - 12), Vector2(logo_cx + 9, logo_cy), Vector2(logo_cx, logo_cy + 12), Vector2(logo_cx - 9, logo_cy), Vector2(logo_cx, logo_cy - 12)
+	]), Color("eeb0ff"), 1.5, true)
+	draw_circle(Vector2(logo_cx, logo_cy), 3.5, Color("ffffff", 0.9))
+	
+	# Texto principal
+	draw_string(font, Vector2(38, 30), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 180, 15, Color("f0e8ff"))
+	draw_string(font, Vector2(38, 49), "NEON RUINS", HORIZONTAL_ALIGNMENT_LEFT, 180, 10, Color("c060ff"))
+	# Subtítulo: andar e bioma
+	draw_string(font, Vector2(38, 66), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 240, 9, Color("9060d0"))
+	
+	# ── OBJETIVO (centro) ─────────────────────────────────────────────────────────
+	var obj_x := 300.0
+	var obj_w := maxf(200.0, screen.x * 0.3)
+	# Caixa de objetivo chanfrada
+	var obj_rect := Rect2(obj_x - 8, 8, obj_w + 16, 58)
+	draw_rect(obj_rect, Color("08061a", 0.85), true)
+	draw_rect(Rect2(obj_x - 8, 8, obj_w + 16, 2), Color("5030a0", 0.8), true)
+	draw_string(font, Vector2(obj_x, 26), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
+	draw_string(font, Vector2(obj_x, 47), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 11, Color("d0b0ff"))
+	
+	# ── STATS top-right: Shield | Coin | Switch | Key ─────────────────────────────
+	var chip_w := 70.0
+	var chip_h := 40.0
+	var chip_gap := 4.0
+	var chip_start_x := screen.x - (chip_w + chip_gap) * 4 - 120.0
+	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "shield", "%d" % game.charges, Color("8cf4ff"))
+	_draw_stat_chip(Rect2(chip_start_x + chip_w + chip_gap, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
+	var sw_val := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 2.0, 16, chip_w, chip_h), "switch", sw_val, Color("b9f39c"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
+	
+	# ── MINI-MAP top-right corner ──────────────────────────────────────────────────
+	var map_size := 96.0
+	var map_x := screen.x - map_size - 10.0
+	var map_y := 8.0
+	_draw_minimap(Rect2(map_x, map_y, map_size, map_size))
+
+
+func _draw_minimap(rect: Rect2) -> void:
+	# Fundo do mini-mapa
+	draw_rect(rect.grow(2), Color("c060ff", 0.25), true)
+	draw_rect(rect, Color("05030f", 0.95), true)
+	draw_rect(rect, Color("8040c0", 0.6), false, 1.5)
+	
+	if game.world_size == Vector2i.ZERO:
+		return
+	
+	# Escala para caber na caixa
+	var scale_x := rect.size.x / float(game.world_size.x)
+	var scale_y := rect.size.y / float(game.world_size.y)
+	
+	# Desenhar salas como retângulos de cor
+	for r in game.rooms:
+		var rx := rect.position.x + float(r.rect.position.x) * scale_x
+		var ry := rect.position.y + float(r.rect.position.y) * scale_y
+		var rw := float(r.rect.size.x) * scale_x
+		var rh := float(r.rect.size.y) * scale_y
+		draw_rect(Rect2(rx, ry, rw, rh), Color("2a1850", 0.9), true)
+		draw_rect(Rect2(rx, ry, rw, rh), Color("6040a0", 0.5), false, 1.0)
+	
+	# Linhas de ligação entre salas (corredor graph)
+	for edge in game.room_graph_edges:
+		var ra: Dictionary = game.rooms[edge.from]
+		var rb: Dictionary = game.rooms[edge.to]
+		var ca := rect.position + Vector2(float(ra.center.x) * scale_x, float(ra.center.y) * scale_y)
+		var cb := rect.position + Vector2(float(rb.center.x) * scale_x, float(rb.center.y) * scale_y)
+		draw_line(ca, cb, Color("4020a0", 0.6), 1.0, true)
+	
+	# Portal (ponto vermelho/magenta)
+	var portal_px := rect.position + Vector2(float(game.portal_position.x) * scale_x, float(game.portal_position.y) * scale_y)
+	draw_circle(portal_px, 3.5, Color("ff3090"))
+	draw_circle(portal_px, 2.0, Color("ffb0e0"))
+	
+	# Jogador (ponto azul ciano)
+	var player_px := rect.position + Vector2(float(game.player_position.x) * scale_x, float(game.player_position.y) * scale_y)
+	draw_circle(player_px, 3.5, Color("40c8ff"))
+	draw_circle(player_px, 1.8, Color("ffffff"))
 
 
 func _draw_stat_chip(rect: Rect2, icon: String, value: String, tint: Color) -> void:
-	draw_rect(rect, Color("111a2c", 0.96))
-	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 1)), Color(tint, 0.22))
-	var icon_center := Vector2(rect.position.x + 17, rect.position.y + rect.size.y * 0.5)
+	# Caixa do chip com borda neon sutil
+	draw_rect(rect, Color("0b0d20", 0.96), true)
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 1.5)), Color(tint, 0.55), true)
+	draw_rect(rect, Color(tint, 0.08), false, 1.0)
+	var icon_center := Vector2(rect.position.x + 15, rect.position.y + rect.size.y * 0.5)
 	match icon:
-		"shield": _draw_shield_icon(icon_center.x, icon_center.y, 0.72)
-		"coin": _draw_coin_icon(icon_center.x, icon_center.y, 0.72)
-		"switch": _draw_switch_icon(icon_center.x, icon_center.y, 0.72)
-		"breaker": _draw_breaker_icon(icon_center.x, icon_center.y, 0.72)
-	draw_string(font, Vector2(rect.position.x + 31, rect.position.y + 28), value, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 35, 14, tint)
+		"shield": _draw_shield_icon(icon_center.x, icon_center.y, 0.68)
+		"coin": _draw_coin_icon(icon_center.x, icon_center.y, 0.68)
+		"switch": _draw_switch_icon(icon_center.x, icon_center.y, 0.68)
+		"breaker": _draw_breaker_icon(icon_center.x, icon_center.y, 0.68)
+	draw_string(font, Vector2(rect.position.x + 28, rect.position.y + 26), value, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 32, 13, tint)
 
 
 func _draw_footer(screen: Vector2) -> void:
-	var footer_height := 34.0
-	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("080d1c", 0.78))
-	draw_string(font, Vector2(18, screen.y - 12), "WASD / SETAS  MOVER     ESPACO  SALTAR     B  DEMOLIR     ESC  PAUSA     R  REPETIR ANDAR     M  MUSICA", HORIZONTAL_ALIGNMENT_CENTER, screen.x - 36, 10, Color("aab8d0"))
+	var footer_height := 38.0
+	# Fundo footer
+	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("06091a", 0.92))
+	draw_rect(Rect2(0, screen.y - footer_height, screen.x, 1.5), Color("8040c0", 0.6))
+	
+	# ── Corações (vidas) no lado esquerdo ──────────────────────────────────────
+	var heart_y := screen.y - footer_height * 0.5 + 2.0
+	var max_hp := 3 # pode ser expandido futuramente
+	for i in max_hp:
+		var hx := 18.0 + float(i) * 28.0
+		_draw_heart(Vector2(hx, heart_y), true)
+	
+	# ── Controlos centrais ──────────────────────────────────────────────────────
+	var controls := "W A S D  MOVER     ESPACO  SALTAR     B  DEMOLIR     ESC  PAUSA     R  REPETIR     M  MUSICA"
+	draw_string(font, Vector2(screen.x * 0.5, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x * 0.6, 9, Color("6050a0"))
+	
+	# ── Ícone do Personagem + Vidas no canto direito ────────────────────────────
+	var char_x := screen.x - 55.0
+	var char_y := screen.y - footer_height * 0.5 + 2.0
+	draw_circle(Vector2(char_x, char_y), 8.0, Color("5c081e"))
+	draw_circle(Vector2(char_x - 0.5, char_y - 0.5), 7.0, Color("e01b3c"))
+	draw_circle(Vector2(char_x - 2.5, char_y - 2.5), 2.0, Color("ffffff", 0.9))
+	draw_string(font, Vector2(char_x + 12, char_y + 4), "x 3", HORIZONTAL_ALIGNMENT_LEFT, 30, 11, Color("e0d0ff"))
+	
+	# ── Aviso / Notícia central ─────────────────────────────────────────────────
 	if game.last_notice != "" and game.game_state == "playing":
-		var center := Vector2(screen.x * 0.5, screen.y - footer_height - 36.0)
-		var width := minf(screen.x - 48.0, 690.0)
-		draw_rect(Rect2(center.x - width * 0.5, center.y - 17, width, 34), Color("101a30", 0.95))
-		draw_rect(Rect2(center.x - width * 0.5, center.y - 17, width, 1.5), Color("4bdbea", 0.62))
-		draw_string(font, Vector2(center.x - width * 0.5 + 14, center.y + 5), game.last_notice, HORIZONTAL_ALIGNMENT_CENTER, width - 28, 12, Color("f2f5ff"))
+		var center := Vector2(screen.x * 0.5, screen.y - footer_height - 32.0)
+		var width := minf(screen.x - 48.0, 720.0)
+		draw_rect(Rect2(center.x - width * 0.5, center.y - 16, width, 32), Color("08061a", 0.96))
+		draw_rect(Rect2(center.x - width * 0.5, center.y - 16, width, 1.5), Color("c060ff", 0.75))
+		# Ícone de exclamação
+		draw_circle(Vector2(center.x - width * 0.5 + 14, center.y), 5.0, Color("c060ff", 0.4))
+		draw_string(font, Vector2(center.x - width * 0.5 + 9, center.y + 4), "!", HORIZONTAL_ALIGNMENT_LEFT, 12, 11, Color("e090ff"))
+		draw_string(font, Vector2(center.x - width * 0.5 + 28, center.y + 5), game.last_notice, HORIZONTAL_ALIGNMENT_CENTER, width - 42, 11, Color("e0d0ff"))
+
+
+func _draw_heart(pos: Vector2, filled: bool) -> void:
+	# Coração estilo pixel art usando polígono
+	var col := Color("ff3060") if filled else Color("3d1830")
+	var out_col := Color("ff80a0") if filled else Color("2a0f22")
+	# Coração aproximado com círculos e triângulo
+	draw_circle(pos + Vector2(-5, -3), 5.5, col)
+	draw_circle(pos + Vector2(5, -3), 5.5, col)
+	draw_colored_polygon(PackedVector2Array([
+		pos + Vector2(-10, 0), pos + Vector2(10, 0), pos + Vector2(0, 11)
+	]), col)
+	if filled:
+		# Brilho especular
+		draw_circle(pos + Vector2(-5, -5), 2.0, Color("ffb0c0", 0.7))
 
 
 func _draw_title(screen: Vector2) -> void:
@@ -191,9 +307,21 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	var panel_height := minf(410.0, screen.y - 32.0)
 	var panel := Rect2((screen - Vector2(panel_width, panel_height)) * 0.5, Vector2(panel_width, panel_height))
 	_draw_panel(panel, Color("bd78ff", 0.45))
-	var title := ("LIA ESTA AQUI" if game.floor_number == 5 else "NOVO CICLO CONCLUIDO") if rescued else "ANDAR %02d CONCLUIDO" % game.floor_number
-	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 54), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 26, Color("e8faff"))
-	var subtitle: String = ("A tua amada esta a salvo. A jornada continua para alem das ruinas." if game.floor_number == 5 else "Novo conjunto de salas, inimigos e objetivos desbloqueado.") if rescued else game.get_floor_name(game.floor_number)
+	var title: String = ""
+	var subtitle: String = ""
+	if rescued:
+		if game.floor_number == 5:
+			title = "LIA FOI AVISTADA!"
+			subtitle = "Presa numa capsula pelo Warden-Prime! Ele foge: 'Ela pertence ao abismo... so no Andar 100 a salvaras!'."
+		elif game.floor_number == 100:
+			title = "LIA FOI LIBERTADA!"
+			subtitle = "A capsula quebrou-se! Lia esta a salvo e junta-se a ti! A jornada continua ate ao Andar 200!"
+		else:
+			title = "SETOR %02d CONCLUIDO" % game.floor_number
+			subtitle = "Mais perto de libertar Lia no Andar 100. Novos desafios e inimigos desbloqueados."
+	else:
+		title = "ANDAR %02d CONCLUIDO" % game.floor_number
+		subtitle = game.get_floor_name(game.floor_number)
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 80), subtitle, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 12, Color("9caecc"))
 	var star_y := panel.position.y + 139
 	for index in 5:
