@@ -1808,6 +1808,7 @@ func _get_biome_palette(idx: int) -> Dictionary:
 	match idx:
 		1: # Jardim de Vidro (Bio-Lab)
 			return {
+				"biome_type": "biolab",
 				"floor_base": Color("0b1c20"),
 				"floor_alt": Color("0f242a"),
 				"floor_seam": Color("050f12"),
@@ -1820,8 +1821,9 @@ func _get_biome_palette(idx: int) -> Dictionary:
 				"has_vines": true,
 				"vine_color": Color("2e8a62")
 			}
-		2: # Fornalha Violeta (Industrial)
+		2: # Fornalha Violeta (Industrial Factory)
 			return {
+				"biome_type": "factory",
 				"floor_base": Color("1a1420"),
 				"floor_alt": Color("22182b"),
 				"floor_seam": Color("0e0914"),
@@ -1834,8 +1836,9 @@ func _get_biome_palette(idx: int) -> Dictionary:
 				"has_vines": false,
 				"vine_color": Color.TRANSPARENT
 			}
-		3: # Catedral de Gelo (Ruínas Glaciais)
+		3: # Catedral de Gelo (Ruínas Glaciais Antigas)
 			return {
+				"biome_type": "glacier",
 				"floor_base": Color("0e1828"),
 				"floor_alt": Color("121f33"),
 				"floor_seam": Color("060b14"),
@@ -1848,8 +1851,9 @@ func _get_biome_palette(idx: int) -> Dictionary:
 				"has_vines": false,
 				"vine_color": Color.TRANSPARENT
 			}
-		4: # Trono do Guardião (Místico)
+		4: # Trono do Guardião (Santuário Místico Arcano)
 			return {
+				"biome_type": "mystic",
 				"floor_base": Color("171126"),
 				"floor_alt": Color("1f1633"),
 				"floor_seam": Color("0a0614"),
@@ -1864,6 +1868,7 @@ func _get_biome_palette(idx: int) -> Dictionary:
 			}
 		_: # 0: Neon Ruins (Urbano) — Roxo/Violeta dominante como nas imagens de referência
 			return {
+				"biome_type": "neon",
 				"floor_base": Color("120c22"),
 				"floor_alt": Color("170f30"),
 				"floor_seam": Color("0a0615"),
@@ -1880,48 +1885,104 @@ func _get_biome_palette(idx: int) -> Dictionary:
 
 func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
 	var base_col: Color = pal.floor_base if (point.x + point.y) % 2 == 0 else pal.floor_alt
-	# Preenchimento base da placa metálica (quadrado cheio)
+	var btype: String = pal.get("biome_type", "neon")
+	
+	# Preenchimento base da placa (quadrado cheio)
 	draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
 	
 	# Borda 3D raised: borda superior/esquerda mais clara (luz), inferior/direita escura (sombra)
 	var bevel_light := Color(pal.wall_bevel, 0.30)
 	var bevel_shadow := Color(0, 0, 0, 0.65)
-	# Topo iluminado
 	draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
-	# Lado esquerdo iluminado
 	draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
-	# Fundo sombra
 	draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
-	# Direita sombra
 	draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
 	
-	# Linha de néon fina na borda inferior da placa (característica chave das imagens de referência)
-	draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.45), 1.2, true)
+	# Linha néon característica na borda inferior da placa
+	draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.40), 1.2, true)
 	
 	# Parafusos/rebites nos cantos das placas
 	var rivet: Color = pal.floor_rivet
-	draw_circle(top_left + Vector2(4, 4), 1.5, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, 4), 1.5, rivet)
-	draw_circle(top_left + Vector2(4, CELL - 4), 1.5, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.5, rivet)
+	draw_circle(top_left + Vector2(4, 4), 1.4, rivet)
+	draw_circle(top_left + Vector2(CELL - 4, 4), 1.4, rivet)
+	draw_circle(top_left + Vector2(4, CELL - 4), 1.4, rivet)
+	draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.4, rivet)
 	
-	# Conteúdo lógico interior (esparso e coerente)
 	var tile_hash := (point.x * 37 + point.y * 79) % 18
-	if tile_hash == 1:
-		# Grelha de ventilação rebaixada com aletas horizontais
-		var vent_rect := Rect2(top_left + Vector2(10, 11), Vector2(CELL - 20, CELL - 22))
-		draw_rect(vent_rect, Color("040610", 0.95), true)
-		draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
-		for i in 4:
-			var vy := top_left.y + 15.0 + float(i) * 7.0
-			draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
-	elif tile_hash == 2:
-		# Painel rebaixado decorativo com rebordo fino
-		draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
-		draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
-	elif tile_hash == 3:
-		# Chanfro diagonal decorativo (raramente)
-		draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
+	
+	# ── ESTRUTURA E ARQUITETURA DIFERENCIADA POR BIOMA ─────────────────────────
+	if btype == "biolab":
+		# BIO-LAB: Painéis com nós de dados e circuitos biológicos verde-esmeralda
+		if tile_hash in [1, 5]:
+			# Circuito em cruz / barramento hexagonal no centro da laje
+			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 3.2, Color(pal.neon_accent, 0.65))
+			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 1.5, Color("ffffff", 0.9))
+			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 4), Color(pal.neon_accent, 0.25), 1.0, true)
+			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(pal.neon_accent, 0.25), 1.0, true)
+		elif tile_hash == 2:
+			# Pequeno broto de flora bio-mecânica no canto
+			draw_circle(top_left + Vector2(6, 6), 2.2, Color("34d399", 0.7))
+			draw_circle(top_left + Vector2(9, 5), 1.6, Color("6ee7b7", 0.6))
+			
+	elif btype == "factory":
+		# INDUSTRIAL: Placas estriadas de aço (diamond plate) e faixas de perigo (hazard stripes)
+		if tile_hash in [1, 4]:
+			# Faixas diagonais amarelas e pretas de advertência industrial (hazard stripes)
+			for s in 3:
+				var ox := float(s) * 7.0
+				draw_line(top_left + Vector2(6 + ox, 6), top_left + Vector2(13 + ox, 13), Color("ffd000", 0.75), 2.2, true)
+				draw_line(top_left + Vector2(3 + ox, 6), top_left + Vector2(10 + ox, 13), Color("120904", 0.85), 2.0, true)
+		elif tile_hash in [2, 6]:
+			# Grelha de drenagem de metal perfurado / saída de vapor
+			draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 16)), Color("0a0710", 0.9), true)
+			for i in 3:
+				var vy := top_left.y + 11.0 + float(i) * 5.5
+				draw_line(Vector2(top_left.x + 10, vy), Vector2(top_left.x + CELL - 10, vy), Color("ff8b3d", 0.5), 1.4, true)
+				
+	elif btype == "glacier":
+		# CATEDRAL DE GELO: Cantaria de pedra antiga com fendas glaciais azul-celeste
+		if tile_hash in [1, 3]:
+			# Veio de gelo cristalino trincando a rocha
+			var crack := PackedVector2Array([
+				top_left + Vector2(4, CELL * 0.3),
+				top_left + Vector2(CELL * 0.45, CELL * 0.48),
+				top_left + Vector2(CELL * 0.55, CELL * 0.68),
+				top_left + Vector2(CELL - 4, CELL * 0.82)
+			])
+			draw_polyline(crack, Color("6de9ff", 0.65), 1.6, true)
+			draw_polyline(crack, Color("ffffff", 0.85), 0.8, true)
+		elif tile_hash in [2, 7]:
+			# Cantaria de blocos antigos lapidados (linha de argamassa de pedra)
+			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(0, 0, 0, 0.4), 1.2, true)
+			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(0, 0, 0, 0.35), 1.0, true)
+			
+	elif btype == "mystic":
+		# MÍSTICO: Mármore negro com runas circulares e linhas de canalização arcanas
+		if tile_hash in [1, 4]:
+			# Glifo rúnico circular entalhado no piso
+			var center_pt := top_left + Vector2(CELL * 0.5, CELL * 0.5)
+			draw_arc(center_pt, 7.0, 0.0, TAU, 18, Color(pal.neon_accent, 0.55), 1.2, true)
+			draw_circle(center_pt, 2.2, Color("ffffff", 0.8))
+			draw_circle(center_pt, 1.2, Color(pal.neon_accent))
+		elif tile_hash in [2, 5]:
+			# Linhas de canalização mágica diagonais
+			draw_line(top_left + Vector2(4, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			draw_line(top_left + Vector2(CELL - 4, CELL - 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			
+	else:
+		# NEON RUINS (Urbano Cyberpunk padrão)
+		if tile_hash == 1:
+			var vent_rect := Rect2(top_left + Vector2(10, 11), Vector2(CELL - 20, CELL - 22))
+			draw_rect(vent_rect, Color("040610", 0.95), true)
+			draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
+			for i in 4:
+				var vy := top_left.y + 15.0 + float(i) * 7.0
+				draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
+		elif tile_hash == 2:
+			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
+			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
+		elif tile_hash == 3:
+			draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
 
 
 func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
@@ -2326,10 +2387,55 @@ func _draw_shield(point: Vector2i) -> void:
 
 func _draw_breaker(point: Vector2i) -> void:
 	var center := _cell_center(point)
+	var bob := sin(animation_clock * 4.0 + float(point.x + point.y)) * 2.5
+	var cy := center.y + bob
+	var pulse := 1.0 + sin(animation_clock * 6.0) * 0.12
+	
+	# Sombra da ferramenta no chão
+	draw_circle(center + Vector2(0, 11), 10.0, Color("02050f", 0.40))
+	
+	# Halo de energia âmbar/dourado ao redor da ferramenta (mesma cor do ícone do HUD)
+	draw_circle(Vector2(center.x, cy), 18.0 * pulse, Color("ff9900", 0.16))
+	
+	# Ferramenta de Demolição em ângulo de 45 graus (Marreta/Picareta de Impacto do HUD)
+	var base_pos := Vector2(center.x, cy)
+	# Cabo metálico reforçado (cinzento titânio)
+	var handle_start := base_pos + Vector2(-9, 10)
+	var handle_end := base_pos + Vector2(8, -7)
+	draw_line(handle_start, handle_end, Color("151a28"), 5.0, true)
+	draw_line(handle_start, handle_end, Color("4a5670"), 2.8, true)
+	# Pomo da base do cabo em ouro
+	draw_circle(handle_start, 3.2, Color("ffaa1a"))
+	
+	# Cabeça de impacto / marreta-picareta dupla
+	var head_center := handle_end
+	var head_p1 := head_center + Vector2(-11, -8) # ponta afiada esquerda
+	var head_p2 := head_center + Vector2(10, 9)   # bloco de marreta direita
+	
+	# Bloco estrutural da cabeça
+	draw_line(head_p1, head_p2, Color("2a1a08"), 7.0, true)
+	draw_line(head_p1, head_p2, Color("ff9d1a"), 4.0, true)
+	draw_line(head_p1, head_p2, Color("fff2a8"), 1.8, true)
+	
+	# Ponta perfurante esquerda (triângulo de plasma âmbar)
+	var spike_pts := PackedVector2Array([
+		head_p1 + Vector2(-3, -2),
+		head_p1 + Vector2(2, -4),
+		head_p1 + Vector2(-2, 3)
+	])
+	draw_colored_polygon(spike_pts, Color("ffee77"))
+	
+	# Núcleo de sobrecarga cintilante
+	draw_circle(head_center, 3.5 * pulse, Color("ffffff"))
+	draw_circle(head_center, 2.0, Color("ff9900"))
+
+
+func _draw_treasure_chest(point: Vector2i) -> void:
+	var center := _cell_center(point)
 	var bob := sin(animation_clock * 3.6 + float(point.y)) * 2.2
 	var cy := center.y + bob
 	
-	# Baú do tesouro tecnológico Sci-Fi em cobre/ouro
+	# Baú do tesouro tecnológico Sci-Fi em cobre/ouro (para recompensas secretas/chefes)
 	var w := 26.0
 	var h := 18.0
 	var body_rect := Rect2(center.x - w * 0.5, cy - 2.0, w, h)
@@ -2536,15 +2642,31 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		var visor_box := Rect2(center + Vector2(-half_size * 0.55, -2.5) + face_offset, Vector2(half_size * 1.1, 8.0))
 		draw_rect(visor_box, Color("08080e"), true)
 		
-		# 6. Olhos táticos angulares luminosos (lentes vermelhas penetrantes)
+		# 6. Olhos táticos angulares luminosos
 		var eye_y := center.y + 1.5 + face_offset.y
 		var le := Vector2(center.x - 4.5 + face_offset.x, eye_y)
 		var re := Vector2(center.x + 4.5 + face_offset.x, eye_y)
-		var eye_col := Color("ffffff") if alert else Color("ff2040")
-		draw_line(le + Vector2(-3.5, -2.0), le + Vector2(2.5, 1.0), eye_col, 2.4, true)
-		draw_line(re + Vector2(-2.5, 1.0), re + Vector2(3.5, -2.0), eye_col, 2.4, true)
-		draw_circle(le, 1.4, Color("ffffff"))
-		draw_circle(re, 1.4, Color("ffffff"))
+		if alert:
+			# ALERTA: olhos VERMELHOS intensos a olhar DIRECTAMENTE para o jogador
+			var p_pos := _player_visual_position()
+			var to_player_l := (p_pos - le).normalized() * 1.6
+			var to_player_r := (p_pos - re).normalized() * 1.6
+			var eye_col_alert := Color("ff0820")
+			# Halo externo vermelho pulsante
+			draw_circle(le, 3.8, Color("ff0820", 0.45))
+			draw_circle(re, 3.8, Color("ff0820", 0.45))
+			draw_line(le + Vector2(-3.5, -2.0), le + Vector2(2.5, 1.0), eye_col_alert, 2.4, true)
+			draw_line(re + Vector2(-2.5, 1.0), re + Vector2(3.5, -2.0), eye_col_alert, 2.4, true)
+			draw_circle(le + to_player_l, 1.6, Color("ff4060"))
+			draw_circle(re + to_player_r, 1.6, Color("ff4060"))
+			draw_circle(le + to_player_l, 0.7, Color("ffffff"))
+			draw_circle(re + to_player_r, 0.7, Color("ffffff"))
+		else:
+			var eye_col := Color("ff2040")
+			draw_line(le + Vector2(-3.5, -2.0), le + Vector2(2.5, 1.0), eye_col, 2.4, true)
+			draw_line(re + Vector2(-2.5, 1.0), re + Vector2(3.5, -2.0), eye_col, 2.4, true)
+			draw_circle(le, 1.4, Color("ff4060", 0.9))
+			draw_circle(re, 1.4, Color("ff4060", 0.9))
 		return
 
 	if role == "sentry":
@@ -2566,13 +2688,31 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		draw_circle(center + face_offset * 0.7, half_size * 0.52, Color("08080b"))
 		draw_arc(center + face_offset * 0.7, half_size * 0.52, 0.0, TAU, 24, Color("ffbd38"), 1.2, true)
 		
-		# 4. Olho óptico de scanner 3D com varredura horizontal contínua
-		var sweep := sin(animation_clock * (8.0 if alert else 4.0)) * (half_size * 0.22)
-		var eye_center := center + face_offset * 0.8 + Vector2(sweep, 0)
-		draw_circle(eye_center, 4.2, Color("ffaa00", 0.35))
-		draw_circle(eye_center, 3.2, Color("ffbc24"))
-		draw_circle(eye_center, 1.8, Color("fff8d1"))
-		draw_circle(eye_center + Vector2(-0.8, -0.8), 0.9, Color("ffffff"))
+		# 4. Olho óptico de scanner 3D
+		var p_pos_s := _player_visual_position()
+		if alert:
+			# ALERTA: scanner TRAVA no jogador, fica VERMELHO sangue
+			var eye_center_alert := center + face_offset * 0.8
+			# Offset direction toward player from sentry center
+			var to_pl := (p_pos_s - center).normalized() * (half_size * 0.28)
+			eye_center_alert = center + to_pl
+			# Halo exterior vermelho pulsante
+			draw_circle(eye_center_alert, 7.0, Color("ff0000", 0.30))
+			draw_circle(eye_center_alert, 4.8, Color("cc0000", 0.75))
+			draw_circle(eye_center_alert, 3.2, Color("ff2020"))
+			draw_circle(eye_center_alert, 1.8, Color("fff0f0"))
+			draw_circle(eye_center_alert + Vector2(-0.8, -0.8), 0.9, Color("ffffff"))
+			# Linha de scan vermelha laser
+			var scan_end := eye_center_alert + (p_pos_s - eye_center_alert).normalized() * 120.0
+			draw_line(eye_center_alert, scan_end, Color("ff0000", 0.18), 1.2, true)
+		else:
+			# CALMO: scanner oscila lentamente em dourado
+			var sweep := sin(animation_clock * 4.0) * (half_size * 0.22)
+			var eye_center := center + face_offset * 0.8 + Vector2(sweep, 0)
+			draw_circle(eye_center, 4.2, Color("ffaa00", 0.35))
+			draw_circle(eye_center, 3.2, Color("ffbc24"))
+			draw_circle(eye_center, 1.8, Color("fff8d1"))
+			draw_circle(eye_center + Vector2(-0.8, -0.8), 0.9, Color("ffffff"))
 		return
 
 	if role == "wisp":
@@ -2613,11 +2753,20 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		var le := center + Vector2(-4.2, eye_y - center.y) + face_offset * 0.5
 		var re := center + Vector2(4.2, eye_y - center.y) + face_offset * 0.5
 		if alert:
-			# Olhos semicerrados agressivos
-			draw_line(le + Vector2(-2.5, 1), le + Vector2(2.5, -1), Color("ffffff"), 2.0, true)
-			draw_line(re + Vector2(-2.5, -1), re + Vector2(2.5, 1), Color("ffffff"), 2.0, true)
+			# ALERTA: olhos VERMELHOS agressivos a mirar o jogador
+			var p_pos_w := _player_visual_position()
+			var to_pl_l := (p_pos_w - le).normalized() * 1.4
+			var to_pl_r := (p_pos_w - re).normalized() * 1.4
+			# Halo vermelho ao redor dos olhos
+			draw_circle(le, 3.2, Color("ff1010", 0.50))
+			draw_circle(re, 3.2, Color("ff1010", 0.50))
+			# Olhos semicerrados agressivos vermelhos
+			draw_line(le + Vector2(-2.5, 1), le + Vector2(2.5, -1), Color("ff1020"), 2.2, true)
+			draw_line(re + Vector2(-2.5, -1), re + Vector2(2.5, 1), Color("ff1020"), 2.2, true)
+			draw_circle(le + to_pl_l, 1.2, Color("ff3040"))
+			draw_circle(re + to_pl_r, 1.2, Color("ff3040"))
 		else:
-			# Olhinhos digitais felizes / curiosos ( ^  ^ )
+			# CALMO: olhinhos digitais felizes ( ^  ^ )
 			draw_arc(le, 2.4, PI + 0.3, TAU - 0.3, 12, Color("ffffff"), 1.8, true)
 			draw_arc(re, 2.4, PI + 0.3, TAU - 0.3, 12, Color("ffffff"), 1.8, true)
 		return
@@ -2665,9 +2814,26 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		inner_outline.append(inner_poly[0])
 		draw_polyline(inner_outline, Color("ffd043"), 1.2, true)
 		
-		# 3. Núcleo afiado central
-		draw_circle(center + f_dir * 3, 3.2, Color("ffffff"))
-		draw_circle(center + f_dir * 3, 2.0, Color("ff3300"))
+		# 3. Núcleo afiado central + sensor de mira
+		if alert:
+			# Núcleo VERMELHO em alerta + raias de velocidade
+			draw_circle(center + f_dir * 3, 4.0, Color("ff0020", 0.60))
+			draw_circle(center + f_dir * 3, 3.2, Color("ffffff"))
+			draw_circle(center + f_dir * 3, 2.0, Color("ff2020"))
+			# Linhas de velocidade / rastro de calor nas asas
+			for i in 3:
+				var offset_p := perp * (float(i) - 1.0) * 5.0
+				draw_line(center + offset_p - f_dir * half_size,
+					center + offset_p - f_dir * (half_size * 2.5),
+					Color("ff6800", 0.35 - float(i) * 0.05), 1.2, true)
+			# Ponto de mira do sensor
+			var p_pos_r := _player_visual_position()
+			var to_p := (p_pos_r - center).normalized()
+			draw_circle(center + to_p * 6.0, 2.5, Color("ff1010", 0.85))
+			draw_circle(center + to_p * 6.0, 1.0, Color("ffffff"))
+		else:
+			draw_circle(center + f_dir * 3, 3.2, Color("ffffff"))
+			draw_circle(center + f_dir * 3, 2.0, Color("ff3300"))
 		return
 
 	if role == "warden":
@@ -2691,21 +2857,41 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		draw_polyline(body_rim, Color("c96eff"), 1.5, true)
 		
 		# 3. Drones orbitais espiculados com conexão de raio
+		var drone_speed := 3.8 if alert else 1.6
+		var drone_col := Color("ff5050") if alert else Color("f49aff")
+		var drone_line_col := Color("ff2020", 0.50) if alert else Color("c25eff", 0.35)
 		for s in 4:
-			var s_ang := animation_clock * 1.6 + float(s) * TAU / 4.0
+			var s_ang := animation_clock * drone_speed + float(s) * TAU / 4.0
 			var s_pos := center + Vector2(cos(s_ang), sin(s_ang)) * (half_size * 1.45)
-			draw_circle(s_pos, 3.5, Color("f49aff"))
+			draw_circle(s_pos, 3.5, drone_col)
 			draw_circle(s_pos, 1.5, Color("ffffff"))
-			draw_line(center, s_pos, Color("c25eff", 0.35), 1.0, true)
+			draw_line(center, s_pos, drone_line_col, 1.0, true)
 			
 		# 4. Anel de contenção gravitacional
 		draw_arc(center, half_size * 1.25, animation_clock * 3.5, animation_clock * 3.5 + TAU * 0.7, 24, Color("f1b5ff", 0.7), 2.0, true)
 		
 		# 5. Núcleo do Reator de Fusão central (olho estelar)
 		var core_p := 1.0 + sin(animation_clock * 9.0) * 0.22
-		draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
-		draw_circle(center, 5.0 * core_p, Color("ffffff"))
-		draw_circle(center, 3.0 * core_p, Color("ef75ff"))
+		if alert:
+			# ALERTA: reactor VERMELHO sangue + drones mais rápidos + retícula sobre o jogador
+			draw_circle(center, 7.5 * core_p, Color("ff0020", 0.55))
+			draw_circle(center, 5.0 * core_p, Color("ffffff"))
+			draw_circle(center, 3.0 * core_p, Color("ff1530"))
+			# Retícula de targeting holográfica vermelha sobre o player
+			var p_pos_wd := _player_visual_position()
+			var reticle_r := 10.0 + sin(animation_clock * 8.0) * 1.5
+			draw_arc(p_pos_wd, reticle_r, 0.0, TAU, 32, Color("ff0020", 0.85), 1.8, true)
+			draw_line(p_pos_wd + Vector2(-reticle_r - 4, 0), p_pos_wd + Vector2(-reticle_r + 5, 0), Color("ff0020", 0.9), 1.5, true)
+			draw_line(p_pos_wd + Vector2(reticle_r - 5, 0), p_pos_wd + Vector2(reticle_r + 4, 0), Color("ff0020", 0.9), 1.5, true)
+			draw_line(p_pos_wd + Vector2(0, -reticle_r - 4), p_pos_wd + Vector2(0, -reticle_r + 5), Color("ff0020", 0.9), 1.5, true)
+			draw_line(p_pos_wd + Vector2(0, reticle_r - 5), p_pos_wd + Vector2(0, reticle_r + 4), Color("ff0020", 0.9), 1.5, true)
+			draw_circle(p_pos_wd, 2.2, Color("ff0020", 0.9))
+			# Linha de mira ligando warden ao player
+			draw_line(center, p_pos_wd, Color("ff0020", 0.12), 1.0, true)
+		else:
+			draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
+			draw_circle(center, 5.0 * core_p, Color("ffffff"))
+			draw_circle(center, 3.0 * core_p, Color("ef75ff"))
 		return
 
 	# Fallback para outros mobs

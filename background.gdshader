@@ -25,18 +25,12 @@ void fragment() {
 	vec3 base = mix(sky_top, sky_mid, smoothstep(0.0, 0.6, uv.y));
 	base = mix(base, sky_bottom, smoothstep(0.6, 1.0, uv.y));
 	
-	// Distant cyberpunk skyline silhouette
-	float building_x = floor(uv.x * 45.0);
-	float building_h = hash21(vec2(building_x, 1.0)) * 0.28 + 0.08;
-	if (uv.y > (1.0 - building_h)) {
-		float b_shade = 0.02 + hash21(vec2(building_x, 3.0)) * 0.025;
-		// Windows flickering
-		vec2 win_uv = floor(vec2(fract(uv.x * 45.0) * 4.0, (uv.y - (1.0 - building_h)) * 60.0));
-		float win_light = step(0.72, hash21(win_uv + vec2(building_x * 7.0, 0.0)));
-		float win_flicker = sin(TIME * 3.0 + building_x) > 0.3 ? 1.0 : 0.4;
-		vec3 win_col = mix(vec3(0.0, 0.8, 0.9), vec3(1.0, 0.3, 0.6), hash21(vec2(building_x, 5.0)));
-		base = mix(base, vec3(b_shade) + win_col * win_light * win_flicker * 0.22, 0.85);
-	}
+	// Abyssal Cyber Void (subtle top-down grid fading into deep space)
+	vec2 grid_uv = uv * 32.0;
+	vec2 grid_line = abs(fract(grid_uv - 0.5) - 0.5) / fwidth(grid_uv);
+	float grid_val = 1.0 - min(min(grid_line.x, grid_line.y), 1.0);
+	float grid_fade = smoothstep(0.05, 0.75, uv.y) * 0.12;
+	base += vec3(0.35, 0.15, 0.65) * grid_val * grid_fade;
 	
 	// Ambient neon flares
 	float flare_left = exp(-distance(uv, vec2(0.12, 0.88)) * 3.2);
