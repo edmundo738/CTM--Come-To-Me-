@@ -18,7 +18,7 @@ var capture_duck := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall"]:
+	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
 		effects[cue] = _make_effect(cue)
 	music_player = AudioStreamPlayer.new()
 	music_player.stream = _loop_track(MAIN_THEME)
@@ -146,6 +146,27 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"break_wall":
 			duration = 0.52
 			notes = [{"at": 0.0, "length": 0.34, "from": 118.0, "to": 43.0, "gain": 0.33, "shape": "noise"}, {"at": 0.0, "length": 0.31, "from": 156.0, "to": 61.0, "gain": 0.28, "shape": "saw"}, {"at": 0.16, "length": 0.19, "from": 530.0, "to": 205.0, "gain": 0.09, "shape": "triangle"}]
+		"power_speed":
+			duration = 0.32
+			notes = [{"at": 0.0, "length": 0.24, "from": 350.0, "to": 1450.0, "gain": 0.18, "shape": "saw"}, {"at": 0.08, "length": 0.16, "from": 880.0, "to": 1760.0, "gain": 0.1, "shape": "sine"}]
+		"power_magnet":
+			duration = 0.4
+			notes = [{"at": 0.0, "length": 0.32, "from": 680.0, "to": 320.0, "gain": 0.16, "shape": "sine"}, {"at": 0.09, "length": 0.26, "from": 420.0, "to": 880.0, "gain": 0.1, "shape": "triangle"}]
+		"power_blink":
+			duration = 0.34
+			notes = [{"at": 0.0, "length": 0.24, "from": 1200.0, "to": 390.0, "gain": 0.15, "shape": "triangle"}, {"at": 0.12, "length": 0.18, "from": 700.0, "to": 1600.0, "gain": 0.1, "shape": "sine"}]
+		"power_time_freeze":
+			duration = 0.5
+			notes = [{"at": 0.0, "length": 0.4, "from": 1100.0, "to": 210.0, "gain": 0.14, "shape": "sine"}, {"at": 0.05, "length": 0.33, "from": 780.0, "to": 145.0, "gain": 0.1, "shape": "triangle"}]
+		"blink":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.1, "from": 900.0, "to": 100.0, "gain": 0.16, "shape": "noise"}, {"at": 0.06, "length": 0.15, "from": 420.0, "to": 1250.0, "gain": 0.15, "shape": "sine"}]
+		"puzzle_error":
+			duration = 0.3
+			notes = [{"at": 0.0, "length": 0.12, "from": 330.0, "to": 270.0, "gain": 0.16, "shape": "square"}, {"at": 0.13, "length": 0.13, "from": 250.0, "to": 170.0, "gain": 0.16, "shape": "square"}]
+		"rhythm_trap":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.14, "from": 920.0, "to": 120.0, "gain": 0.16, "shape": "noise"}, {"at": 0.0, "length": 0.2, "from": 180.0, "to": 65.0, "gain": 0.2, "shape": "triangle"}]
 	return _render_notes(duration, notes, false)
 
 

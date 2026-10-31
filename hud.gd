@@ -82,6 +82,9 @@ func _draw() -> void:
 			_draw_footer(screen)
 	if game.game_state == "playing":
 		_draw_boss_bar(screen)
+		if game.objective_type == "puzzle":
+			_draw_puzzle_guide()
+		_draw_effect_strip(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
 	elif game.game_state == "rescued":
@@ -171,6 +174,36 @@ func _draw_boss_bar(screen: Vector2) -> void:
 	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(hp) / float(max_hp), bar.size.y)), Color("e85cff"))
 
 
+func _draw_puzzle_guide() -> void:
+	var panel := Rect2(8, 81, 285, 51)
+	draw_rect(panel, Color("080d1c", 0.94))
+	draw_rect(Rect2(panel.position, Vector2(panel.size.x, 2)), Color("92e9ef", 0.8))
+	draw_string(font, panel.position + Vector2(9, 16), "PUZZLE / ATIVA NA ORDEM:", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 18, 9, Color("c6e5f3"))
+	for index in 3:
+		var x := panel.position.x + 12.0 + float(index) * 91.0
+		var color := Color(game.PUZZLE_COLORS[index])
+		var active: bool = index < game.switches.size() and bool(game.switches[index].get("active", false))
+		for dot in index + 1:
+			draw_circle(Vector2(x + float(dot) * 4.5, panel.position.y + 27), 1.8, Color("ffffff") if active else Color(color, 0.9))
+		draw_string(font, Vector2(x, panel.position.y + 43), game.PUZZLE_NAMES[index], HORIZONTAL_ALIGNMENT_LEFT, 85, 9, color if active else Color(color, 0.7))
+
+
+func _draw_effect_strip(screen: Vector2) -> void:
+	var chips: Array[Dictionary] = []
+	if game.speed_turns > 0:
+		chips.append({"label": "VELOCIDADE %d" % game.speed_turns, "color": Color("ffce5c")})
+	if game.magnet_turns > 0:
+		chips.append({"label": "IMA %d" % game.magnet_turns, "color": Color("ff68aa")})
+	if game.freeze_turns > 0:
+		chips.append({"label": "TEMPO %d" % game.freeze_turns, "color": Color("a6c6ff")})
+	for index in chips.size():
+		var chip: Dictionary = chips[index]
+		var rect := Rect2(8 + index * 112, screen.y - 125, 106, 25)
+		draw_rect(rect, Color("080d1c", 0.94))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(chip.color, 0.85))
+		draw_string(font, rect.position + Vector2(6, 17), chip.label, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 12, 9, chip.color)
+
+
 func _draw_minimap(rect: Rect2) -> void:
 	# Fundo do mini-mapa
 	draw_rect(rect.grow(2), Color("c060ff", 0.25), true)
@@ -234,9 +267,10 @@ func _draw_footer(screen: Vector2) -> void:
 	
 	# The displayed controls correspond to actual actions; the old decorative
 	# "x 3" life counter was misleading. Waiting is also available via touch.
-	var controls := "WASD / SETAS  MOVER    ESPACO  SALTAR    B  DEMOLIR    R  REPETIR    ESC  PAUSA    M  MUSICA"
-	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 132.0, 9, Color("8070b8"))
+	var controls := "WASD / SETAS  MOVER    ESPACO  SALTAR    B  DEMOLIR    R  REPETIR    ESC  PAUSA"
+	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 246.0, 9, Color("8070b8"))
 	if game.game_state == "playing":
+		_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "Q BLINK %d" % game.blink_charges, "blink", "primary" if game.blink_charges > 0 else "secondary")
 		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "X ESPERAR", "wait", "secondary")
 
 	# ── Aviso / Notícia central ─────────────────────────────────────────────────
@@ -577,6 +611,11 @@ func _draw_dev_menu(screen: Vector2) -> void:
 	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 3, cy, mob_w, 28), "+ RUSHER", "dev_spawn:rusher", "secondary")
 	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 4, cy, mob_w, 28), "+ WARDEN", "dev_spawn:warden", "secondary")
 	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 5, cy, mob_w, 28), "LIMPAR", "dev_clear_mobs", "primary")
+	cy += 32.0
+	var extra_mob_w := (panel.size.x - 58.0) / 3.0
+	_draw_button(Rect2(panel.position.x + 24, cy, extra_mob_w, 28), "+ PATRULHA", "dev_spawn:patrol", "secondary")
+	_draw_button(Rect2(panel.position.x + 29 + extra_mob_w, cy, extra_mob_w, 28), "+ ESPELHO", "dev_spawn:mirror", "secondary")
+	_draw_button(Rect2(panel.position.x + 34 + extra_mob_w * 2, cy, extra_mob_w, 28), "+ PECA DE XADREZ", "dev_spawn:chess_boss", "secondary")
 	cy += 38.0
 	
 	# SEÇÃO 4: SANDBOX & RECURSOS

@@ -37,5 +37,6 @@ jobs:
       - name: Generation and bot smoke test
         run: |
           "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=1-10 seeds=2 bots=1
+          "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=25-35 seeds=1 bots=1
           "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=100-100 seeds=1 bots=0
           "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=200-200 seeds=1 bots=0
