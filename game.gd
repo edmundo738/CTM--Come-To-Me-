@@ -46,6 +46,7 @@ const CAPTURE_END_TIME := 1.95
 const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
+const ControllerScript = preload("res://controller_input.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 
@@ -74,6 +75,7 @@ var particles: Array[Dictionary] = []
 var camera: Camera2D
 var hud: Control
 var audio: Node
+var controller
 var capture_overlay: ColorRect
 var capture_material: ShaderMaterial
 var generator = Generator.new()
@@ -114,7 +116,10 @@ var resume_powers: Dictionary = {}
 var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
-var joy_axis_cooldown: float = 0.0
+var controller_vibration_enabled := true
+var controller_mappings: Dictionary = {}
+var controller_return_state := "title"
+var controller_message := ""
 # Snapshot of the run at entry, used both by R and by the defeat checkpoint.
 var floor_start_snapshot: Dictionary = {}
 var persistence_enabled := true
@@ -178,8 +183,15 @@ func _ready() -> void:
 	capture_overlay.material = capture_material
 	capture_layer.add_child(capture_overlay)
 	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	controller = ControllerScript.new()
+	add_child(controller)
+	controller.action_requested.connect(_on_controller_action)
+	controller.settings_changed.connect(_on_controller_settings_changed)
+	controller.calibration_finished.connect(_on_controller_calibration_finished)
+	controller.device_changed.connect(_on_controller_device_changed)
 	audio = AudioScript.new()
 	add_child(audio)
+	audio.cue_played.connect(_on_audio_cue)
 	_init_player_sphere_texture()
 	_init_radial_light_texture()
 	_load_profile()
@@ -306,11 +318,14 @@ func handle_hud_action(action: String) -> void:
 		open_level_select()
 	elif action == "levels_previous":
 		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
+		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "levels_next":
 		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
+		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "menu":
 		capture_darkness = 0.0
 		capture_flash = 0.0
+		dev_menu_open = false
 		game_state = "title"
 	elif action == "resume":
 		game_state = "playing"
@@ -326,6 +341,36 @@ func handle_hud_action(action: String) -> void:
 		try_blink()
 	elif action == "music":
 		audio.toggle_music()
+	elif action == "controller_settings":
+		controller_return_state = "paused" if game_state == "paused" else "title"
+		controller.select_active_device()
+		controller_message = ""
+		game_state = "controller_settings"
+	elif action == "controller_device":
+		controller_message = "COMANDO SELECIONADO" if controller.select_next_device() else "LIGA UM COMANDO PRIMEIRO"
+	elif action == "controller_vibration":
+		controller.set_vibration_enabled(not controller.vibration_enabled)
+		controller_message = "VIBRACAO LIGADA" if controller.vibration_enabled else "VIBRACAO DESLIGADA"
+	elif action == "controller_test":
+		if controller.selected_device < 0:
+			controller_message = "LIGA UM COMANDO PRIMEIRO"
+		elif not controller.vibration_enabled:
+			controller_message = "LIGA A VIBRACAO ANTES DE TESTAR"
+		elif controller.feedback("test", true, controller.selected_device):
+			controller_message = "PULSO ENVIADO; A RESPOSTA DEPENDE DO COMANDO E DO SISTEMA"
+	elif action == "controller_calibrate":
+		if controller.begin_calibration(controller.selected_device):
+			game_state = "controller_mapping"
+		else:
+			controller_message = "LIGA UM COMANDO PRIMEIRO"
+	elif action == "controller_reset":
+		controller_message = "MAPEAMENTO ORIGINAL RESTAURADO" if controller.clear_active_mapping(controller.selected_device) else "ESTE COMANDO JA USA O MAPEAMENTO ORIGINAL"
+	elif action == "controller_skip":
+		controller.skip_calibration_step()
+	elif action == "controller_cancel_mapping":
+		controller.cancel_calibration()
+	elif action == "controller_back":
+		game_state = controller_return_state
 	elif action.begins_with("floor:"):
 		start_level(int(action.trim_prefix("floor:")))
 	elif action == "dev_toggle":
@@ -487,8 +532,6 @@ func dev_load_sandbox_arena() -> void:
 func _trigger_shake(time: float, strength: float) -> void:
 	shake_time = maxf(shake_time, time)
 	shake_strength = maxf(shake_strength, strength)
-	var rumble := clampf(strength / 15.0, 0.2, 1.0)
-	Input.start_joy_vibration(0, rumble * 0.4, rumble, time)
 
 
 func _handle_world_click(screen_pos: Vector2) -> void:
@@ -2077,6 +2120,9 @@ func _load_profile() -> void:
 		return
 	var profile := ConfigFile.new()
 	if profile.load(profile_path) == OK:
+		controller_vibration_enabled = bool(profile.get_value("controller", "vibration", true))
+		var saved_mappings: Variant = profile.get_value("controller", "mappings", {})
+		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
 		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
@@ -2107,12 +2153,16 @@ func _load_profile() -> void:
 				resume_seed = int(Time.get_ticks_usec()) ^ randi()
 				resume_history.clear()
 			_save_profile()
+	if controller != null:
+		controller.set_settings(controller_vibration_enabled, controller_mappings)
 
 
 func _save_profile() -> void:
 	if not persistence_enabled:
 		return
 	var profile := ConfigFile.new()
+	profile.set_value("controller", "vibration", controller_vibration_enabled)
+	profile.set_value("controller", "mappings", controller_mappings)
 	profile.set_value("progress", "best_score", best_score)
 	profile.set_value("progress", "rescues", rescues_completed)
 	profile.set_value("progress", "furthest_floor", furthest_floor)
@@ -2131,6 +2181,16 @@ func _save_profile() -> void:
 		best_score_dirty = false
 	else:
 		push_warning("Nao foi possivel guardar o perfil (erro %d)" % error)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and controller != null:
+		# A release event can be lost while the window is unfocused. Never keep
+		# repeating a held direction or vibrating an unattended controller.
+		if controller.calibration_device >= 0:
+			controller.cancel_calibration()
+		controller.reset_held_inputs()
+		controller.note_keyboard_or_mouse()
 
 
 func _exit_tree() -> void:
@@ -2174,19 +2234,8 @@ func _process(delta: float) -> void:
 	_update_capture_sequence(delta)
 	if audio != null and audio.has_method("set_threat"):
 		audio.set_threat(_current_threat_level())
-	joy_axis_cooldown = maxf(0.0, joy_axis_cooldown - delta)
-	if joy_axis_cooldown == 0.0 and game_state == "playing":
-		var stick_x := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
-		var stick_y := Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)
-		var stick := Vector2(stick_x, stick_y)
-		if stick.length_squared() > 0.35:
-			if absf(stick.x) > absf(stick.y):
-				facing = Vector2i(signi(stick.x), 0)
-				try_move(signi(stick.x), 0)
-			else:
-				facing = Vector2i(0, signi(stick.y))
-				try_move(0, signi(stick.y))
-			joy_axis_cooldown = 0.22
+	if controller != null:
+		controller.tick(delta)
 	_update_camera(delta)
 	queue_redraw()
 
@@ -2231,38 +2280,95 @@ func _update_camera(delta: float) -> void:
 		camera.offset = Vector2.ZERO
 
 
+func _input(event: InputEvent) -> void:
+	if controller == null:
+		return
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		controller.handle_event(event)
+		# Our menus are custom-drawn Controls. Consume joypad input before the
+		# default ui_accept/ui_cancel bindings can also activate them.
+		get_viewport().set_input_as_handled()
+	elif (event is InputEventKey and event.pressed and not event.echo) or (event is InputEventMouseButton and event.pressed) or (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseMotion and event.relative.length_squared() > 0.0):
+		controller.note_keyboard_or_mouse()
+
+
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventJoypadButton and event.pressed:
-		if game_state == "captured":
-			return
-		match event.button_index:
-			JOY_BUTTON_DPAD_UP:
-				facing = Vector2i.UP
-				try_move(0, -1)
-			JOY_BUTTON_DPAD_DOWN:
-				facing = Vector2i.DOWN
-				try_move(0, 1)
-			JOY_BUTTON_DPAD_LEFT:
-				facing = Vector2i.LEFT
-				try_move(-1, 0)
-			JOY_BUTTON_DPAD_RIGHT:
-				facing = Vector2i.RIGHT
-				try_move(1, 0)
-			JOY_BUTTON_A:
-				try_jump()
-			JOY_BUTTON_X:
-				try_break_wall()
-			JOY_BUTTON_LEFT_SHOULDER:
-				wait_turn()
-			JOY_BUTTON_RIGHT_SHOULDER:
-				try_blink()
-			JOY_BUTTON_START:
-				if game_state == "playing":
-					game_state = "paused"
-				elif game_state == "paused":
-					game_state = "playing"
-			JOY_BUTTON_BACK, JOY_BUTTON_Y:
-				dev_toggle_menu()
+	# Also permits callers/tests that directly deliver an unhandled event.
+	# Normal engine events have already been consumed in _input above.
+	if controller != null and (event is InputEventJoypadButton or event is InputEventJoypadMotion):
+		controller.handle_event(event)
+
+
+func _on_controller_action(action: String) -> void:
+	if game_state in ["captured", "controller_mapping"]:
+		return
+	var directions := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
+	if dev_menu_open and game_state == "playing":
+		if action in ["dev", "cancel", "pause"]:
+			controller.feedback("menu_confirm")
+			dev_toggle_menu()
+		elif directions.has(action):
+			if hud.move_focus(directions[action]):
+				controller.feedback("menu_move")
+		elif action == "confirm":
+			controller.feedback("menu_confirm")
+			hud.activate_focus()
+		return
+	if game_state == "playing":
+		if directions.has(action):
+			facing = directions[action]
+			try_move(facing.x, facing.y)
+		elif action == "confirm":
+			try_jump()
+		elif action == "break":
+			try_break_wall()
+		elif action == "wait":
+			wait_turn()
+			controller.feedback("wait")
+		elif action == "blink":
+			try_blink()
+		elif action in ["pause", "cancel"]:
+			controller.feedback("menu_confirm")
+			game_state = "paused"
+		elif action == "dev":
+			controller.feedback("menu_confirm")
+			dev_toggle_menu()
+		return
+	if directions.has(action):
+		if hud.move_focus(directions[action]):
+			controller.feedback("menu_move")
+	elif action == "confirm":
+		controller.feedback("menu_confirm")
+		hud.activate_focus()
+	elif action in ["cancel", "pause"]:
+		controller.feedback("menu_confirm")
+		match game_state:
+			"paused": handle_hud_action("resume")
+			"controller_settings": handle_hud_action("controller_back")
+			"level_select", "game_over", "floor_clear", "rescued": handle_hud_action("menu")
+
+
+func _on_audio_cue(cue: String) -> void:
+	if controller != null:
+		controller.feedback(cue)
+
+
+func _on_controller_settings_changed() -> void:
+	controller_vibration_enabled = controller.vibration_enabled
+	controller_mappings = controller.custom_mappings.duplicate(true)
+	_save_profile()
+
+
+func _on_controller_calibration_finished(saved: bool) -> void:
+	game_state = "controller_settings"
+	controller_message = "MAPEAMENTO GUARDADO" if saved else "MAPEAMENTO CANCELADO; ANTERIOR PRESERVADO"
+
+
+func _on_controller_device_changed(device: int, connected: bool) -> void:
+	var message := "COMANDO LIGADO: %s" % controller.device_name(device) if connected else "COMANDO DESLIGADO"
+	controller_message = message
+	last_notice = message
+	notice_timer = 2.5
 
 
 func _player_visual_position() -> Vector2:
@@ -2287,7 +2393,22 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if not event.pressed or event.echo:
 		return
-	if event.keycode == KEY_F1:
+	if game_state == "controller_mapping":
+		if event.keycode == KEY_ESCAPE:
+			controller.cancel_calibration()
+		elif event.keycode == KEY_S:
+			controller.skip_calibration_step()
+		return
+	if game_state == "controller_settings":
+		match event.keycode:
+			KEY_ESCAPE: handle_hud_action("controller_back")
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
+			KEY_LEFT, KEY_A: hud.move_focus(Vector2i.LEFT)
+			KEY_RIGHT, KEY_D: hud.move_focus(Vector2i.RIGHT)
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE: hud.activate_focus()
+		return
+	if event.keycode == KEY_F1 and game_state == "playing":
 		dev_toggle_menu()
 		return
 	if game_state == "captured":

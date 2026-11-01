@@ -13,6 +13,28 @@ Jogo tático 2D por turnos feito em Godot 4.7.2. A protagonista é uma bola verm
 - **Enter** continua depois de concluir um andar; **R** repete o andar com a mesma seed e os recursos do início desse andar; **N** começa uma campanha nova; **L** abre o diário; **Esc** pausa; **M** alterna a música. O menu de pausa também permite repetir o andar.
 - Se for capturado, o jogo apresenta a sequência de inflação e explosão antes do ecrã de derrota. Continuar restaura o início do andar perdido sem apagar os andares já desbloqueados nem as estrelas anteriores.
 
+## Comandos e vibração
+
+O jogo reconhece comandos suportados pelo Godot/SDL, incluindo muitos modelos **Xbox**, **PlayStation/PS3** e gamepads genéricos. Liga o comando antes ou durante o jogo: o nome aparece no menu, e desligar ou trocar de comando não exige reiniciar. O último comando utilizado controla o jogo e recebe a vibração; não é necessário que seja o dispositivo número zero. Na pausa ou no menu inicial, abre **COMANDOS / VIBRAÇÃO** para ver os dispositivos, escolher qual configurar, ativar ou desativar a vibração e testar o comando selecionado.
+
+| Ação | Xbox / padrão | PlayStation / PS3 |
+| --- | --- | --- |
+| Mover e navegar nos menus | Direcional ou analógico esquerdo | Direcional ou analógico esquerdo |
+| Confirmar / saltar | A | Cruz |
+| Voltar / pausar | B ou Start | Círculo ou Start |
+| Demolir | X | Quadrado |
+| Esperar | LB | L1 |
+| Blink | RB | R1 |
+| Menu do desenvolvedor | Y ou Back | Triângulo ou Select |
+
+Os rótulos são indicativos: adaptadores, Steam Input e drivers podem apresentar outro nome ou outro mapeamento. Os botões físicos de confirmação podem variar por região. Os menus, diário de andares, resultados e consola de desenvolvimento também podem ser navegados por comando; teclado, rato e toque continuam disponíveis.
+
+Se um comando genérico não responder corretamente, abre **COMANDOS / VIBRAÇÃO → CONFIGURAR BOTÕES E EIXOS** com um comando funcional, teclado, rato ou toque, escolhe o dispositivo e segue o assistente. Move o analógico/direcional e pressiona os botões pedidos, soltando entre passos; direções, confirmar e voltar são obrigatórios, enquanto as outras ações podem ser ignoradas. Nos passos opcionais, pressiona e solta o botão já escolhido para **voltar** para ignorar; mantém-no premido para cancelar. Antes de configurar esse botão, manter um botão ou eixo premido por dois segundos também cancela. **S** ignora um passo opcional e **Esc** cancela no teclado. O assistente rejeita controlos duplicados e só substitui o mapeamento anterior ao terminar. Cada ação configurada utiliza o botão ou sentido de eixo escolhido no assistente, em vez dos controlos padrão dessa ação.
+
+As definições são guardadas no perfil local. O mapeamento acompanha o identificador/nome do dispositivo e, quando o sistema o disponibiliza, o número de série; comandos idênticos sem número de série partilham o mesmo mapeamento. O botão de restauro remove apenas o mapeamento do comando selecionado. A vibração pode ser desligada globalmente e tem padrões diferentes para passos, colisões, saltos, danos, poderes e outros eventos; funciona mesmo com os efeitos sonoros silenciados. Ao usar teclado ou toque, os eventos do jogo não fazem vibrar um comando que ficou ligado. O teste da página de configuração envia um pulso ao dispositivo selecionado independentemente do último método de entrada.
+
+**Limitação:** reconhecer e fazer vibrar todos os dispositivos não é garantido. O comando tem de ser reconhecido pelo sistema operativo e os motores dependem do hardware, da ligação, dos drivers e da plataforma. Mesmo que o jogo envie um pulso, o sistema pode não confirmar se o motor realmente vibrou. Comandos sem motor ou com suporte incompleto continuam utilizáveis sem vibração; alguns adaptadores e dispositivos podem precisar de drivers ou de remapeamento.
+
 ## Poderes
 
 Surge um power-up alcançável por andar; os quatro tipos repetem-se pela ordem abaixo. As durações contam **ações válidas**, incluindo a ação que recolhe o poder. Recolher novamente um efeito temporário renova a sua duração.
@@ -55,10 +77,11 @@ Depois de importar o projeto uma vez no editor, execute a partir da pasta do pro
 ```sh
 godot --headless --path . --editor --import
 godot --headless --path . --script res://tests/self_test.gd
+godot --headless --path . --script res://tests/controller_test.gd
 godot --headless --path . --script res://tests/sweep.gd -- floors=1-40 seeds=3 bots=1
 ```
 
-No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
+No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
 
 ## Referências analisadas
 
