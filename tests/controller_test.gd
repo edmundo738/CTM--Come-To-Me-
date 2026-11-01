@@ -377,21 +377,23 @@ func _test_profile_settings() -> void:
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.controller_vibration_enabled = false
+	writer.controller_vibration_intensity = 0.35
 	writer.controller_mappings = {"generic-guid|Generic Arcade Stick": {"confirm": {"type": "button", "index": 10}}}
 	writer.furthest_floor = 8
 	writer._save_profile()
 	var reader = GameScript.new()
 	reader.profile_path = path
 	reader._load_profile()
-	_expect(not reader.controller_vibration_enabled and reader.controller_mappings == writer.controller_mappings and reader.furthest_floor == 8, "profile preserves controller preferences and game progress")
+	_expect(not reader.controller_vibration_enabled and is_equal_approx(reader.controller_vibration_intensity, 0.35) and reader.controller_mappings == writer.controller_mappings and reader.furthest_floor == 8, "profile preserves controller preferences and game progress")
 	var live = GameScript.new()
 	live.profile_path = path
 	root.add_child(live)
-	_expect(not live.controller.vibration_enabled and live.controller.custom_mappings == writer.controller_mappings, "live game applies the saved settings on startup")
+	_expect(not live.controller.vibration_enabled and is_equal_approx(live.controller.vibration_intensity, 0.35) and live.controller.custom_mappings == writer.controller_mappings, "live game applies the saved settings on startup")
 	live.controller.set_vibration_enabled(true)
+	live.controller.set_vibration_intensity(0.6)
 	var changed := ConfigFile.new()
 	changed.load(path)
-	_expect(bool(changed.get_value("controller", "vibration", false)) and int(changed.get_value("progress", "furthest_floor", 0)) == 8, "changing vibration saves preferences without losing progress")
+	_expect(bool(changed.get_value("controller", "vibration", false)) and is_equal_approx(float(changed.get_value("controller", "vibration_intensity", -1.0)), 0.6) and int(changed.get_value("progress", "furthest_floor", 0)) == 8, "changing vibration saves preferences without losing progress")
 	live.audio.stop_all()
 	live.queue_free()
 	var old := ConfigFile.new()
@@ -400,7 +402,7 @@ func _test_profile_settings() -> void:
 	var legacy = GameScript.new()
 	legacy.profile_path = path
 	legacy._load_profile()
-	_expect(legacy.controller_vibration_enabled and legacy.controller_mappings.is_empty() and legacy.furthest_floor == 3, "old profiles receive safe controller defaults")
+	_expect(legacy.controller_vibration_enabled and is_equal_approx(legacy.controller_vibration_intensity, 1.0) and legacy.controller_mappings.is_empty() and legacy.furthest_floor == 3, "old profiles receive safe controller defaults")
 	writer.free()
 	reader.free()
 	legacy.free()
@@ -423,7 +425,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 		{"state": "title", "expected": ["continue", "new_run", "levels", "music", "controller_settings"]},
 		{"state": "level_select", "expected": ["floor:1", "floor:2", "menu"]},
 		{"state": "paused", "expected": ["resume", "restart_floor", "levels", "controller_settings", "menu"]},
-		{"state": "controller_settings", "expected": ["controller_device", "controller_vibration", "controller_test", "controller_calibrate", "controller_reset", "controller_back"]},
+		{"state": "controller_settings", "expected": ["controller_device", "controller_vibration", "controller_intensity", "controller_test", "controller_calibrate", "controller_reset", "controller_back"]},
 		{"state": "floor_clear", "expected": ["next_floor", "levels", "menu"]},
 		{"state": "rescued", "expected": ["next_floor", "levels", "menu"]},
 		{"state": "game_over", "expected": ["continue", "levels", "menu"]},
@@ -460,6 +462,48 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	_dispatch_tap(2, JOY_BUTTON_A)
 	_expect(game.controller.selected_device == 7, "real settings button selects the next controller")
 	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_expect(game.hud.focus_action == "controller_intensity", "drawn intensity slider is reachable with the D-pad")
+	_dispatch_tap(2, JOY_BUTTON_DPAD_LEFT)
+	_expect(is_equal_approx(game.controller.vibration_intensity, 0.95) and game.hud.focus_action == "controller_intensity", "D-pad adjusts the focused intensity without leaving the slider")
+	_dispatch_tap(2, JOY_BUTTON_DPAD_RIGHT)
+	_expect(is_equal_approx(game.controller.vibration_intensity, 1.0), "D-pad can raise the intensity again")
+	# Send actual GUI events to the drawn control, including drags outside the
+	# track and a nonzero finger index. They must not become world swipes.
+	var track: Rect2 = game.hud.intensity_track
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = track.position + Vector2(track.size.x * 0.25, 3.0)
+	game.hud._gui_input(press)
+	var motion := InputEventMouseMotion.new()
+	motion.position = track.position + Vector2(track.size.x * 0.5, 3.0)
+	motion.relative = Vector2(10, 0)
+	game.hud._gui_input(motion)
+	press.pressed = false
+	press.position = motion.position
+	game.hud._gui_input(press)
+	_expect(is_equal_approx(game.controller.vibration_intensity, 0.5), "mouse click and drag set intensity on the rendered slider")
+	var touch := InputEventScreenTouch.new()
+	touch.index = 3
+	touch.pressed = true
+	touch.position = track.position + Vector2(track.size.x * 0.2, 3.0)
+	game.hud._gui_input(touch)
+	var drag := InputEventScreenDrag.new()
+	drag.index = 3
+	drag.position = track.position + Vector2(track.size.x * 0.75, 3.0)
+	game.hud._gui_input(drag)
+	touch.pressed = false
+	touch.position = drag.position
+	game.hud._gui_input(touch)
+	_expect(is_equal_approx(game.controller.vibration_intensity, 0.75), "touch drag adjusts the same intensity slider")
+	var key := InputEventKey.new()
+	key.pressed = true
+	key.keycode = KEY_LEFT
+	game._unhandled_key_input(key)
+	_expect(is_equal_approx(game.controller.vibration_intensity, 0.70), "keyboard arrows adjust the focused intensity slider")
+	key.keycode = KEY_RIGHT
+	game._unhandled_key_input(key)
 	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	fake.pulses.clear()
 	_dispatch_tap(2, JOY_BUTTON_A)

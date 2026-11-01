@@ -8,6 +8,9 @@ var buttons: Array[Dictionary] = []
 var pointer := Vector2(-1000, -1000)
 var drag_start := Vector2.ZERO
 var dragging := false
+var slider_mouse_dragging := false
+var slider_touch_index := -1
+var intensity_track := Rect2()
 var focus_action := ""
 var focus_context := ""
 var buttons_context := ""
@@ -29,6 +32,15 @@ func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton or event is InputEventScreenTouch or (event is InputEventMouseMotion and event.relative.length_squared() > 0.0):
 		focus_visible = false
 	if buttons_context != _focus_context():
+		cancel_pointer_drag()
+		return
+	if event is InputEventMouseMotion and slider_mouse_dragging:
+		_set_intensity_at(event.position)
+		accept_event()
+		return
+	if event is InputEventScreenDrag and event.index == slider_touch_index:
+		_set_intensity_at(event.position)
+		accept_event()
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		var mouse_event := event as InputEventMouseButton
@@ -37,10 +49,20 @@ func _gui_input(event: InputEvent) -> void:
 				var button: Dictionary = buttons[index]
 				if button.rect.has_point(mouse_event.position):
 					accept_event()
-					game.handle_hud_action(button.action)
+					if button.action == "controller_intensity":
+						focus_action = button.action
+						slider_mouse_dragging = true
+						_set_intensity_at(mouse_event.position)
+					else:
+						game.handle_hud_action(button.action)
 					return
 			drag_start = mouse_event.position
 			dragging = true
+		elif slider_mouse_dragging:
+			slider_mouse_dragging = false
+			_set_intensity_at(mouse_event.position)
+			accept_event()
+			return
 		elif dragging:
 			dragging = false
 			var diff: Vector2 = mouse_event.position - drag_start
@@ -55,10 +77,20 @@ func _gui_input(event: InputEvent) -> void:
 				var button: Dictionary = buttons[index]
 				if button.rect.has_point(touch_event.position):
 					accept_event()
-					game.handle_hud_action(button.action)
+					if button.action == "controller_intensity":
+						focus_action = button.action
+						slider_touch_index = touch_event.index
+						_set_intensity_at(touch_event.position)
+					else:
+						game.handle_hud_action(button.action)
 					return
 			drag_start = touch_event.position
 			dragging = true
+		elif touch_event.index == slider_touch_index:
+			slider_touch_index = -1
+			_set_intensity_at(touch_event.position)
+			accept_event()
+			return
 		elif dragging:
 			dragging = false
 			var diff: Vector2 = touch_event.position - drag_start
@@ -66,6 +98,19 @@ func _gui_input(event: InputEvent) -> void:
 				game._handle_swipe(drag_start, touch_event.position)
 			else:
 				game._handle_world_click(touch_event.position)
+
+
+func cancel_pointer_drag() -> void:
+	dragging = false
+	slider_mouse_dragging = false
+	slider_touch_index = -1
+
+
+func _set_intensity_at(position: Vector2) -> void:
+	if intensity_track.size.x <= 0.0 or game.game_state != "controller_settings":
+		return
+	game.set_controller_vibration_intensity((position.x - intensity_track.position.x) / intensity_track.size.x)
+	queue_redraw()
 
 
 func _draw() -> void:
@@ -161,6 +206,10 @@ func move_focus(direction: Vector2i) -> bool:
 	focus_visible = true
 	if not _focus_is_valid():
 		return false
+	if game.game_state == "controller_settings" and focus_action == "controller_intensity" and direction.x != 0:
+		game.set_controller_vibration_intensity(game.controller.vibration_intensity + 0.05 * direction.x)
+		queue_redraw()
+		return true
 	var origin: Vector2 = buttons[_focus_index()].rect.get_center()
 	var best := -1
 	var best_score := INF
@@ -530,18 +579,38 @@ func _draw_controller_settings(screen: Vector2) -> void:
 	draw_string(font, Vector2(left, top + 82), status, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("a8b8d2"))
 	var x := left + 18.0
 	var w := width - 36.0
-	var y := top + 104.0
-	_draw_button(Rect2(x, y, w, 35), "TROCAR COMANDO SELECIONADO", "controller_device", "secondary")
-	_draw_button(Rect2(x, y + 41, w, 35), "VIBRACAO: %s" % ("LIGADA" if game.controller.vibration_enabled else "DESLIGADA"), "controller_vibration", "secondary")
-	_draw_button(Rect2(x, y + 82, w, 35), "TESTAR VIBRACAO", "controller_test", "secondary")
-	_draw_button(Rect2(x, y + 123, w, 35), "CONFIGURAR BOTOES E EIXOS", "controller_calibrate", "primary")
-	_draw_button(Rect2(x, y + 164, w, 35), "RESTAURAR MAPEAMENTO ORIGINAL", "controller_reset", "secondary")
-	_draw_button(Rect2(x, y + 205, w, 35), "VOLTAR", "controller_back", "secondary")
+	var y := top + 96.0
+	_draw_button(Rect2(x, y, w, 32), "TROCAR COMANDO SELECIONADO", "controller_device", "secondary")
+	_draw_button(Rect2(x, y + 37, w, 32), "VIBRACAO: %s" % ("LIGADA" if game.controller.vibration_enabled else "DESLIGADA"), "controller_vibration", "secondary")
+	_draw_intensity_slider(Rect2(x, y + 74, w, 38))
+	_draw_button(Rect2(x, y + 117, w, 32), "TESTAR VIBRACAO", "controller_test", "secondary")
+	_draw_button(Rect2(x, y + 154, w, 32), "CONFIGURAR BOTOES E EIXOS", "controller_calibrate", "primary")
+	_draw_button(Rect2(x, y + 191, w, 32), "RESTAURAR MAPEAMENTO ORIGINAL", "controller_reset", "secondary")
+	_draw_button(Rect2(x, y + 228, w, 32), "VOLTAR", "controller_back", "secondary")
 	var rumble := "MOTOR DETETADO PELO SISTEMA" if selected >= 0 and game.controller.device_has_vibration(selected) else "MOTOR NAO CONFIRMADO PELO SISTEMA; EXPERIMENTA O TESTE"
-	draw_string(font, Vector2(left, top + 379), game.controller_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
-	draw_string(font, Vector2(left, top + 402), rumble, HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
-	draw_string(font, Vector2(left, top + 423), "A resposta depende do comando, ligacao, sistema e drivers.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
-	draw_string(font, Vector2(left, top + 446), "DIRECIONAL / SETAS: NAVEGAR  |  CONFIRMAR / ENTER: ESCOLHER  |  ESC: VOLTAR", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 377), game.controller_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
+	draw_string(font, Vector2(left, top + 398), rumble, HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 417), "A resposta depende do comando, ligacao, sistema e drivers.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 438), "INTENSIDADE: TOCA / ARRASTA OU USA ESQUERDA E DIREITA", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 458), "DIRECIONAL / SETAS: NAVEGAR  |  CONFIRMAR / ENTER: ESCOLHER  |  ESC: VOLTAR", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+
+
+func _draw_intensity_slider(rect: Rect2) -> void:
+	var focused := _is_focused("controller_intensity")
+	var hovered: bool = rect.has_point(pointer) and not game.controller.using_gamepad
+	var value: float = game.controller.vibration_intensity
+	draw_rect(rect, Color("202d44") if focused or hovered else Color("151e31"))
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color("9af7ff", 0.82) if focused else Color("536581", 0.82))
+	if focused:
+		draw_rect(rect.grow(3), Color("9cfaff"), false, 2.0)
+	draw_string(font, rect.position + Vector2(12, 24), "INTENSIDADE", HORIZONTAL_ALIGNMENT_LEFT, 118, 11, Color("f0f8ff"))
+	intensity_track = Rect2(rect.position.x + 142, rect.position.y + 16, maxf(30.0, rect.size.x - 205), 6)
+	draw_rect(intensity_track, Color("344358"))
+	draw_rect(Rect2(intensity_track.position, Vector2(intensity_track.size.x * value, intensity_track.size.y)), Color("70e9f2"))
+	var knob := Vector2(intensity_track.position.x + intensity_track.size.x * value, intensity_track.get_center().y)
+	draw_circle(knob, 7.0, Color("d9ffff") if game.controller.vibration_enabled else Color("8193a6"))
+	draw_string(font, Vector2(rect.end.x - 57, rect.position.y + 24), "%d%%" % roundi(value * 100.0), HORIZONTAL_ALIGNMENT_RIGHT, 45, 11, Color("f0f8ff"))
+	buttons.append({"rect": rect, "action": "controller_intensity"})
 
 
 func _draw_controller_mapping(screen: Vector2) -> void:
