@@ -8,6 +8,10 @@ var buttons: Array[Dictionary] = []
 var pointer := Vector2(-1000, -1000)
 var drag_start := Vector2.ZERO
 var dragging := false
+var focus_action := ""
+var focus_context := ""
+var buttons_context := ""
+var focus_visible := false
 const SWIPE_THRESHOLD := 28.0
 
 
@@ -22,6 +26,10 @@ func _process(_delta: float) -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton or event is InputEventScreenTouch or (event is InputEventMouseMotion and event.relative.length_squared() > 0.0):
+		focus_visible = false
+	if buttons_context != _focus_context():
+		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		var mouse_event := event as InputEventMouseButton
 		if mouse_event.pressed:
@@ -63,6 +71,11 @@ func _gui_input(event: InputEvent) -> void:
 func _draw() -> void:
 	if game == null:
 		return
+	var context := _focus_context()
+	if focus_context != context:
+		focus_context = context
+		focus_action = _default_focus_action()
+	buttons_context = context
 	buttons.clear()
 	var screen := size
 	match game.game_state:
@@ -71,6 +84,12 @@ func _draw() -> void:
 			return
 		"level_select":
 			_draw_level_select(screen)
+			return
+		"controller_settings":
+			_draw_controller_settings(screen)
+			return
+		"controller_mapping":
+			_draw_controller_mapping(screen)
 			return
 		"paused":
 			_draw_header(screen)
@@ -95,7 +114,95 @@ func _draw() -> void:
 		var alpha: float = 0.16 * minf(1.0, game.flash_time / 0.14)
 		draw_rect(Rect2(Vector2.ZERO, screen), Color(game.flash_color, alpha))
 	if game.dev_menu_open:
+		# Behind the developer modal, gameplay buttons are not focusable/clickable.
+		buttons.clear()
 		_draw_dev_menu(screen)
+
+
+func _focus_context() -> String:
+	if game == null:
+		return ""
+	return game.game_state + (":dev" if game.dev_menu_open and game.game_state == "playing" else "")
+
+
+func _default_focus_action() -> String:
+	if game.dev_menu_open and game.game_state == "playing":
+		return "dev_god"
+	match game.game_state:
+		"title": return "continue" if game.has_resume else "new_run"
+		"level_select": return "floor:%d" % game.level_page_start
+		"paused": return "resume"
+		"floor_clear", "rescued": return "next_floor"
+		"game_over": return "continue"
+		"controller_settings": return "controller_device"
+	return ""
+
+
+func _focus_index() -> int:
+	for index in buttons.size():
+		if buttons[index].action == focus_action:
+			return index
+	return -1
+
+
+func _focus_is_valid() -> bool:
+	if buttons_context != _focus_context() or buttons.is_empty():
+		return false
+	if _focus_index() < 0:
+		focus_action = buttons[0].action
+	return true
+
+
+func _is_focused(action: String) -> bool:
+	return not action.is_empty() and action == focus_action and (focus_visible or (game.controller != null and game.controller.using_gamepad))
+
+
+func move_focus(direction: Vector2i) -> bool:
+	focus_visible = true
+	if not _focus_is_valid():
+		return false
+	var origin: Vector2 = buttons[_focus_index()].rect.get_center()
+	var best := -1
+	var best_score := INF
+	var axis := Vector2(direction)
+	for index in buttons.size():
+		if index == _focus_index():
+			continue
+		var delta: Vector2 = buttons[index].rect.get_center() - origin
+		var forward := delta.dot(axis)
+		if forward <= 0.0:
+			continue
+		var sideways := absf(delta.x * axis.y - delta.y * axis.x)
+		var score := forward + sideways * 2.5
+		if score < best_score:
+			best_score = score
+			best = index
+	if best < 0:
+		# Wrap at the edge, preferring the same row or column.
+		for index in buttons.size():
+			if index == _focus_index():
+				continue
+			var delta: Vector2 = buttons[index].rect.get_center() - origin
+			var sideways := absf(delta.x * axis.y - delta.y * axis.x)
+			var score := delta.dot(axis) + sideways * 2.5
+			if score < best_score:
+				best_score = score
+				best = index
+	if best < 0:
+		return false
+	focus_action = buttons[best].action
+	queue_redraw()
+	return true
+
+
+func activate_focus() -> bool:
+	focus_visible = true
+	if not _focus_is_valid():
+		return false
+	var action := focus_action
+	game.handle_hud_action(action)
+	queue_redraw()
+	return true
 
 
 func _draw_header(screen: Vector2) -> void:
@@ -168,7 +275,8 @@ func _draw_boss_bar(screen: Vector2) -> void:
 	var max_hp := maxi(1, int(boss.get("max_hp", 2)))
 	var hp := clampi(int(boss.get("hp", max_hp)), 0, max_hp)
 	draw_string(font, rect.position + Vector2(10, 15), "CHEFE / %s   %d/%d" % [boss.get("boss_name", "GUARDIAO"), hp, max_hp], HORIZONTAL_ALIGNMENT_LEFT, width - 20, 10, Color("f5c5ff"))
-	draw_string(font, rect.position + Vector2(10, 29), "%s   |   B OU ESCUDO: -1 VIDA" % boss.get("rule", "1 CASA"), HORIZONTAL_ALIGNMENT_LEFT, width - 20, 8, Color("c9a9dc"))
+	var demolition: String = game.controller.button_label("break") if game.controller.using_gamepad else "B"
+	draw_string(font, rect.position + Vector2(10, 29), "%s   |   %s OU ESCUDO: -1 VIDA" % [boss.get("rule", "1 CASA"), demolition], HORIZONTAL_ALIGNMENT_LEFT, width - 20, 8, Color("c9a9dc"))
 	var bar := Rect2(rect.position + Vector2(10, 36), Vector2(width - 20, 5))
 	draw_rect(bar, Color("3a204d"))
 	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(hp) / float(max_hp), bar.size.y)), Color("e85cff"))
@@ -268,10 +376,19 @@ func _draw_footer(screen: Vector2) -> void:
 	# The displayed controls correspond to actual actions; the old decorative
 	# "x 3" life counter was misleading. Waiting is also available via touch.
 	var controls := "WASD / SETAS  MOVER    ESPACO  SALTAR    B  DEMOLIR    R  REPETIR    ESC  PAUSA"
+	var blink_label := "Q"
+	var wait_label := "X"
+	if game.controller.using_gamepad:
+		var pause_label: String = game.controller.button_label("pause")
+		if pause_label == "--":
+			pause_label = game.controller.button_label("cancel")
+		controls = "ANALOGICO / DIRECIONAL  MOVER    %s  SALTAR    %s  DEMOLIR    %s  PAUSA" % [game.controller.button_label("confirm"), game.controller.button_label("break"), pause_label]
+		blink_label = game.controller.button_label("blink")
+		wait_label = game.controller.button_label("wait")
 	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 246.0, 9, Color("8070b8"))
 	if game.game_state == "playing":
-		_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "Q BLINK %d" % game.blink_charges, "blink", "primary" if game.blink_charges > 0 else "secondary")
-		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "X ESPERAR", "wait", "secondary")
+		_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s BLINK %d" % [blink_label, game.blink_charges], "blink", "primary" if game.blink_charges > 0 else "secondary")
+		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "%s ESPERAR" % wait_label, "wait", "secondary")
 
 	# ── Aviso / Notícia central ─────────────────────────────────────────────────
 	if game.last_notice != "" and game.game_state == "playing":
@@ -321,7 +438,14 @@ func _draw_title(screen: Vector2) -> void:
 	button_y += button_height + gap
 	var music_label := "MUSICA  /  LIGADA" if not game.audio.music_muted else "MUSICA  /  DESLIGADA"
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), music_label, "music", "menu")
-	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), "CLIQUE  SELECIONAR     ENTER  JOGAR / CONTINUAR     N  NOVO JOGO     M  SOM", HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
+	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "COMANDOS / VIBRACAO", "controller_settings", "menu")
+	var controller_status: String = "COMANDO: %s" % game.controller.device_name() if game.controller.active_device >= 0 else "COMANDO: NAO LIGADO"
+	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 78), controller_status, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.65, 9, Color("77e8f1", 0.9))
+	var menu_hint := "CLIQUE  SELECIONAR     ENTER  JOGAR / CONTINUAR     N  NOVO JOGO     M  SOM"
+	if game.controller.using_gamepad:
+		menu_hint = "DIRECIONAL / ANALOGICO  NAVEGAR     %s  CONFIRMAR     %s  VOLTAR" % [game.controller.button_label("confirm"), game.controller.button_label("cancel")]
+	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), menu_hint, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
 	draw_string(font, Vector2(screen.x - 22, 30), "%d ANDARES DESBLOQUEADOS" % game.furthest_floor, HORIZONTAL_ALIGNMENT_RIGHT, 280, 9, Color("d7e5ef", 0.78))
 
 
@@ -367,19 +491,91 @@ func _draw_floor_card(rect: Rect2, number: int) -> void:
 	var status := "%d ESTRELAS" % stars if stars > 0 else "DISPONIVEL" if unlocked else "FECHADO"
 	draw_string(font, Vector2(rect.position.x + 7, rect.position.y + rect.size.y - 20), status, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 9, Color("c3d7e4") if unlocked else Color("657087"))
 	if unlocked:
-		buttons.append({"rect": rect, "action": "floor:%d" % number})
+		var action := "floor:%d" % number
+		if _is_focused(action):
+			draw_rect(rect.grow(3), Color("9cfaff"), false, 2.5)
+		buttons.append({"rect": rect, "action": action})
 
 
 func _draw_pause(screen: Vector2) -> void:
 	_draw_modal_backdrop(screen, Color("050916", 0.76))
-	var panel := Rect2(screen * 0.5 - Vector2(220, 172), Vector2(440, 344))
+	var panel := Rect2(screen * 0.5 - Vector2(220, 187), Vector2(440, 374))
 	_draw_panel(panel, Color("61e9f3", 0.4))
-	draw_string(font, Vector2(panel.position.x + 24, panel.position.y + 60), "PAUSA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 30, Color("eef7ff"))
-	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 90), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 116, panel.size.x - 96, 44), "VOLTAR AO JOGO", "resume", "primary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 166, panel.size.x - 96, 40), "REINICIAR ANDAR", "restart_floor", "secondary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 216, panel.size.x - 96, 40), "DIARIO DE ANDARES", "levels", "secondary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 266, panel.size.x - 96, 40), "SAIR PARA O MENU", "menu", "secondary")
+	draw_string(font, Vector2(panel.position.x + 24, panel.position.y + 53), "PAUSA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 30, Color("eef7ff"))
+	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 80), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 104, panel.size.x - 96, 39), "VOLTAR AO JOGO", "resume", "primary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 149, panel.size.x - 96, 39), "REINICIAR ANDAR", "restart_floor", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, panel.size.x - 96, 39), "DIARIO DE ANDARES", "levels", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 239, panel.size.x - 96, 39), "COMANDOS / VIBRACAO", "controller_settings", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 284, panel.size.x - 96, 39), "SAIR PARA O MENU", "menu", "secondary")
+
+
+func _draw_controller_settings(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.78)
+	var panel_size := Vector2(minf(660.0, screen.x - 32.0), minf(480.0, screen.y - 32.0))
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("61e9f3", 0.55))
+	var left := panel.position.x + 32.0
+	var width := panel.size.x - 64.0
+	var top := panel.position.y
+	draw_string(font, Vector2(left, top + 35), "COMANDOS / VIBRACAO", HORIZONTAL_ALIGNMENT_CENTER, width, 22, Color("f0f7ff"))
+	var count: int = game.controller.connected_devices().size()
+	var selected: int = game.controller.selected_device
+	var name: String = game.controller.device_name(selected) if selected >= 0 else "Nenhum comando ligado"
+	draw_string(font, Vector2(left, top + 62), "%s  /  %d LIGADO(S)" % [name, count], HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("8be8f1"))
+	var status := "SEM COMANDO LIGADO"
+	if count > 0:
+		var mapping := "PERSONALIZADO" if game.controller.has_custom_mapping(selected) else "PADRAO" if game.controller.device_is_known(selected) else "GENERICO / REMAPEAR SE NECESSARIO"
+		status = "%s  /  %s" % [game.controller.device_family(selected), mapping]
+	draw_string(font, Vector2(left, top + 82), status, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("a8b8d2"))
+	var x := left + 18.0
+	var w := width - 36.0
+	var y := top + 104.0
+	_draw_button(Rect2(x, y, w, 35), "TROCAR COMANDO SELECIONADO", "controller_device", "secondary")
+	_draw_button(Rect2(x, y + 41, w, 35), "VIBRACAO: %s" % ("LIGADA" if game.controller.vibration_enabled else "DESLIGADA"), "controller_vibration", "secondary")
+	_draw_button(Rect2(x, y + 82, w, 35), "TESTAR VIBRACAO", "controller_test", "secondary")
+	_draw_button(Rect2(x, y + 123, w, 35), "CONFIGURAR BOTOES E EIXOS", "controller_calibrate", "primary")
+	_draw_button(Rect2(x, y + 164, w, 35), "RESTAURAR MAPEAMENTO ORIGINAL", "controller_reset", "secondary")
+	_draw_button(Rect2(x, y + 205, w, 35), "VOLTAR", "controller_back", "secondary")
+	var rumble := "MOTOR DETETADO PELO SISTEMA" if selected >= 0 and game.controller.device_has_vibration(selected) else "MOTOR NAO CONFIRMADO PELO SISTEMA; EXPERIMENTA O TESTE"
+	draw_string(font, Vector2(left, top + 379), game.controller_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
+	draw_string(font, Vector2(left, top + 402), rumble, HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 423), "A resposta depende do comando, ligacao, sistema e drivers.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 446), "DIRECIONAL / SETAS: NAVEGAR  |  CONFIRMAR / ENTER: ESCOLHER  |  ESC: VOLTAR", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+
+
+func _draw_controller_mapping(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.82)
+	var panel_size := Vector2(minf(680.0, screen.x - 32.0), minf(420.0, screen.y - 32.0))
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("61e9f3", 0.55))
+	var left := panel.position.x + 28.0
+	var width := panel.size.x - 56.0
+	var top := panel.position.y
+	var step: Dictionary = game.controller.current_calibration_step()
+	if step.is_empty():
+		return
+	draw_string(font, Vector2(left, top + 38), "CONFIGURAR GAMEPAD", HORIZONTAL_ALIGNMENT_CENTER, width, 22, Color("f0f7ff"))
+	draw_string(font, Vector2(left, top + 63), game.controller.device_name(game.controller.calibration_device), HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("8be8f1"))
+	draw_string(font, Vector2(left, top + 101), "PASSO %d / %d" % [game.controller.calibration_step + 1, game.controller.CALIBRATION_STEPS.size()], HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("aab7d0"))
+	draw_string(font, Vector2(left, top + 141), "PRESSIONA: %s" % step.label, HORIZONTAL_ALIGNMENT_CENTER, width, 21, Color("ffe291"))
+	var bar := Rect2(left + 36, top + 157, width - 72, 5)
+	draw_rect(bar, Color("23384a"))
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(game.controller.calibration_step) / float(game.controller.CALIBRATION_STEPS.size()), bar.size.y)), Color("66e7f1"))
+	draw_string(font, Vector2(left, top + 194), "USA UM BOTAO OU MOVE UM EIXO; SOLTA ENTRE PASSOS.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("c0cde0"))
+	draw_string(font, Vector2(left, top + 218), game.controller.calibration_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
+	if not step.required:
+		draw_string(font, Vector2(left, top + 246), "OPCIONAL: TOCA NO BOTAO DE VOLTAR PARA IGNORAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+		draw_string(font, Vector2(left, top + 265), "MANTEM O BOTAO DE VOLTAR PARA CANCELAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+	else:
+		draw_string(font, Vector2(left, top + 246), "DIRECOES, CONFIRMAR E VOLTAR SAO OBRIGATORIOS.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+		draw_string(font, Vector2(left, top + 265), "MANTEM UM BOTAO OU EIXO POR 2 SEGUNDOS PARA CANCELAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+	draw_string(font, Vector2(left, top + 294), "TECLADO: S IGNORA OPCIONAL / ESC CANCELA. RATO E TOQUE TAMBEM FUNCIONAM.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("9aaec8"))
+	var button_width := minf(230.0, (width - 12.0) * 0.5)
+	var row_x := screen.x * 0.5 - (button_width * 2.0 + 12.0) * 0.5
+	if not step.required:
+		_draw_button(Rect2(row_x, top + 325, button_width, 40), "IGNORAR OPCIONAL", "controller_skip", "secondary")
+	_draw_button(Rect2(row_x + button_width + 12, top + 325, button_width, 40), "CANCELAR", "controller_cancel_mapping", "secondary")
 
 
 func _draw_result(screen: Vector2, rescued: bool) -> void:
@@ -445,9 +641,10 @@ func _draw_panel(rect: Rect2, accent: Color) -> void:
 
 
 func _draw_button(rect: Rect2, label: String, action: String, style: String) -> void:
-	var hovered := rect.has_point(pointer)
+	var focused := _is_focused(action)
+	var hovered: bool = rect.has_point(pointer) and not (game.controller != null and game.controller.using_gamepad)
 	if style == "menu" or style == "menu_primary":
-		var active := hovered or style == "menu_primary"
+		var active: bool = hovered or focused or (style == "menu_primary" and not (focus_visible or game.controller.using_gamepad))
 		var text_color := Color("ffe600") if active else Color("d0d9e4", 0.9)
 		if active:
 			draw_rect(Rect2(rect.position.x, rect.position.y + 5, 2, rect.size.y - 10), Color("ffe600", 0.92))
@@ -459,10 +656,12 @@ func _draw_button(rect: Rect2, label: String, action: String, style: String) -> 
 		return
 	var fill := Color("15354b") if style == "primary" else Color("151e31")
 	var accent := Color("54e2f0") if style == "primary" else Color("536581")
-	if hovered:
+	if hovered or focused:
 		fill = Color("1a455a") if style == "primary" else Color("202d44")
-		accent = Color("9af7ff") if style == "primary" else Color("9bb1d5")
-	draw_rect(rect.grow(2) if hovered else rect, Color(accent, 0.12 if hovered else 0.04))
+		accent = Color("9af7ff") if focused or style == "primary" else Color("9bb1d5")
+	draw_rect(rect.grow(2) if hovered or focused else rect, Color(accent, 0.16 if hovered or focused else 0.04))
+	if focused:
+		draw_rect(rect.grow(3), Color("9cfaff"), false, 2.0)
 	draw_rect(rect, fill)
 	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(accent, 0.82))
 	draw_string(font, Vector2(rect.position.x + 8, rect.position.y + rect.size.y * 0.5 + 5), label, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 16, 12, Color("f0f8ff"))

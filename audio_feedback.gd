@@ -1,5 +1,8 @@
 extends Node
 
+# Haptics are emitted even when sound effects are muted.
+signal cue_played(cue: String)
+
 const RATE := 22050
 const TAU := 6.28318530718
 const MAIN_THEME = preload("res://audio/main_theme.wav")
@@ -52,6 +55,7 @@ func _process(delta: float) -> void:
 
 
 func play(cue: String) -> void:
+	cue_played.emit(cue)
 	if not effects_enabled or not effects.has(cue):
 		return
 	var player := AudioStreamPlayer.new()
