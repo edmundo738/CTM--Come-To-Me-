@@ -109,7 +109,8 @@ func cancel_pointer_drag() -> void:
 func _set_intensity_at(position: Vector2) -> void:
 	if intensity_track.size.x <= 0.0 or game.game_state != "controller_settings":
 		return
-	game.set_controller_vibration_intensity((position.x - intensity_track.position.x) / intensity_track.size.x)
+	var position_ratio := (position.x - intensity_track.position.x) / intensity_track.size.x
+	game.set_controller_vibration_intensity(position_ratio * game.controller.MAX_VIBRATION_INTENSITY)
 	queue_redraw()
 
 
@@ -599,6 +600,7 @@ func _draw_intensity_slider(rect: Rect2) -> void:
 	var focused := _is_focused("controller_intensity")
 	var hovered: bool = rect.has_point(pointer) and not game.controller.using_gamepad
 	var value: float = game.controller.vibration_intensity
+	var track_ratio: float = value / game.controller.MAX_VIBRATION_INTENSITY
 	draw_rect(rect, Color("202d44") if focused or hovered else Color("151e31"))
 	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color("9af7ff", 0.82) if focused else Color("536581", 0.82))
 	if focused:
@@ -606,8 +608,8 @@ func _draw_intensity_slider(rect: Rect2) -> void:
 	draw_string(font, rect.position + Vector2(12, 24), "INTENSIDADE", HORIZONTAL_ALIGNMENT_LEFT, 118, 11, Color("f0f8ff"))
 	intensity_track = Rect2(rect.position.x + 142, rect.position.y + 16, maxf(30.0, rect.size.x - 205), 6)
 	draw_rect(intensity_track, Color("344358"))
-	draw_rect(Rect2(intensity_track.position, Vector2(intensity_track.size.x * value, intensity_track.size.y)), Color("70e9f2"))
-	var knob := Vector2(intensity_track.position.x + intensity_track.size.x * value, intensity_track.get_center().y)
+	draw_rect(Rect2(intensity_track.position, Vector2(intensity_track.size.x * track_ratio, intensity_track.size.y)), Color("70e9f2"))
+	var knob := Vector2(intensity_track.position.x + intensity_track.size.x * track_ratio, intensity_track.get_center().y)
 	draw_circle(knob, 7.0, Color("d9ffff") if game.controller.vibration_enabled else Color("8193a6"))
 	draw_string(font, Vector2(rect.end.x - 57, rect.position.y + 24), "%d%%" % roundi(value * 100.0), HORIZONTAL_ALIGNMENT_RIGHT, 45, 11, Color("f0f8ff"))
 	buttons.append({"rect": rect, "action": "controller_intensity"})

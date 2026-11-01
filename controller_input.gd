@@ -45,6 +45,7 @@ const DEFAULT_BINDINGS := {
 	"dev": [{"type": "button", "index": JOY_BUTTON_Y}, {"type": "button", "index": JOY_BUTTON_BACK}],
 }
 const HapticMixerScript = preload("res://haptic_mixer.gd")
+const MAX_VIBRATION_INTENSITY := HapticMixerScript.MAX_SOFTWARE_GAIN
 
 # Kept injectable so simulated devices can exercise routing and haptics in CI.
 var backend: Variant = Input
@@ -54,7 +55,7 @@ var active_device := -1
 var selected_device := -1
 var using_gamepad := false
 var vibration_enabled := true
-var vibration_intensity := 1.0
+var vibration_intensity := MAX_VIBRATION_INTENSITY
 var custom_mappings: Dictionary = {}
 var states: Dictionary = {}
 
@@ -199,9 +200,9 @@ func has_custom_mapping(device: int = -1) -> bool:
 	return not key.is_empty() and custom_mappings.has(key)
 
 
-func set_settings(enabled: bool, mappings: Variant, intensity: float = 1.0) -> void:
+func set_settings(enabled: bool, mappings: Variant, intensity: float = MAX_VIBRATION_INTENSITY) -> void:
 	vibration_enabled = enabled
-	vibration_intensity = clampf(intensity, 0.0, 1.0) if is_finite(intensity) else 1.0
+	vibration_intensity = clampf(intensity, 0.0, MAX_VIBRATION_INTENSITY) if is_finite(intensity) else MAX_VIBRATION_INTENSITY
 	custom_mappings = mappings.duplicate(true) if mappings is Dictionary else {}
 	states.clear()
 	_stop_all_vibration()
@@ -215,7 +216,7 @@ func set_vibration_enabled(enabled: bool) -> void:
 
 
 func set_vibration_intensity(value: float) -> void:
-	var next := clampf(value, 0.0, 1.0) if is_finite(value) else 1.0
+	var next := clampf(value, 0.0, MAX_VIBRATION_INTENSITY) if is_finite(value) else MAX_VIBRATION_INTENSITY
 	if is_equal_approx(vibration_intensity, next):
 		return
 	vibration_intensity = next

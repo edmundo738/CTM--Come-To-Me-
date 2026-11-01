@@ -47,6 +47,7 @@ const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
 const ControllerScript = preload("res://controller_input.gd")
+const VIBRATION_PROFILE_VERSION := 2
 const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
@@ -119,7 +120,7 @@ var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
 var controller_vibration_enabled := true
-var controller_vibration_intensity := 1.0
+var controller_vibration_intensity := ControllerScript.MAX_VIBRATION_INTENSITY
 var controller_mappings: Dictionary = {}
 var controller_return_state := "title"
 var controller_message := ""
@@ -2149,8 +2150,16 @@ func _load_profile() -> void:
 	var profile := ConfigFile.new()
 	if profile.load(profile_path) == OK:
 		controller_vibration_enabled = bool(profile.get_value("controller", "vibration", true))
-		var saved_intensity := float(profile.get_value("controller", "vibration_intensity", 1.0))
-		controller_vibration_intensity = clampf(saved_intensity, 0.0, 1.0) if is_finite(saved_intensity) else 1.0
+		var has_intensity := profile.has_section_key("controller", "vibration_intensity")
+		var intensity_version := int(profile.get_value("controller", "vibration_intensity_version", 1))
+		var saved_intensity := float(profile.get_value("controller", "vibration_intensity", ControllerScript.MAX_VIBRATION_INTENSITY))
+		if not is_finite(saved_intensity):
+			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
+		# The old maximum becomes the new maximum automatically. A deliberately
+		# reduced/off setting remains reduced, and v2 values are never migrated twice.
+		elif has_intensity and intensity_version < VIBRATION_PROFILE_VERSION and is_equal_approx(saved_intensity, 1.0):
+			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
+		controller_vibration_intensity = clampf(saved_intensity, 0.0, ControllerScript.MAX_VIBRATION_INTENSITY)
 		var saved_mappings: Variant = profile.get_value("controller", "mappings", {})
 		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
@@ -2193,6 +2202,7 @@ func _save_profile() -> void:
 	var profile := ConfigFile.new()
 	profile.set_value("controller", "vibration", controller_vibration_enabled)
 	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
+	profile.set_value("controller", "vibration_intensity_version", VIBRATION_PROFILE_VERSION)
 	profile.set_value("controller", "mappings", controller_mappings)
 	profile.set_value("progress", "best_score", best_score)
 	profile.set_value("progress", "rescues", rescues_completed)
@@ -2215,7 +2225,7 @@ func _save_profile() -> void:
 
 
 func set_controller_vibration_intensity(value: float) -> void:
-	var safe_value := clampf(value, 0.0, 1.0) if is_finite(value) else 1.0
+	var safe_value := clampf(value, 0.0, ControllerScript.MAX_VIBRATION_INTENSITY) if is_finite(value) else ControllerScript.MAX_VIBRATION_INTENSITY
 	var stepped: float = roundf(safe_value * 20.0) / 20.0
 	controller.set_vibration_intensity(stepped)
 	controller_message = "INTENSIDADE: %d%%" % roundi(stepped * 100.0)
