@@ -7,6 +7,12 @@ extends RefCounted
 const UPDATE_INTERVAL := 0.035
 const MAX_REQUEST_SECONDS := 0.24
 const MAX_VOICES_PER_DEVICE := 8
+# 200% is a software gain relative to the previous 100% setting; motor
+# requests themselves must still be clamped to Godot's physical [0, 1] range.
+const MAX_SOFTWARE_GAIN := 2.0
+const MAX_IMPACT_SUSTAIN := 1.5
+const ENVELOPE_FLOOR := 0.72
+const ENVELOPE_SPAN := 0.28
 const PATTERNS := {
 	"menu_move": {"priority": 1, "segments": [Vector3(0.28, 0.05, 0.065)]},
 	"menu_confirm": {"priority": 1, "segments": [Vector3(0.42, 0.12, 0.075)]},
@@ -47,8 +53,15 @@ var update_accumulator := 0.0
 
 
 func play(device: int, cue: String, intensity: float, force: bool = false, context: Dictionary = {}) -> bool:
-	if not PATTERNS.has(cue) or intensity <= 0.0:
+	var selected_gain := clampf(intensity, 0.0, MAX_SOFTWARE_GAIN) if is_finite(intensity) else 0.0
+	if not PATTERNS.has(cue) or selected_gain <= 0.0:
 		return false
+	var context_gain := float(context.get("gain", 1.0))
+	context_gain = context_gain if is_finite(context_gain) else 0.0
+	# Preserve the previous 0-100% response, including context gains above one,
+	# then boost that capped reference gain up to twice its former maximum.
+	var reference_gain := clampf(minf(selected_gain, 1.0) * context_gain, 0.0, 1.0)
+	var effective_gain := reference_gain * maxf(selected_gain, 1.0)
 	var definition: Dictionary = PATTERNS[cue]
 	var priority := int(definition.priority)
 	# Retriggering replaces a prior copy. Major events remove less important
@@ -65,6 +78,20 @@ func play(device: int, cue: String, intensity: float, force: bool = false, conte
 			"garden": segments = [Vector3(0.48, 0.14, 0.075)]
 			"ice": segments = [Vector3(0.72, 0.09, 0.065), Vector3(0, 0, 0.05), Vector3(0.35, 0.10, 0.06)]
 			"void": segments = [Vector3(0.68, 0.18, 0.075), Vector3(0, 0, 0.06), Vector3(0.24, 0.08, 0.06)]
+	# A motor already at 100% cannot become twice as strong. For occasional
+	# impacts and the test pulse only, sustain saturated parts slightly longer
+	# at the boosted setting; preserve the silent gaps and discrete heartbeat.
+	if selected_gain > 1.0 and priority >= 4:
+		var sustain := lerpf(1.0, MAX_IMPACT_SUSTAIN, selected_gain - 1.0)
+		var envelope: PackedVector2Array = context.get("envelope", PackedVector2Array())
+		# Envelope values vary over the pulse. Only extend a part when it will
+		# still be saturated at the envelope's minimum, not merely its peak.
+		var envelope_floor := ENVELOPE_FLOOR if not envelope.is_empty() else 1.0
+		for index in segments.size():
+			var part: Vector3 = segments[index]
+			if maxf(part.x, part.y) * effective_gain * envelope_floor >= 1.0:
+				part.z *= sustain
+				segments[index] = part
 	var count := 0
 	var lowest_index := -1
 	var lowest_priority := 999
@@ -80,7 +107,7 @@ func play(device: int, cue: String, intensity: float, force: bool = false, conte
 		voices.remove_at(lowest_index)
 	voices.append({
 		"device": device, "cue": cue, "priority": priority, "segments": segments,
-		"elapsed": 0.0, "fresh": true, "gain": clampf(intensity * float(context.get("gain", 1.0)), 0.0, 1.0),
+		"elapsed": 0.0, "fresh": true, "gain": effective_gain,
 		"forced": force, "category": str(context.get("category", "gameplay")),
 		"envelope": context.get("envelope", PackedVector2Array()),
 	})
@@ -199,8 +226,8 @@ func _render(device: int, force_write: bool) -> void:
 		if not envelope.is_empty():
 			var envelope_index := mini(int(float(voice.elapsed) / UPDATE_INTERVAL), envelope.size() - 1)
 			var bands := envelope[envelope_index] # x = low, y = high
-			weak *= 0.72 + 0.28 * bands.y
-			strong *= 0.72 + 0.28 * bands.x
+			weak *= ENVELOPE_FLOOR + ENVELOPE_SPAN * bands.y
+			strong *= ENVELOPE_FLOOR + ENVELOPE_SPAN * bands.x
 		var gain := float(voice.gain) * weight
 		mix.x = maxf(mix.x, weak * gain)
 		mix.y = maxf(mix.y, strong * gain)

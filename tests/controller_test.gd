@@ -402,10 +402,57 @@ func _test_profile_settings() -> void:
 	var legacy = GameScript.new()
 	legacy.profile_path = path
 	legacy._load_profile()
-	_expect(legacy.controller_vibration_enabled and is_equal_approx(legacy.controller_vibration_intensity, 1.0) and legacy.controller_mappings.is_empty() and legacy.furthest_floor == 3, "old profiles receive safe controller defaults")
+	_expect(legacy.controller_vibration_enabled and is_equal_approx(legacy.controller_vibration_intensity, ControllerScript.MAX_VIBRATION_INTENSITY) and legacy.controller_mappings.is_empty() and legacy.furthest_floor == 3, "old profiles without intensity receive the boosted default")
+
+	old.set_value("controller", "vibration", true)
+	old.set_value("controller", "vibration_intensity", 1.0)
+	old.save(path)
+	var legacy_max = GameScript.new()
+	legacy_max.profile_path = path
+	legacy_max._load_profile()
+	_expect(is_equal_approx(legacy_max.controller_vibration_intensity, 2.0), "the previous maximum migrates automatically to 2x")
+	var migrated_live = GameScript.new()
+	migrated_live.profile_path = path
+	root.add_child(migrated_live)
+	migrated_live.audio.effects_enabled = false
+	var migrated_input := FakeInput.new()
+	migrated_live.controller.set_backend(migrated_input)
+	migrated_live.controller._activate_device(2)
+	migrated_live.controller.feedback("step")
+	_expect(not migrated_input.pulses.is_empty() and is_equal_approx(migrated_input.pulses.back().weak, 1.0) and is_equal_approx(migrated_input.pulses.back().strong, 0.48), "an old maximum profile automatically sends the boosted motor output on startup")
+	migrated_live.audio.stop_all()
+	migrated_live.queue_free()
+	legacy_max._save_profile()
+	var migrated := ConfigFile.new()
+	migrated.load(path)
+	_expect(int(migrated.get_value("controller", "vibration_intensity_version", 0)) == legacy_max.VIBRATION_PROFILE_VERSION and is_equal_approx(float(migrated.get_value("controller", "vibration_intensity", 0.0)), 2.0), "migration saves the new scale version and intensity")
+	legacy_max.controller_vibration_intensity = 1.0
+	legacy_max._save_profile()
+	var chosen = GameScript.new()
+	chosen.profile_path = path
+	chosen._load_profile()
+	_expect(is_equal_approx(chosen.controller_vibration_intensity, 1.0), "a new-scale 100% selection is not migrated again")
+
+	old.set_value("controller", "vibration_intensity", 0.35)
+	old.save(path)
+	var legacy_reduced = GameScript.new()
+	legacy_reduced.profile_path = path
+	legacy_reduced._load_profile()
+	_expect(is_equal_approx(legacy_reduced.controller_vibration_intensity, 0.35) and legacy_reduced.furthest_floor == 3, "a deliberately reduced legacy intensity remains unchanged")
+	old.set_value("controller", "vibration", false)
+	old.set_value("controller", "vibration_intensity", 0.0)
+	old.save(path)
+	var legacy_off = GameScript.new()
+	legacy_off.profile_path = path
+	legacy_off._load_profile()
+	_expect(not legacy_off.controller_vibration_enabled and is_zero_approx(legacy_off.controller_vibration_intensity), "legacy off and zero settings remain off")
 	writer.free()
 	reader.free()
 	legacy.free()
+	legacy_max.free()
+	chosen.free()
+	legacy_reduced.free()
+	legacy_off.free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
@@ -465,9 +512,9 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_expect(game.hud.focus_action == "controller_intensity", "drawn intensity slider is reachable with the D-pad")
 	_dispatch_tap(2, JOY_BUTTON_DPAD_LEFT)
-	_expect(is_equal_approx(game.controller.vibration_intensity, 0.95) and game.hud.focus_action == "controller_intensity", "D-pad adjusts the focused intensity without leaving the slider")
+	_expect(is_equal_approx(game.controller.vibration_intensity, 1.95) and game.hud.focus_action == "controller_intensity", "D-pad adjusts the focused intensity without leaving the slider")
 	_dispatch_tap(2, JOY_BUTTON_DPAD_RIGHT)
-	_expect(is_equal_approx(game.controller.vibration_intensity, 1.0), "D-pad can raise the intensity again")
+	_expect(is_equal_approx(game.controller.vibration_intensity, 2.0), "D-pad can raise the intensity to the boosted maximum")
 	# Send actual GUI events to the drawn control, including drags outside the
 	# track and a nonzero finger index. They must not become world swipes.
 	var track: Rect2 = game.hud.intensity_track
@@ -483,7 +530,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	press.pressed = false
 	press.position = motion.position
 	game.hud._gui_input(press)
-	_expect(is_equal_approx(game.controller.vibration_intensity, 0.5), "mouse click and drag set intensity on the rendered slider")
+	_expect(is_equal_approx(game.controller.vibration_intensity, 1.0), "mouse click and drag set intensity on the rendered slider")
 	var touch := InputEventScreenTouch.new()
 	touch.index = 3
 	touch.pressed = true
@@ -496,12 +543,12 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	touch.pressed = false
 	touch.position = drag.position
 	game.hud._gui_input(touch)
-	_expect(is_equal_approx(game.controller.vibration_intensity, 0.75), "touch drag adjusts the same intensity slider")
+	_expect(is_equal_approx(game.controller.vibration_intensity, 1.5), "touch drag adjusts the same intensity slider")
 	var key := InputEventKey.new()
 	key.pressed = true
 	key.keycode = KEY_LEFT
 	game._unhandled_key_input(key)
-	_expect(is_equal_approx(game.controller.vibration_intensity, 0.70), "keyboard arrows adjust the focused intensity slider")
+	_expect(is_equal_approx(game.controller.vibration_intensity, 1.45), "keyboard arrows adjust the focused intensity slider")
 	key.keycode = KEY_RIGHT
 	game._unhandled_key_input(key)
 	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)

@@ -58,12 +58,14 @@ func _run_tests() -> void:
 	game.controller.set_backend(fake)
 	game.controller._activate_device(7)
 	game.audio.effects_enabled = false
+	_expect(is_equal_approx(game.controller.vibration_intensity, HapticMixer.MAX_SOFTWARE_GAIN), "new games apply the boosted maximum by default")
 	var events: Array[Dictionary] = []
 	var sounds: Array[String] = []
 	game.feedback_bus.event_emitted.connect(func(event: String, context: Dictionary): events.append({"event": event, "context": context.duplicate()}))
 	game.audio.cue_played.connect(func(cue: String): sounds.append(cue))
 
 	_test_patterns(game, fake)
+	_test_double_strength(game, fake)
 	_test_intensity_and_safety(game, fake)
 	_test_audio_bands_and_bridge(game, fake, events, sounds)
 	_test_threat_pulses(game, fake, events)
@@ -155,6 +157,167 @@ func _test_patterns(game: Node, fake: FakeInput) -> void:
 	_expect(not game.controller.haptics.voices.is_empty() and is_equal_approx(float(game.controller.haptics.voices[0].elapsed), 0.0), "a long input frame cannot erase a freshly requested pulse")
 	game.controller.tick(0.1)
 	_expect(game.controller.haptics.voices.is_empty() and fake.stopped.has(7), "the fresh pulse still ends normally on the next frame")
+
+
+func _segment_outputs(mixer: RefCounted, fake: FakeInput) -> Array[Vector2]:
+	var samples: Array[Vector2] = []
+	var voice: Dictionary = mixer.voices.back()
+	var elapsed := 0.0
+	for segment in voice.segments:
+		var part: Vector3 = segment
+		voice.elapsed = elapsed + part.z * 0.5
+		fake.pulses.clear()
+		mixer._render(7, true)
+		if fake.pulses.is_empty():
+			samples.append(Vector2.ZERO)
+		else:
+			samples.append(Vector2(fake.pulses.back().weak, fake.pulses.back().strong))
+		elapsed += part.z
+	return samples
+
+
+func _test_double_strength(game: Node, fake: FakeInput) -> void:
+	# Compare every existing cue to its previous 100% output, not just the
+	# slider value. The new 200% default doubles gain before the hardware cap.
+	for cue in HapticMixer.PATTERNS:
+		_fresh(game, fake)
+		_expect(game.controller.feedback(cue), "%s plays at the old maximum" % cue)
+		var old_pulse: Dictionary = fake.pulses.back().duplicate()
+		var old_voice: Dictionary = game.controller.haptics.voices.back()
+		var old_segments: Array = old_voice.segments.duplicate()
+		var old_samples := _segment_outputs(game.controller.haptics, fake)
+		game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+		fake.pulses.clear()
+		_expect(game.controller.feedback(cue), "%s plays at the new maximum" % cue)
+		var boosted: Dictionary = fake.pulses.back().duplicate()
+		var boosted_voice: Dictionary = game.controller.haptics.voices.back()
+		_expect(is_equal_approx(boosted.weak, minf(1.0, old_pulse.weak * 2.0)) and is_equal_approx(boosted.strong, minf(1.0, old_pulse.strong * 2.0)), "%s doubles both motor inputs before saturation" % cue)
+		_expect(is_equal_approx(boosted_voice.gain, old_voice.gain * 2.0), "%s retains the full 2x gain inside the mixer" % cue)
+		_expect(boosted.duration > 0.0 and boosted.duration <= HapticMixer.MAX_REQUEST_SECONDS and boosted.weak <= 1.0 and boosted.strong <= 1.0, "%s sends a finite, bounded motor request" % cue)
+		var new_segments: Array = boosted_voice.segments
+		var new_samples := _segment_outputs(game.controller.haptics, fake)
+		_expect(new_segments.size() == old_segments.size(), "%s keeps its segment sequence" % cue)
+		for index in old_segments.size():
+			var old_part: Vector3 = old_segments[index]
+			var new_part: Vector3 = new_segments[index]
+			_expect(is_equal_approx(new_samples[index].x, minf(1.0, old_samples[index].x * 2.0)) and is_equal_approx(new_samples[index].y, minf(1.0, old_samples[index].y * 2.0)), "%s doubles motor output in segment %d up to the hardware cap" % [cue, index])
+			_expect(is_equal_approx(new_part.x, old_part.x) and is_equal_approx(new_part.y, old_part.y), "%s preserves motor signature at segment %d" % [cue, index])
+			var saturated_impact := int(HapticMixer.PATTERNS[cue].priority) >= 4 and maxf(old_part.x, old_part.y) * 2.0 >= 1.0
+			var expected_sustain: float = HapticMixer.MAX_IMPACT_SUSTAIN if saturated_impact else 1.0
+			_expect(is_equal_approx(new_part.z, old_part.z * expected_sustain), "%s preserves gaps and only sustains saturated important segments at %d" % [cue, index])
+
+	# Clipping must not collapse the important patterns into identical motor
+	# sequences: compare the actual two-channel output and segment timings.
+	var signatures: Array[String] = []
+	for cue in ["step", "blocked", "coin", "shield", "shield_impact", "elite_stagger", "break_wall", "portal", "inflate", "balloon_pop", "near_miss", "heartbeat"]:
+		_fresh(game, fake)
+		game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+		game.controller.feedback(cue)
+		var segments: Array = game.controller.haptics.voices.back().segments
+		var samples := _segment_outputs(game.controller.haptics, fake)
+		var signature := ""
+		for index in segments.size():
+			var part: Vector3 = segments[index]
+			signature += "%.3f/%.3f/%.3f;" % [samples[index].x, samples[index].y, part.z]
+		_expect(not signatures.has(signature), "%s remains distinguishable at the boosted maximum" % cue)
+		signatures.append(signature)
+
+	# All biome variants and context/audio-envelope modulation go through the
+	# same boost, including magnitudes that are below the saturation threshold.
+	for material in ["stone", "mud", "forge", "garden", "ice", "void"]:
+		_fresh(game, fake)
+		game.controller.feedback("step", false, -1, {"material": material})
+		var old_step: Dictionary = fake.pulses.back().duplicate()
+		game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+		game.controller.feedback("step", false, -1, {"material": material})
+		var new_step: Dictionary = fake.pulses.back().duplicate()
+		_expect(is_equal_approx(new_step.weak, minf(1.0, old_step.weak * 2.0)) and is_equal_approx(new_step.strong, minf(1.0, old_step.strong * 2.0)), "%s footsteps get the real boost" % material)
+
+	_fresh(game, fake)
+	game.controller.feedback("step", false, -1, {"gain": 0.5})
+	var old_context: Dictionary = fake.pulses.back().duplicate()
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("step", false, -1, {"gain": 0.5})
+	var new_context: Dictionary = fake.pulses.back().duplicate()
+	_expect(is_equal_approx(new_context.weak, old_context.weak * 2.0) and is_equal_approx(new_context.strong, old_context.strong * 2.0), "context attenuation is applied before the real boost")
+
+	_fresh(game, fake)
+	game.controller.set_vibration_intensity(0.4)
+	game.controller.feedback("step", false, -1, {"gain": 2.0})
+	var legacy_context: Dictionary = fake.pulses.back().duplicate()
+	_expect(is_equal_approx(legacy_context.weak, 0.56 * 0.8) and is_equal_approx(legacy_context.strong, 0.24 * 0.8), "reduced legacy settings preserve context gains above one")
+	game.controller.set_vibration_intensity(1.0)
+	game.controller.feedback("step", false, -1, {"gain": 2.0})
+	var old_hot_context: Dictionary = fake.pulses.back().duplicate()
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("step", false, -1, {"gain": 2.0})
+	var new_hot_context: Dictionary = fake.pulses.back().duplicate()
+	_expect(is_equal_approx(new_hot_context.weak, minf(1.0, old_hot_context.weak * 2.0)) and is_equal_approx(new_hot_context.strong, minf(1.0, old_hot_context.strong * 2.0)), "strong context gains still double the previous capped maximum")
+
+	_fresh(game, fake)
+	game.feedback_bus.emit_event("MOVE", {"material": "garden"})
+	var old_enveloped: Dictionary = fake.pulses.back().duplicate()
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.feedback_bus.emit_event("MOVE", {"material": "garden"})
+	var new_enveloped: Dictionary = fake.pulses.back().duplicate()
+	_expect(is_equal_approx(new_enveloped.weak, old_enveloped.weak * 2.0) and is_equal_approx(new_enveloped.strong, old_enveloped.strong * 2.0), "the real audio-envelope path doubles unsaturated motors")
+
+	_fresh(game, fake)
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	var quiet_envelope := PackedVector2Array([Vector2.ZERO])
+	game.controller.feedback("portal", false, -1, {"envelope": quiet_envelope})
+	var quiet_portal: Array = game.controller.haptics.voices.back().segments
+	_expect(is_equal_approx(quiet_portal[0].z, HapticMixer.PATTERNS.portal.segments[0].z) and fake.pulses.back().strong < 1.0, "an envelope-reduced unsaturated impact is not unnecessarily prolonged")
+	game.controller.feedback("hit", false, -1, {"envelope": quiet_envelope})
+	var quiet_hit: Array = game.controller.haptics.voices.back().segments
+	_expect(is_equal_approx(quiet_hit[0].z, HapticMixer.PATTERNS.hit.segments[0].z * HapticMixer.MAX_IMPACT_SUSTAIN), "an impact saturated even under a quiet envelope is sustained")
+
+	_fresh(game, fake)
+	game.controller.feedback("test")
+	var old_test: Array = game.controller.haptics.voices.back().segments.duplicate()
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("test")
+	var new_test: Array = game.controller.haptics.voices.back().segments.duplicate()
+	_expect(is_equal_approx(new_test[0].z, old_test[0].z * HapticMixer.MAX_IMPACT_SUSTAIN) and is_equal_approx(new_test[1].z, old_test[1].z), "already-saturated test impact is sustained, not sent above 100%, and keeps its gap")
+	fake.stopped.clear()
+	game.controller.tick(0.0)
+	game.controller.tick(0.22)
+	_expect(fake.pulses.back().strong == 1.0 and fake.pulses.back().weak == 1.0, "the boosted test sustains its saturated first impact beyond the old pulse")
+	game.controller.tick(0.10)
+	_expect(fake.stopped.has(7), "the longer saturated impact still stops at its original silent gap")
+
+	_fresh(game, fake)
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("shield_impact")
+	game.controller.tick(0.0)
+	game.controller.tick(0.38)
+	fake.pulses.clear()
+	game.controller.feedback("step")
+	_expect(fake.pulses.is_empty(), "boosted lower-priority events cannot fill an important impact's gap")
+	game.controller.set_vibration_intensity(9.0)
+	_expect(is_equal_approx(game.controller.vibration_intensity, HapticMixer.MAX_SOFTWARE_GAIN), "software gain is capped at the new maximum")
+
+	_fresh(game, fake)
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("explosion")
+	fake.stopped.clear()
+	game.controller.set_vibration_intensity(0.0)
+	var count := fake.pulses.size()
+	game.controller.tick(1.0)
+	_expect(fake.stopped.has(7) and game.controller.haptics.voices.is_empty() and fake.pulses.size() == count and not game.controller.feedback("test", true, 7), "zero cancels boosted sustained segments and suppresses forced tests")
+	game.controller.set_vibration_intensity(HapticMixer.MAX_SOFTWARE_GAIN)
+	game.controller.feedback("break_wall")
+	fake.stopped.clear()
+	game.controller.set_vibration_enabled(false)
+	count = fake.pulses.size()
+	game.controller.tick(1.0)
+	_expect(fake.stopped.has(7) and game.controller.haptics.voices.is_empty() and fake.pulses.size() == count, "disabling vibration cancels boosted segments immediately")
+	game.controller.set_vibration_enabled(true)
+	game.controller.feedback("explosion")
+	game._notification(NOTIFICATION_APPLICATION_FOCUS_OUT)
+	count = fake.pulses.size()
+	game.controller.tick(1.0)
+	_expect(game.controller.haptics.voices.is_empty() and fake.pulses.size() == count, "focus loss also cancels boosted segments")
 
 
 func _test_intensity_and_safety(game: Node, fake: FakeInput) -> void:
