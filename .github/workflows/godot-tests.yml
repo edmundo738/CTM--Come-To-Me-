@@ -36,6 +36,8 @@ jobs:
         run: '"$GODOT" --headless --path . --script res://tests/self_test.gd'
       - name: Gamepad and haptic routing tests
         run: '"$GODOT" --headless --path . --script res://tests/controller_test.gd'
+      - name: Tactical feedback bus tests
+        run: '"$GODOT" --headless --path . --script res://tests/tactical_feedback_test.gd'
       - name: Generation and bot smoke test
         run: |
           "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=1-10 seeds=2 bots=1

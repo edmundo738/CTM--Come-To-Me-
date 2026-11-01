@@ -4,10 +4,12 @@ extends Node
 signal cue_played(cue: String)
 
 const RATE := 22050
+const HAPTIC_WINDOW := 0.035
 const TAU := 6.28318530718
 const MAIN_THEME = preload("res://audio/main_theme.wav")
 const THREAT_LAYER = preload("res://audio/threat_layer.wav")
 var effects: Dictionary = {}
+var haptic_envelopes: Dictionary = {}
 var rng := RandomNumberGenerator.new()
 var music_player: AudioStreamPlayer
 var threat_player: AudioStreamPlayer
@@ -21,8 +23,10 @@ var capture_duck := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
-		effects[cue] = _make_effect(cue)
+	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
+		var effect := _make_effect(cue)
+		effects[cue] = effect
+		haptic_envelopes[cue] = _analyze_haptic_envelope(effect)
 	music_player = AudioStreamPlayer.new()
 	music_player.stream = _loop_track(MAIN_THEME)
 	music_player.volume_db = -24.0
@@ -35,6 +39,48 @@ func _ready() -> void:
 	if DisplayServer.get_name() != "headless":
 		music_player.play()
 		threat_player.play()
+
+
+# Precomputed from the actual generated mono effects, not the music mix. A
+# simple low/high split and RMS windows modulate authored rumble signatures;
+# this is deliberately not advertised as FFT, positional audio or HD haptics.
+# It remains available when audible effects are muted.
+func _analyze_haptic_envelope(stream: AudioStreamWAV) -> PackedVector2Array:
+	var result := PackedVector2Array()
+	if stream == null or stream.stereo or stream.format != AudioStreamWAV.FORMAT_16_BITS:
+		return result
+	var bytes := stream.data
+	var sample_count := bytes.size() / 2
+	var window := maxi(1, int(stream.mix_rate * HAPTIC_WINDOW))
+	# One-pole crossover, approximately 290 Hz at the synthesizer's 22050 Hz.
+	var alpha := 1.0 - exp(-TAU * 290.0 / float(stream.mix_rate))
+	var low := 0.0
+	var low_energy := 0.0
+	var high_energy := 0.0
+	var in_window := 0
+	var peak := 0.0
+	for index in sample_count:
+		var sample := float(bytes.decode_s16(index * 2)) / 32768.0
+		low += alpha * (sample - low)
+		var high := sample - low
+		low_energy += low * low
+		high_energy += high * high
+		in_window += 1
+		if in_window == window or index == sample_count - 1:
+			var bands := Vector2(sqrt(low_energy / in_window), sqrt(high_energy / in_window))
+			result.append(bands)
+			peak = maxf(peak, maxf(bands.x, bands.y))
+			low_energy = 0.0
+			high_energy = 0.0
+			in_window = 0
+	if peak > 0.00001:
+		for index in result.size():
+			result[index] = result[index] / peak
+	return result
+
+
+func get_haptic_envelope(cue: String) -> PackedVector2Array:
+	return haptic_envelopes.get(cue, PackedVector2Array())
 
 
 func _loop_track(source: AudioStreamWAV) -> AudioStreamWAV:
@@ -171,6 +217,9 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"rhythm_trap":
 			duration = 0.24
 			notes = [{"at": 0.0, "length": 0.14, "from": 920.0, "to": 120.0, "gain": 0.16, "shape": "noise"}, {"at": 0.0, "length": 0.2, "from": 180.0, "to": 65.0, "gain": 0.2, "shape": "triangle"}]
+		"near_miss":
+			duration = 0.19
+			notes = [{"at": 0.0, "length": 0.15, "from": 1500.0, "to": 300.0, "gain": 0.075, "shape": "noise"}, {"at": 0.01, "length": 0.12, "from": 560.0, "to": 230.0, "gain": 0.045, "shape": "sine"}]
 	return _render_notes(duration, notes, false)
 
 

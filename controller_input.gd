@@ -44,42 +44,17 @@ const DEFAULT_BINDINGS := {
 	"pause": [{"type": "button", "index": JOY_BUTTON_START}],
 	"dev": [{"type": "button", "index": JOY_BUTTON_Y}, {"type": "button", "index": JOY_BUTTON_BACK}],
 }
-# x = weak/high-frequency motor, y = strong/low-frequency motor, z = seconds.
-# All patterns have a finite duration, so a disconnect cannot leave a motor on.
-const HAPTIC_CUES := {
-	"step": Vector3(0.12, 0.03, 0.045),
-	"wait": Vector3(0.10, 0.09, 0.065),
-	"blocked": Vector3(0.24, 0.32, 0.12),
-	"coin": Vector3(0.16, 0.06, 0.065),
-	"shield": Vector3(0.25, 0.15, 0.12),
-	"breaker": Vector3(0.25, 0.22, 0.12),
-	"hit": Vector3(0.65, 0.90, 0.28),
-	"explosion": Vector3(0.85, 1.0, 0.46),
-	"balloon_pop": Vector3(0.85, 1.0, 0.46),
-	"inflate": Vector3(0.35, 0.50, 0.22),
-	"portal": Vector3(0.38, 0.40, 0.23),
-	"switch": Vector3(0.20, 0.10, 0.10),
-	"jump": Vector3(0.30, 0.14, 0.12),
-	"break_wall": Vector3(0.60, 0.95, 0.27),
-	"power_speed": Vector3(0.28, 0.10, 0.12),
-	"power_magnet": Vector3(0.22, 0.18, 0.14),
-	"power_blink": Vector3(0.24, 0.12, 0.12),
-	"power_time_freeze": Vector3(0.18, 0.35, 0.18),
-	"blink": Vector3(0.36, 0.16, 0.14),
-	"puzzle_error": Vector3(0.25, 0.32, 0.16),
-	"rhythm_trap": Vector3(0.45, 0.65, 0.16),
-	"menu_move": Vector3(0.08, 0.02, 0.035),
-	"menu_confirm": Vector3(0.15, 0.06, 0.07),
-	"test": Vector3(0.65, 0.80, 0.45),
-}
+const HapticMixerScript = preload("res://haptic_mixer.gd")
 
 # Kept injectable so simulated devices can exercise routing and haptics in CI.
 var backend: Variant = Input
+var haptics = HapticMixerScript.new()
 var active_device := -1
 # Settings can target another connected pad without changing the last user.
 var selected_device := -1
 var using_gamepad := false
 var vibration_enabled := true
+var vibration_intensity := 1.0
 var custom_mappings: Dictionary = {}
 var states: Dictionary = {}
 
@@ -94,6 +69,7 @@ var calibration_required_hold := 0.0
 
 
 func _ready() -> void:
+	haptics.backend = backend
 	_connect_backend_signal()
 	_refresh_active_device()
 
@@ -107,6 +83,7 @@ func set_backend(source: Variant) -> void:
 	_disconnect_backend_signal()
 	_stop_all_vibration()
 	backend = source
+	haptics.backend = backend
 	states.clear()
 	active_device = -1
 	selected_device = -1
@@ -145,6 +122,7 @@ func _refresh_active_device() -> void:
 
 func _on_joy_connection_changed(device: int, connected: bool) -> void:
 	if not connected:
+		haptics.cancel_device(device)
 		states.erase(device)
 		if calibration_device == device:
 			cancel_calibration()
@@ -221,12 +199,12 @@ func has_custom_mapping(device: int = -1) -> bool:
 	return not key.is_empty() and custom_mappings.has(key)
 
 
-func set_settings(enabled: bool, mappings: Variant) -> void:
+func set_settings(enabled: bool, mappings: Variant, intensity: float = 1.0) -> void:
 	vibration_enabled = enabled
+	vibration_intensity = clampf(intensity, 0.0, 1.0) if is_finite(intensity) else 1.0
 	custom_mappings = mappings.duplicate(true) if mappings is Dictionary else {}
 	states.clear()
-	if not enabled:
-		_stop_all_vibration()
+	_stop_all_vibration()
 
 
 func set_vibration_enabled(enabled: bool) -> void:
@@ -236,26 +214,41 @@ func set_vibration_enabled(enabled: bool) -> void:
 	settings_changed.emit()
 
 
+func set_vibration_intensity(value: float) -> void:
+	var next := clampf(value, 0.0, 1.0) if is_finite(value) else 1.0
+	if is_equal_approx(vibration_intensity, next):
+		return
+	vibration_intensity = next
+	# Do not let already scheduled segments retain the old setting.
+	_stop_all_vibration()
+	settings_changed.emit()
+
+
 func _stop_all_vibration() -> void:
+	haptics.clear()
 	for device in connected_devices():
 		backend.stop_joy_vibration(device)
 
 
-func feedback(cue: String, force: bool = false, device: int = -1) -> bool:
-	if not vibration_enabled or (not using_gamepad and not force) or not HAPTIC_CUES.has(cue):
+func feedback(cue: String, force: bool = false, device: int = -1, context: Dictionary = {}) -> bool:
+	if not vibration_enabled or vibration_intensity <= 0.0 or (not using_gamepad and not force):
 		return false
 	var target := active_device if device < 0 else device
 	if not connected_devices().has(target):
 		return false
-	var pattern: Vector3 = HAPTIC_CUES[cue]
-	# Some drivers under-report support. Sending a finite pulse is safe; a
-	# device/OS without rumble simply cannot play it.
-	backend.start_joy_vibration(target, pattern.x, pattern.y, pattern.z)
-	return true
+	# Some drivers under-report support. Requests are finite and may simply be
+	# ignored by hardware/OS without compatible rumble motors.
+	return haptics.play(target, cue, vibration_intensity, force, context)
+
+
+func cancel_feedback_category(category: String) -> void:
+	haptics.cancel_category(category)
 
 
 func note_keyboard_or_mouse() -> void:
-	using_gamepad = false
+	if using_gamepad:
+		using_gamepad = false
+		haptics.cancel_gameplay()
 
 
 func reset_held_inputs() -> void:
@@ -271,7 +264,7 @@ func _state(device: int) -> Dictionary:
 
 func _activate_device(device: int) -> void:
 	if device != active_device and connected_devices().has(active_device):
-		backend.stop_joy_vibration(active_device)
+		haptics.cancel_device(active_device)
 	active_device = device
 	using_gamepad = true
 
@@ -420,6 +413,8 @@ func handle_event(event: InputEvent) -> void:
 
 
 func tick(delta: float) -> void:
+	if not haptics.voices.is_empty():
+		haptics.tick(delta, connected_devices())
 	if calibration_device >= 0:
 		if calibration_cancel_pending:
 			calibration_cancel_elapsed += maxf(0.0, delta)

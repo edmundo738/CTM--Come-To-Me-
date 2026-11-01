@@ -47,6 +47,7 @@ const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
 const ControllerScript = preload("res://controller_input.gd")
+const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 
@@ -76,6 +77,7 @@ var camera: Camera2D
 var hud: Control
 var audio: Node
 var controller
+var feedback_bus: Node
 var capture_overlay: ColorRect
 var capture_material: ShaderMaterial
 var generator = Generator.new()
@@ -117,6 +119,7 @@ var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
 var controller_vibration_enabled := true
+var controller_vibration_intensity := 1.0
 var controller_mappings: Dictionary = {}
 var controller_return_state := "title"
 var controller_message := ""
@@ -140,6 +143,12 @@ var level_page_start := 1
 var animation_clock := 0.0
 var shake_time := 0.0
 var shake_strength := 0.0
+var turn_pulse_time := -1.0
+var turn_pulse_position := Vector2.ZERO
+var landing_feedback_time := 0.0
+var near_miss_feedback_time := 0.0
+var visible_threat_distance := -1
+var threat_aura := 0.0
 var capture_time := 0.0
 var capture_darkness := 0.0
 var capture_flash := 0.0
@@ -191,7 +200,10 @@ func _ready() -> void:
 	controller.device_changed.connect(_on_controller_device_changed)
 	audio = AudioScript.new()
 	add_child(audio)
-	audio.cue_played.connect(_on_audio_cue)
+	feedback_bus = TacticalFeedbackScript.new()
+	add_child(feedback_bus)
+	feedback_bus.configure(audio, controller)
+	feedback_bus.event_emitted.connect(_on_tactical_feedback)
 	_init_player_sphere_texture()
 	_init_radial_light_texture()
 	_load_profile()
@@ -282,6 +294,10 @@ func _reset_capture_state() -> void:
 	particles.clear()
 	flash_time = 0.0
 	shake_time = 0.0
+	turn_pulse_time = -1.0
+	landing_feedback_time = 0.0
+	near_miss_feedback_time = 0.0
+	threat_aura = 0.0
 	if camera != null:
 		camera.offset = Vector2.ZERO
 	if audio != null and audio.has_method("reset_cinematic_mix"):
@@ -351,11 +367,15 @@ func handle_hud_action(action: String) -> void:
 	elif action == "controller_vibration":
 		controller.set_vibration_enabled(not controller.vibration_enabled)
 		controller_message = "VIBRACAO LIGADA" if controller.vibration_enabled else "VIBRACAO DESLIGADA"
+	elif action.begins_with("controller_intensity:"):
+		set_controller_vibration_intensity(float(action.trim_prefix("controller_intensity:")))
 	elif action == "controller_test":
 		if controller.selected_device < 0:
 			controller_message = "LIGA UM COMANDO PRIMEIRO"
 		elif not controller.vibration_enabled:
 			controller_message = "LIGA A VIBRACAO ANTES DE TESTAR"
+		elif controller.vibration_intensity <= 0.0:
+			controller_message = "AUMENTA A INTENSIDADE ANTES DE TESTAR"
 		elif controller.feedback("test", true, controller.selected_device):
 			controller_message = "PULSO ENVIADO; A RESPOSTA DEPENDE DO COMANDO E DO SISTEMA"
 	elif action == "controller_calibrate":
@@ -476,7 +496,7 @@ func dev_give_resources() -> void:
 	blink_charges += 1
 	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, ESCUDO, DEMOLICAO E BLINK)"
 	notice_timer = 2.5
-	audio.play("coin")
+	_emit_feedback("COIN_PICKUP")
 	queue_redraw()
 
 
@@ -1412,13 +1432,13 @@ func try_move(dx: int, dy: int) -> void:
 		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
 		notice_timer = 1.0
 		_trigger_shake(0.12, 5.0)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
 		queue_redraw()
 		return
 	_begin_player_move(next)
 	moves_this_floor += 1
-	audio.play("step")
+	_emit_feedback("MOVE", {"material": _current_haptic_material()})
 	_take_turn(facing)
 
 
@@ -1428,6 +1448,7 @@ func wait_turn() -> void:
 	moves_this_floor += 1
 	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
 	notice_timer = 1.0
+	_emit_feedback("WAIT")
 	_take_turn()
 
 
@@ -1444,7 +1465,7 @@ func try_jump() -> void:
 	if charges <= 0:
 		last_notice = "Sem escudo para saltar"
 		notice_timer = 1.5
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	var middle := player_position + facing
@@ -1456,7 +1477,7 @@ func try_jump() -> void:
 		last_notice = "Precisas de duas casas livres para saltar"
 		notice_timer = 1.5
 		_trigger_shake(0.12, 3.5)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	charges -= 1
@@ -1464,7 +1485,7 @@ func try_jump() -> void:
 	moves_this_floor += 1
 	_begin_player_move(landing)
 	_spawn_burst(_cell_center(player_position), Color("6bf4ff"), 14, 115.0)
-	audio.play("jump")
+	_emit_feedback("JUMP")
 	_take_turn(facing)
 
 
@@ -1476,7 +1497,7 @@ func try_blink() -> void:
 	if blink_charges <= 0:
 		last_notice = "SEM CARGAS DE BLINK"
 		notice_timer = 1.4
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		return
 	var origin := player_position
 	var landing := origin
@@ -1489,7 +1510,7 @@ func try_blink() -> void:
 	if landing == origin:
 		last_notice = "BLINK PRECISA DE UMA CASA LIVRE ATE 3 PASSOS"
 		notice_timer = 1.6
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		return
 	blink_charges -= 1
 	moves_this_floor += 1
@@ -1499,7 +1520,7 @@ func try_blink() -> void:
 	player_from = player_to
 	player_anim = 1.0
 	_spawn_burst(_cell_center(landing), Color("c2b6ff"), 24, 160.0)
-	audio.play("blink")
+	_emit_feedback("BLINK")
 	_take_turn(facing)
 
 
@@ -1520,7 +1541,7 @@ func try_break_wall() -> void:
 		if breach_charges <= 0:
 			last_notice = "CARGA DE DEMOLICAO EM FALTA PARA DESTRUIR INIMIGO"
 			notice_timer = 1.4
-			audio.play("blocked")
+			_emit_feedback("BLOCKED")
 			queue_redraw()
 			return
 		breach_charges -= 1
@@ -1544,7 +1565,7 @@ func try_break_wall() -> void:
 		notice_timer = 2.0
 		_spawn_burst(_cell_center(target), Color("ff3366"), 42, 220.0)
 		_spawn_shockwave(_cell_center(target), 8.0, 52.0, Color("ff6b8b"), 0.4)
-		audio.play("break_wall")
+		_emit_feedback("DEMOLITION")
 		_take_turn()
 		return
 
@@ -1552,19 +1573,19 @@ func try_break_wall() -> void:
 		last_notice = "A FRONTEIRA DAS RUINAS NAO CEDE"
 		notice_timer = 1.2
 		_trigger_shake(0.1, 4.0)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	if grid[target.y][target.x] != TILE_WALL:
 		last_notice = "NAO HA PAREDE PARA DEMOLIR"
 		notice_timer = 1.0
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	if breach_charges <= 0:
 		last_notice = "CARGA DE DEMOLICAO EM FALTA"
 		notice_timer = 1.4
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	breach_charges -= 1
@@ -1576,13 +1597,14 @@ func try_break_wall() -> void:
 	last_notice = "PAREDE ABERTA — OS PERSEGUIDORES AVANCAM"
 	notice_timer = 1.7
 	_spawn_burst(_cell_center(target), Color("ff9f59"), 32, 180.0)
-	audio.play("break_wall")
+	_emit_feedback("DEMOLITION")
 	_take_turn()
 
 
 func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	damage_this_turn = false
 	turn_number += 1
+	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
 	_collect_pickups()
 	_trigger_traps()
 	if game_state != "playing":
@@ -1598,6 +1620,7 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 		queue_redraw()
 		return
 	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
+	var enemy_advanced_near := false
 	if not immobilized:
 		_plan_reactive_mirrors(action_direction)
 		var positions: Array[Vector2i] = []
@@ -1609,11 +1632,14 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 				crossings.append(i)
 		for i in enemies.size():
 			var enemy: Dictionary = enemies[i]
+			var previous_position: Vector2i = enemy.pos
 			enemy.from = _cell_center(enemy.pos)
 			enemy.pos = positions[i]
 			enemy.to = _cell_center(enemy.pos)
 			enemy.t = 0.0
 			enemies[i] = enemy
+			if enemy.pos != previous_position and _manhattan(enemy.pos, player_position) == 1 and _enemy_sees_player(enemy.pos):
+				enemy_advanced_near = true
 		_check_enemy_collision()
 		if game_state == "playing" and not damage_this_turn:
 			for index in crossings:
@@ -1624,6 +1650,8 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 					_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
 				break
 	if game_state == "playing":
+		if feedback_bus != null and enemy_advanced_near and not damage_this_turn and not dev_god_mode:
+			feedback_bus.near_miss({"cell": player_position})
 		_update_enemy_intents()
 	_tick_power_effects()
 	# Tick before saving a completed floor, so its checkpoint contains the
@@ -1682,14 +1710,14 @@ func _collect_pickups() -> void:
 		last_notice = "ESCUDO +1  /  a aura protege de um impacto e permite saltar"
 		notice_timer = 2.2
 		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
-		audio.play("shield")
+		_emit_feedback("SHIELD_PICKUP")
 	if breakers.has(player_position):
 		breakers.erase(player_position)
 		breach_charges += 1
 		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
 		notice_timer = 2.6
 		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
-		audio.play("breaker")
+		_emit_feedback("BREAKER_PICKUP")
 	for i in range(powerups.size() - 1, -1, -1):
 		var item: Dictionary = powerups[i]
 		if item.pos == player_position:
@@ -1725,11 +1753,11 @@ func _activate_powerup(kind: String) -> void:
 			return
 	notice_timer = 2.6
 	_spawn_burst(_cell_center(player_position), Color(POWERUP_COLORS.get(kind, "ffffff")), 24, 145.0)
-	audio.play("power_" + kind)
+	_emit_feedback("POWER_" + kind.to_upper())
 
 
 func _audio_coin() -> void:
-	audio.play("coin")
+	_emit_feedback("COIN_PICKUP")
 
 
 func _activate_switches() -> void:
@@ -1743,7 +1771,7 @@ func _activate_switches() -> void:
 			last_notice = "ORDEM ERRADA! RECOMECA: CIANO > AMBAR > VIOLETA"
 			notice_timer = 2.8
 			_spawn_burst(_cell_center(player_position), Color("ff6c82"), 18, 110.0)
-			audio.play("puzzle_error")
+			_emit_feedback("PUZZLE_ERROR")
 			return
 		item.active = true
 		switches[i] = item
@@ -1755,14 +1783,14 @@ func _activate_switches() -> void:
 			last_notice = "INTERRUPTOR %d/%d ATIVADO" % [_active_switches(), switches.size()]
 			_spawn_burst(_cell_center(player_position), Color("7bf4ff"), 20, 130.0)
 		notice_timer = 2.1
-		audio.play("switch")
+		_emit_feedback("SWITCH_ON")
 	if objective_type in ["switches", "puzzle"] and not switches.is_empty() and _active_switches() >= switches.size():
 		if not portal_open:
 			portal_open = true
 			last_notice = "SEQUENCIA COMPLETA — PORTAL ABERTO" if objective_type == "puzzle" else "TODOS OS INTERRUPTORES ATIVOS — PORTAL ABERTO"
 			notice_timer = 3.0
 			_spawn_burst(_cell_center(portal_position), Color("d57aff"), 32, 175.0)
-			audio.play("portal")
+			_emit_feedback("PORTAL_OPEN")
 
 
 func _active_switches() -> int:
@@ -1786,7 +1814,7 @@ func _trigger_traps() -> void:
 		if trap.get("type", "one_shot") == "rhythm":
 			if _rhythm_is_hot(trap, turn_number):
 				_apply_damage("ARMADILHA DE RITMO!", Color("ff7456"))
-				audio.play("rhythm_trap")
+				_emit_feedback("RHYTHM_TRAP")
 		else:
 			trap.armed = false
 			trap.revealed = true
@@ -1823,7 +1851,7 @@ func _stagger_elite(index: int) -> void:
 		last_notice = "%s DERROTADO PELO CONTRA-ATAQUE" % enemy.get("boss_name", "GUARDIAO")
 		notice_timer = 2.0
 		_spawn_burst(_cell_center(enemy.pos), Color("c476ff"), 30, 190.0)
-		audio.play("hit")
+		_emit_feedback("ELITE_COUNTER")
 		return
 	var best_position: Vector2i = enemy.pos
 	var best_distance := _manhattan(enemy.pos, player_position)
@@ -1853,7 +1881,7 @@ func _stagger_elite(index: int) -> void:
 	last_notice = "%s RECUOU (%d/%d) — O ESCUDO QUEBROU" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
 	notice_timer = 2.0
 	_spawn_burst(_cell_center(best_position), Color("66eaff"), 24, 170.0)
-	audio.play("hit")
+	_emit_feedback("ELITE_COUNTER")
 
 
 func _apply_damage(message: String, color: Color) -> void:
@@ -1870,7 +1898,7 @@ func _apply_damage(message: String, color: Color) -> void:
 		hits_this_floor += 1
 		last_notice = message + " — O ESCUDO ABSORVEU O IMPACTO"
 		notice_timer = 2.0
-		audio.play("hit")
+		_emit_feedback("SHIELD_IMPACT")
 	else:
 		_begin_capture(message, color)
 
@@ -1896,7 +1924,7 @@ func _begin_capture(message: String, color: Color) -> void:
 	shake_strength = 5.0
 	flash_time = 0.13
 	flash_color = color
-	audio.play("inflate")
+	_emit_feedback("CAPTURE_START")
 	_update_capture_overlay()
 
 
@@ -1913,7 +1941,7 @@ func _trigger_capture_burst() -> void:
 		var offset := Vector2(cos(angle) * radius * 0.98, sin(angle) * radius * 0.84)
 		capture_splats.append({"pos": capture_origin + offset, "radius": rng.randf_range(2.5, 8.0)})
 	_spawn_blood_burst(capture_origin)
-	audio.play("balloon_pop")
+	_emit_feedback("CAPTURE_POP")
 	shake_time = 0.55
 	shake_strength = 22.0
 	flash_time = 0.28
@@ -2055,7 +2083,7 @@ func _check_portal() -> void:
 		challenge_complete = true
 		last_notice = "DESAFIO CUMPRIDO  +5 MOEDAS"
 		_spawn_burst(_cell_center(portal_position), Color("ffd15d"), 26, 170.0)
-		audio.play("switch")
+		_emit_feedback("SWITCH_ON")
 	stars_last_floor = _stars_for_floor()
 	floor_history.append(stars_last_floor)
 	floor_reward = stars_last_floor * 2 + (5 if challenge_complete else 0)
@@ -2064,7 +2092,7 @@ func _check_portal() -> void:
 		best_score = total_coins
 		best_score_dirty = true
 	_spawn_burst(_cell_center(portal_position), Color("c476ff"), 42, 240.0)
-	audio.play("portal")
+	_emit_feedback("PORTAL_ENTER")
 	var rescue_milestone := floor_number % 5 == 0
 	if rescue_milestone:
 		game_state = "rescued"
@@ -2121,6 +2149,8 @@ func _load_profile() -> void:
 	var profile := ConfigFile.new()
 	if profile.load(profile_path) == OK:
 		controller_vibration_enabled = bool(profile.get_value("controller", "vibration", true))
+		var saved_intensity := float(profile.get_value("controller", "vibration_intensity", 1.0))
+		controller_vibration_intensity = clampf(saved_intensity, 0.0, 1.0) if is_finite(saved_intensity) else 1.0
 		var saved_mappings: Variant = profile.get_value("controller", "mappings", {})
 		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
@@ -2154,7 +2184,7 @@ func _load_profile() -> void:
 				resume_history.clear()
 			_save_profile()
 	if controller != null:
-		controller.set_settings(controller_vibration_enabled, controller_mappings)
+		controller.set_settings(controller_vibration_enabled, controller_mappings, controller_vibration_intensity)
 
 
 func _save_profile() -> void:
@@ -2162,6 +2192,7 @@ func _save_profile() -> void:
 		return
 	var profile := ConfigFile.new()
 	profile.set_value("controller", "vibration", controller_vibration_enabled)
+	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
 	profile.set_value("controller", "mappings", controller_mappings)
 	profile.set_value("progress", "best_score", best_score)
 	profile.set_value("progress", "rescues", rescues_completed)
@@ -2183,6 +2214,13 @@ func _save_profile() -> void:
 		push_warning("Nao foi possivel guardar o perfil (erro %d)" % error)
 
 
+func set_controller_vibration_intensity(value: float) -> void:
+	var safe_value := clampf(value, 0.0, 1.0) if is_finite(value) else 1.0
+	var stepped: float = roundf(safe_value * 20.0) / 20.0
+	controller.set_vibration_intensity(stepped)
+	controller_message = "INTENSIDADE: %d%%" % roundi(stepped * 100.0)
+
+
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and controller != null:
 		# A release event can be lost while the window is unfocused. Never keep
@@ -2191,6 +2229,8 @@ func _notification(what: int) -> void:
 			controller.cancel_calibration()
 		controller.reset_held_inputs()
 		controller.note_keyboard_or_mouse()
+		if hud != null:
+			hud.cancel_pointer_drag()
 
 
 func _exit_tree() -> void:
@@ -2201,7 +2241,16 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	animation_clock += delta
+	landing_feedback_time = maxf(0.0, landing_feedback_time - delta)
+	near_miss_feedback_time = maxf(0.0, near_miss_feedback_time - delta)
+	if turn_pulse_time > -1.0:
+		turn_pulse_time += delta
+		if turn_pulse_time > 0.28:
+			turn_pulse_time = -1.0
+	var previous_player_anim := player_anim
 	player_anim = minf(1.0, player_anim + delta / 0.115)
+	if previous_player_anim < 1.0 and player_anim >= 1.0 and game_state != "captured":
+		landing_feedback_time = 0.12
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.t = minf(1.0, enemy.t + delta / 0.14)
@@ -2231,11 +2280,16 @@ func _process(delta: float) -> void:
 	flash_time = maxf(0.0, flash_time - delta)
 	if shake_time > 0.0:
 		shake_time = maxf(0.0, shake_time - delta)
-	_update_capture_sequence(delta)
-	if audio != null and audio.has_method("set_threat"):
-		audio.set_threat(_current_threat_level())
 	if controller != null:
+		# Age existing voices before this frame can emit a capture-pop event;
+		# a long frame must not instantly skip a freshly requested signature.
 		controller.tick(delta)
+	_update_capture_sequence(delta)
+	visible_threat_distance = _nearest_visible_threat() if game_state == "playing" and not dev_menu_open else -1
+	var target_aura := 0.0 if visible_threat_distance < 0 else clampf((5.0 - visible_threat_distance) / 4.0, 0.0, 1.0)
+	threat_aura = move_toward(threat_aura, target_aura, delta * 2.5)
+	if feedback_bus != null:
+		feedback_bus.tick(delta, visible_threat_distance, game_state == "playing" and not dev_menu_open, _current_threat_level())
 	_update_camera(delta)
 	queue_redraw()
 
@@ -2278,6 +2332,9 @@ func _update_camera(delta: float) -> void:
 		camera.offset = Vector2(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0)) * shake_strength * (shake_time / 0.25)
 	else:
 		camera.offset = Vector2.ZERO
+	if near_miss_feedback_time > 0.0:
+		# Deterministic and very small; never consume the gameplay RNG.
+		camera.offset += Vector2(sin(animation_clock * 58.0), cos(animation_clock * 49.0)) * (near_miss_feedback_time / 0.16) * 1.1
 
 
 func _input(event: InputEvent) -> void:
@@ -2324,7 +2381,6 @@ func _on_controller_action(action: String) -> void:
 			try_break_wall()
 		elif action == "wait":
 			wait_turn()
-			controller.feedback("wait")
 		elif action == "blink":
 			try_blink()
 		elif action in ["pause", "cancel"]:
@@ -2348,13 +2404,45 @@ func _on_controller_action(action: String) -> void:
 			"level_select", "game_over", "floor_clear", "rescued": handle_hud_action("menu")
 
 
-func _on_audio_cue(cue: String) -> void:
-	if controller != null:
-		controller.feedback(cue)
+func _emit_feedback(event: String, context: Dictionary = {}) -> void:
+	if feedback_bus != null:
+		feedback_bus.emit_event(event, context)
+
+
+func _on_tactical_feedback(event: String, context: Dictionary) -> void:
+	match event:
+		"TURN_COMMITTED":
+			turn_pulse_position = _cell_center(context.get("cell", player_position))
+			# The board is already resolved; only the visual ring waits for landing.
+			turn_pulse_time = -0.115 if player_anim < 1.0 else 0.0
+		"NEAR_MISS":
+			near_miss_feedback_time = 0.16
+		"BLOCKED":
+			landing_feedback_time = 0.10
+
+
+func _current_haptic_material() -> String:
+	match get_biome_index(floor_number):
+		1: return "garden"
+		2: return "forge"
+		3: return "ice"
+		4: return "void"
+	return "neon"
+
+
+func _nearest_visible_threat() -> int:
+	var closest := -1
+	for enemy in enemies:
+		var position: Vector2i = enemy.pos
+		var distance := _manhattan(position, player_position)
+		if distance <= 4 and _enemy_sees_player(position) and (closest < 0 or distance < closest):
+			closest = distance
+	return closest
 
 
 func _on_controller_settings_changed() -> void:
 	controller_vibration_enabled = controller.vibration_enabled
+	controller_vibration_intensity = controller.vibration_intensity
 	controller_mappings = controller.custom_mappings.duplicate(true)
 	_save_profile()
 
@@ -2526,6 +2614,9 @@ func _draw() -> void:
 				
 	# CAMADA 3: Iluminação e Halos Néon no Chão (Radial Glows dos itens e player)
 	_draw_floor_neon_glow()
+	if turn_pulse_time >= 0.0:
+		var progress := clampf(turn_pulse_time / 0.28, 0.0, 1.0)
+		draw_arc(turn_pulse_position, 8.0 + progress * 24.0, 0.0, TAU, 40, Color("82f4ff", 0.30 * (1.0 - progress)), 1.4, true)
 	
 	# CAMADA 4: Elementos interativos de chão (Poça de sangue, armadilhas, botões)
 	_draw_blood_puddle()
@@ -3842,9 +3933,13 @@ func _draw_player() -> void:
 			visibility = 0.3
 	else:
 		var squash := sin(movement * PI)
-		stretch = Vector2(1.0 + squash * 0.09, 1.0 - squash * 0.07)
+		var landing := clampf(landing_feedback_time / 0.12, 0.0, 1.0)
+		stretch = Vector2(1.0 + squash * 0.09 + landing * 0.07, 1.0 - squash * 0.07 - landing * 0.055)
 		hop += sin(animation_clock * 7.0) * 0.8
-	var shadow_color := Color("00040d", 0.36 * visibility)
+	if threat_aura > 0.01 and game_state == "playing":
+		var pulse := 1.0 + 0.05 * sin(animation_clock * 5.0)
+		draw_arc(center, 21.0 * pulse, 0.0, TAU, 32, Color("ff6a71", threat_aura * 0.22), 1.4, true)
+	var shadow_color := Color("00040d", (0.36 + threat_aura * 0.10) * visibility)
 	draw_set_transform(center + Vector2(0, 13.0), 0.0, Vector2(1.0 + movement * 0.08, 0.46))
 	draw_circle(Vector2.ZERO, 12.5 * size_scale, shadow_color)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
