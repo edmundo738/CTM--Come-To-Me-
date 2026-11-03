@@ -4,13 +4,14 @@ const GameScript = preload("res://game.gd")
 const Generator = preload("res://level_generator.gd")
 const Terrain = preload("res://terrain_renderer.gd")
 # Captured from f3513b5 with the benchmark below: includes later traps and
-# both RNG states, not just the room layout. In particular, seed 48211 on
-# floor 1000 exhausts all available coin cells before 1008 attempts.
+# both RNG states, not just the room layout. Floors 2 and 4 intentionally
+# differ because crate placement now reserves floor cells before coin placement.
+# Seed 48211 on floor 1000 exhausts all available coin cells before 1008 attempts.
 const BASELINE_FINGERPRINTS := {
 	"1:12900": "e69284a6b7e55b3a711a31c6fdf2a03d1f3feefa987e65e0b0b9ae8fa373b68a",
-	"2:48211": "c69cdd5b9a73f099b59e0711a5464dec8961f35ee52d706b935ca633c44bb78f",
+	"2:48211": "b1763e1ff943406b8b75e393029d3f21343abf3e01d21d533face32f634e3eb9",
 	"3:12900": "d9afc10b4c9a8c76f9e7e5fdd27113d7939dd6d5394721e2a8b4e2fe7bc14e41",
-	"4:48211": "6e281cd7d51d1ae0079d554991f8046e66973e38265a108d7e4243d9bc706450",
+	"4:48211": "0a1266c4508630e5258ae0c9b6f26952f39ab64f58f2d369ff100d00f063e0fc",
 	"5:77123": "de0a45043ab20eba2d41a4bbf61eb136bd9fe7bbd5c99f9f31e282ef8d4325ff",
 	"15:12900": "f4277378537d5cb77d6aa025ddb9e38e46d33a87886a4b09489fb77cf8b7de6f",
 	"30:77123": "b3ee19c24a0cb280ee6a8dc9735a8a8333c7e8f14965cc3dafe4f663beb86ccf",
@@ -168,7 +169,28 @@ func _test_baseline_fingerprints(game: Node) -> void:
 		var parts: PackedStringArray = String(key).split(":")
 		game.active_seed = int(parts[1])
 		game.generate_floor(int(parts[0]))
-		_expect(_fingerprint(game) == BASELINE_FINGERPRINTS[key], "floor and RNG match pre-optimization snapshot " + key)
+		_expect(_fingerprint(game) == BASELINE_FINGERPRINTS[key], "floor and RNG match seeded snapshot " + key)
+
+
+func _test_environmental_determinism(game: Node) -> void:
+	for number in [2, 4, 7]:
+		game.active_seed = 48211
+		game.generate_floor(number)
+		var first := {
+			"grid": game.grid.duplicate(true), "crates": game.crates.duplicate(true),
+			"currents": game.water_current_dirs.duplicate(true),
+			"electric": game.electrified_water.duplicate(true),
+			"brittle": game.brittle_ice.duplicate(true), "rng": game.rng.state,
+		}
+		game.generate_floor(number)
+		var second := {
+			"grid": game.grid.duplicate(true), "crates": game.crates.duplicate(true),
+			"currents": game.water_current_dirs.duplicate(true),
+			"electric": game.electrified_water.duplicate(true),
+			"brittle": game.brittle_ice.duplicate(true), "rng": game.rng.state,
+		}
+		_expect(first == second, "water, ice, crates and electricity repeat for floor %d / seed 48211" % number)
+		_expect(game._reachable_cells(game.player_position).has(game.portal_position), "environmental floor %d retains a reachable portal" % number)
 
 
 func _counts(terrain: Node) -> Dictionary:
@@ -337,6 +359,7 @@ func _run() -> void:
 	root.add_child(game)
 	game.audio.effects_enabled = false
 	_test_baseline_fingerprints(game)
+	_test_environmental_determinism(game)
 	await _test_terrain_and_culling(game)
 	await _test_biomes_and_capture(game)
 	game.queue_free()
