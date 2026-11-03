@@ -50,6 +50,7 @@ func _run_tests() -> void:
 	_test_score_saving(game)
 	_test_restart_and_checkpoints(game)
 	_test_turn_edge_cases(game)
+	_test_shield_recoil(game)
 	_test_chess_bosses(game)
 	_test_powerups(game)
 	_test_puzzle_floor(game)
@@ -489,6 +490,181 @@ func _test_turn_edge_cases(game: Node) -> void:
 	game.dev_god_mode = false
 
 
+func _test_shield_recoil(game: Node) -> void:
+	var events: Array[String] = []
+	var on_event := func(event: String, _context: Dictionary) -> void: events.append(event)
+	game.feedback_bus.event_emitted.connect(on_event)
+
+	# Walking into a pursuer projects it forward and preserves an animation,
+	# without allowing its old intent to move it again in the same action.
+	_test_arena(game)
+	game.charges = 2
+	var enemy: Dictionary = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	events.clear()
+	game.try_move(1, 0)
+	_expect(game.game_state == "playing" and game.player_position == Vector2i(5, 4) and game.enemies.size() == 1 and game.enemies[0].pos == Vector2i(7, 4), "shield pushes a common enemy two open cells in the player's direction")
+	_expect(game.charges == 1 and game.hits_this_floor == 1 and game.turn_number == 1 and events.count("SHIELD_IMPACT") == 1, "one contact consumes one charge and one turn with one impact event")
+	_expect(game.enemies[0].from == game._cell_center(Vector2i(5, 4)) and game.enemies[0].to == game._cell_center(Vector2i(7, 4)) and game.enemies[0].t == 0.0, "the pre-enemy-phase recoil retains its visual interpolation")
+	var board_turn: int = game.turn_number
+	game._process(0.035)
+	var recoil_visual: Vector2 = game._enemy_visual_position(game.enemies[0])
+	_expect(game.turn_number == board_turn and game.enemies[0].pos == Vector2i(7, 4) and game.enemies[0].t > 0.0, "animating recoil does not spend turns or change the resolved cell")
+	_expect(recoil_visual.y < game._cell_center(Vector2i(5, 4)).y and recoil_visual.x > game._cell_center(Vector2i(5, 4)).x, "shield recoil has a short visual arc while the board position stays fixed")
+	game.try_move(1, 0)
+	_expect(game.charges == 0 and game.hits_this_floor == 2 and game.enemies.size() == 1 and game.enemies[0].pos == Vector2i(8, 4), "a second shield contact pushes the ordinary enemy again without automatically defeating it")
+
+	for role in ["hunter", "sentry", "wisp", "patrol", "mirror", "rusher"]:
+		_test_arena(game)
+		game.charges = 1
+		enemy = game._make_enemy(Vector2i(5, 4), role)
+		enemy.next = game.player_position
+		game.enemies.append(enemy)
+		game.try_move(1, 0)
+		_expect(game.enemies.size() == 1 and game.enemies[0].role == role and game.enemies[0].pos == Vector2i(7, 4), "shield projects ordinary family without defeating it: " + role)
+
+	# A pursuer entering the player rebounds toward the direction it came from.
+	_test_arena(game)
+	game.charges = 1
+	enemy = game._make_enemy(Vector2i(5, 4), "sentry")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(6, 4) and game.enemies[0].from == game._cell_center(Vector2i(4, 4)) and game.charges == 0, "an incoming pursuer is projected away from the player")
+
+	# An enemy whose multi-cell path crossed the player also rebounds from the
+	# actual contact cell, not from its already-resolved endpoint.
+	_test_arena(game)
+	game.charges = 1
+	enemy = game._make_enemy(Vector2i(2, 4), "rusher")
+	enemy.next = Vector2i(5, 4)
+	enemy["path"] = [Vector2i(3, 4), Vector2i(4, 4), Vector2i(5, 4)]
+	game.enemies.append(enemy)
+	game.wait_turn()
+	_expect(game.enemies[0].pos == Vector2i(2, 4) and game.enemies[0].from == game._cell_center(Vector2i(4, 4)) and game.enemies[0].to == game._cell_center(Vector2i(2, 4)) and game.charges == 0, "a crossing dash bounces back toward its starting cell")
+
+	_test_arena(game)
+	game.charges = 1
+	game.grid[4][7] = game.TILE_WALL
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(6, 4) and game.grid[4][7] == game.TILE_WALL, "recoil stops before a wall instead of passing through")
+
+	_test_arena(game)
+	game.charges = 1
+	game.grid[4][6] = game.TILE_WALL
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(5, 6) and game.grid[4][6] == game.TILE_WALL, "if forward is blocked the shield selects a legal sideways recoil")
+
+	_test_arena(game)
+	game.charges = 1
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	var other: Dictionary = game._make_enemy(Vector2i(8, 4), "hunter")
+	other.next = Vector2i(7, 4)
+	game.enemies.append(enemy)
+	game.enemies.append(other)
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(6, 4) and game.enemies[1].pos == Vector2i(7, 4), "recoil cannot pass through an enemy's reserved landing")
+
+	_test_arena(game)
+	game.charges = 1
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	other = game._make_enemy(Vector2i(8, 4), "rusher")
+	other.next = Vector2i(5, 4)
+	other["path"] = [Vector2i(7, 4), Vector2i(6, 4), Vector2i(5, 4)]
+	game.enemies.append(enemy)
+	game.enemies.append(other)
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(5, 6), "recoil avoids the intermediate cells of another enemy's planned dash")
+
+	_test_arena(game)
+	game.charges = 1
+	game.player_position = Vector2i(9, 4)
+	game.player_from = game._cell_center(game.player_position)
+	game.player_to = game.player_from
+	enemy = game._make_enemy(Vector2i(10, 4), "hunter")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	game.try_move(1, 0)
+	_expect(game.enemies[0].pos == Vector2i(10, 6) and game.grid[4][11] == game.TILE_BORDER, "recoil cannot leave the map through its indestructible border")
+
+	_test_arena(game)
+	game.charges = 1
+	enemy = game._make_enemy(game.player_position, "hunter")
+	game.enemies.append(enemy)
+	for direction in game.FOUR_WAY:
+		var blocked: Vector2i = game.player_position + direction
+		game.grid[blocked.y][blocked.x] = game.TILE_WALL
+	game._check_enemy_collision()
+	_expect(game.game_state == "playing" and game.charges == 0 and game.enemies[0].pos == game.player_position and game.last_notice.contains("SEM ESPACO"), "when completely boxed in, recoil cannot tunnel or invent a destination")
+
+	_test_arena(game)
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = game.player_position
+	game.enemies.append(enemy)
+	game.try_move(1, 0)
+	_expect(game.game_state == "captured" and game.enemies[0].pos == Vector2i(5, 4), "without a shield, contact still captures and does not repel")
+
+	_test_arena(game)
+	game.charges = 2
+	enemy = game._make_enemy(Vector2i(5, 4), "hunter")
+	enemy.next = enemy.pos
+	game.enemies.append(enemy)
+	game.traps.append({"pos": enemy.pos, "armed": true, "revealed": false})
+	events.clear()
+	game.try_move(1, 0)
+	_expect(game.charges == 1 and game.hits_this_floor == 1 and game.enemies[0].pos == Vector2i(5, 4) and events.count("SHIELD_IMPACT") == 1, "a trap and enemy on the same action do not spend two shields or apply a second recoil")
+
+	_test_arena(game)
+	game.dev_god_mode = true
+	game.charges = 1
+	enemy = game._make_enemy(game.player_position, "hunter")
+	game.enemies.append(enemy)
+	game._check_enemy_collision()
+	_expect(game.charges == 1 and game.enemies[0].pos == game.player_position, "god mode does not consume a shield or project an enemy")
+	game.dev_god_mode = false
+	game.feedback_bus.event_emitted.disconnect(on_event)
+
+	# Exhaust every blocked/open pattern for the first two cells in all four
+	# directions. Any displacement must be a straight unobstructed path.
+	var legal_patterns := true
+	for mask in 256:
+		for preferred in game.FOUR_WAY:
+			_test_arena(game)
+			game.player_position = Vector2i(5, 5)
+			var bit := 0
+			for direction in game.FOUR_WAY:
+				for step in range(1, 3):
+					var point: Vector2i = game.player_position + direction * step
+					if (mask & (1 << bit)) != 0:
+						game.grid[point.y][point.x] = game.TILE_WALL
+					bit += 1
+			enemy = game._make_enemy(game.player_position, "hunter")
+			game.enemies.append(enemy)
+			game._repel_common_enemy(0, preferred)
+			var delta: Vector2i = game.enemies[0].pos - game.player_position
+			if delta == Vector2i.ZERO:
+				for direction in game.FOUR_WAY:
+					if game._is_floor(game.player_position + direction):
+						legal_patterns = false
+			else:
+				if (delta.x != 0 and delta.y != 0) or absi(delta.x) + absi(delta.y) > 2:
+					legal_patterns = false
+				var travel := Vector2i(signi(delta.x), signi(delta.y))
+				for step in range(1, absi(delta.x) + absi(delta.y) + 1):
+					if not game._is_floor(game.player_position + travel * step):
+						legal_patterns = false
+	_expect(legal_patterns, "shield recoil stays on a clear straight path for all 1024 local wall patterns and impact directions")
+
+
 func _test_chess_bosses(game: Node) -> void:
 	_test_arena(game)
 	var types := ["pawn", "rook", "knight", "bishop", "queen", "king", "pawn"]
@@ -552,6 +728,31 @@ func _test_chess_bosses(game: Node) -> void:
 	game.enemies.append(counter)
 	game._check_enemy_collision()
 	_expect(game.charges == 0 and game.enemies.size() == 1 and game.enemies[0].hp == 1 and game.enemies[0].pos != game.player_position, "shield counter damages and staggers a boss")
+
+	# Establish the current floor-five behavior before designing a telegraphed
+	# attack: on a clear lane, contact follows the normal turn-by-turn movement.
+	_test_arena(game)
+	game.floor_number = 5
+	var pawn: Dictionary = game._make_boss(Vector2i(8, 4))
+	game.enemies.append(pawn)
+	game._update_enemy_intents()
+	for expected_x in [7, 6, 5]:
+		game.wait_turn()
+		_expect(game.game_state == "playing" and game.enemies[0].pos == Vector2i(expected_x, 4), "floor-five pawn advances one tile for each valid wait")
+	game.wait_turn()
+	_expect(game.game_state == "captured" and game.turn_number == 4, "floor-five pawn's current unshielded contact resolves on the fourth action")
+
+	_test_arena(game)
+	game.floor_number = 5
+	game.charges = 2
+	pawn = game._make_boss(Vector2i(5, 4))
+	pawn.next = game.player_position
+	game.enemies.append(pawn)
+	game.try_move(1, 0)
+	_expect(game.enemies.size() == 1 and game.enemies[0].hp == 1 and game.charges == 1, "the pawn survives one shield counter with one HP")
+	var pawn_pos: Vector2i = game.enemies[0].pos
+	game.try_move(pawn_pos.x - game.player_position.x, pawn_pos.y - game.player_position.y)
+	_expect(game.enemies.is_empty() and game.charges == 0, "the existing two-HP pawn can be defeated by its second shield counter")
 
 
 func _test_powerups(game: Node) -> void:
