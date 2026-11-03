@@ -55,6 +55,7 @@ const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 const TerrainRenderer = preload("res://terrain_renderer.gd")
+const SokobanScript = preload("res://sokoban_generator.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -96,6 +97,7 @@ var capture_material: ShaderMaterial
 var background_rect: ColorRect
 var terrain_renderer: Node2D
 var generator = Generator.new()
+var sokoban_generator = SokobanScript.new()
 var rng := RandomNumberGenerator.new()
 var active_seed := 0
 var generation_report := ""
@@ -144,11 +146,21 @@ var controller_message := ""
 var floor_start_snapshot: Dictionary = {}
 var persistence_enabled := true
 var profile_path := "user://come_to_me_profile.cfg"
+var dev_sandbox_active := false
+var dev_profile_snapshot: Dictionary = {}
 var flash_time := 0.0
 var flash_color := Color.WHITE
 var game_state := "ready"
 var damage_this_turn := false
 var objective_type := "escape"
+var sokoban_mode := false
+var sokoban_title := ""
+var sokoban_template_id := ""
+var sokoban_goals: Array[Vector2i] = []
+var sokoban_history: Array[Dictionary] = []
+var sokoban_pushes := 0
+var sokoban_push_par := 0
+var sokoban_move_par := 0
 var challenge_kind := "no_jump"
 var challenge_par := 0
 var challenge_complete := false
@@ -239,6 +251,7 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	_leave_dev_sandbox()
 	if camera != null:
 		camera.enabled = true
 	if seed_value >= 0:
@@ -269,6 +282,7 @@ func new_game(seed_value: int = -1) -> void:
 
 
 func continue_game() -> void:
+	_leave_dev_sandbox()
 	if not has_resume:
 		new_game()
 		return
@@ -286,6 +300,7 @@ func continue_game() -> void:
 
 
 func start_level(number: int) -> void:
+	_leave_dev_sandbox()
 	if number < 1 or number > furthest_floor:
 		return
 	active_seed = int(Time.get_ticks_usec()) ^ randi()
@@ -396,6 +411,8 @@ func handle_hud_action(action: String) -> void:
 		queue_redraw()
 	elif action == "wait":
 		wait_turn()
+	elif action == "sokoban_undo":
+		undo_sokoban_move()
 	elif action == "blink":
 		try_blink()
 	elif action == "music":
@@ -487,14 +504,57 @@ func dev_toggle_noclip() -> void:
 
 
 func dev_jump_floor(target_floor: int) -> void:
+	if not dev_sandbox_active:
+		dev_profile_snapshot = _capture_campaign_profile()
+		dev_sandbox_active = true
 	target_floor = clampi(target_floor, 1, 200)
 	floor_number = target_floor
 	generate_floor(target_floor)
 	game_state = "playing"
 	dev_menu_open = false
-	last_notice = "TELEPORTE DEV: ANDAR %02d" % target_floor
+	last_notice = "TESTE DEV: ANDAR %02d — CAMPANHA GUARDADA" % target_floor
 	notice_timer = 2.5
 	queue_redraw()
+
+
+func _capture_campaign_profile() -> Dictionary:
+	return {
+		"best_score": best_score,
+		"rescues_completed": rescues_completed,
+		"furthest_floor": furthest_floor,
+		"floor_stars": floor_stars.duplicate(true),
+		"has_resume": has_resume,
+		"resume_floor": resume_floor,
+		"resume_coins": resume_coins,
+		"resume_charges": resume_charges,
+		"resume_breach_charges": resume_breach_charges,
+		"resume_powers": resume_powers.duplicate(true),
+		"resume_facing": resume_facing,
+		"resume_seed": resume_seed,
+		"resume_history": resume_history.duplicate(),
+		"captor_intro_seen": captor_intro_seen,
+	}
+
+
+func _leave_dev_sandbox() -> void:
+	if not dev_sandbox_active:
+		return
+	best_score = int(dev_profile_snapshot.get("best_score", best_score))
+	rescues_completed = int(dev_profile_snapshot.get("rescues_completed", rescues_completed))
+	furthest_floor = int(dev_profile_snapshot.get("furthest_floor", furthest_floor))
+	floor_stars = dev_profile_snapshot.get("floor_stars", floor_stars).duplicate(true)
+	has_resume = bool(dev_profile_snapshot.get("has_resume", has_resume))
+	resume_floor = int(dev_profile_snapshot.get("resume_floor", resume_floor))
+	resume_coins = int(dev_profile_snapshot.get("resume_coins", resume_coins))
+	resume_charges = int(dev_profile_snapshot.get("resume_charges", resume_charges))
+	resume_breach_charges = int(dev_profile_snapshot.get("resume_breach_charges", resume_breach_charges))
+	resume_powers = dev_profile_snapshot.get("resume_powers", resume_powers).duplicate(true)
+	resume_facing = dev_profile_snapshot.get("resume_facing", resume_facing)
+	resume_seed = int(dev_profile_snapshot.get("resume_seed", resume_seed))
+	resume_history.assign(dev_profile_snapshot.get("resume_history", resume_history))
+	captor_intro_seen = bool(dev_profile_snapshot.get("captor_intro_seen", captor_intro_seen))
+	dev_sandbox_active = false
+	dev_profile_snapshot.clear()
 
 
 func dev_spawn_enemy(role: String) -> void:
@@ -641,9 +701,15 @@ func get_biome_index(number: int) -> int:
 
 func get_floor_name(number: int) -> String:
 	var safe_number := maxi(1, number)
+	if _is_sokoban_floor(safe_number):
+		return "SOKOBAN / %s" % sokoban_generator.get_title(safe_number)
 	var name: String = FLOOR_NAMES[get_biome_index(safe_number)]
 	var cycle := floori(float(safe_number - 1) / FLOOR_NAMES.size()) + 1
 	return name if cycle == 1 else "%s / CICLO %d" % [name, cycle]
+
+
+func _is_sokoban_floor(number: int) -> bool:
+	return sokoban_generator.is_special_floor(number)
 
 
 func get_floor_size(number: int) -> Vector2i:
@@ -660,6 +726,8 @@ func get_floor_size(number: int) -> Vector2i:
 
 
 func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT, powers: Variant = null) -> void:
+	if dev_sandbox_active:
+		return
 	has_resume = true
 	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
@@ -700,6 +768,7 @@ func _restore_power_state(raw: Variant) -> void:
 
 func generate_floor(number: int) -> void:
 	floor_number = maxi(1, number)
+	sokoban_mode = _is_sokoban_floor(floor_number)
 	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
 	rng.seed = level_seed
@@ -708,21 +777,33 @@ func generate_floor(number: int) -> void:
 		"charges": charges, "breach_charges": breach_charges, "powers": _capture_power_state(),
 		"history": floor_history.duplicate(), "facing": facing,
 	}
-	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
-	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
-	if result.ok:
-		grid = result.grid
-		rooms = result.rooms
-		room_graph_edges = result.edges
-		player_position = result.start
-		portal_position = result.goal
-	else:
-		grid = _fallback_layout(world_size.x, world_size.y)
+	var result: Dictionary = {"ok": true, "attempts": 0}
+	var special_sokoban_data: Dictionary = {}
+	if sokoban_mode:
+		special_sokoban_data = sokoban_generator.generate(floor_number, level_seed)
+		world_size = special_sokoban_data.size
+		grid = special_sokoban_data.grid
 		rooms.clear()
 		room_graph_edges.clear()
-		player_position = Vector2i(1, world_size.y / 2)
-		portal_position = Vector2i(world_size.x - 2, rng.randi_range(1, world_size.y - 2))
-		generation_report += "; fallback: %s" % result.reason
+		player_position = special_sokoban_data.start
+		portal_position = special_sokoban_data.portal
+		generation_report = "Fase especial Sokoban / modulo %s / espelhamento pela seed %d" % [special_sokoban_data.id, level_seed]
+	else:
+		result = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
+		generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
+		if result.ok:
+			grid = result.grid
+			rooms = result.rooms
+			room_graph_edges = result.edges
+			player_position = result.start
+			portal_position = result.goal
+		else:
+			grid = _fallback_layout(world_size.x, world_size.y)
+			rooms.clear()
+			room_graph_edges.clear()
+			player_position = Vector2i(1, world_size.y / 2)
+			portal_position = Vector2i(world_size.x - 2, rng.randi_range(1, world_size.y - 2))
+			generation_report += "; fallback: %s" % result.reason
 	for x in world_size.x:
 		grid[0][x] = TILE_BORDER
 		grid[world_size.y - 1][x] = TILE_BORDER
@@ -734,8 +815,9 @@ func generate_floor(number: int) -> void:
 	if not result.ok:
 		_carve_route(player_position, portal_position)
 	crates.clear()
-	_add_biome_landmarks(number)
-	_configure_biome_surfaces(number)
+	if not sokoban_mode:
+		_add_biome_landmarks(number)
+		_configure_biome_surfaces(number)
 	player_from = _cell_center(player_position)
 	player_to = player_from
 	player_anim = 1.0
@@ -748,12 +830,14 @@ func generate_floor(number: int) -> void:
 	traps.clear()
 	var puzzle_floor := number % 5 == 3
 	var required_switches := 0
-	if puzzle_floor:
+	if sokoban_mode:
+		required_switches = 0
+	elif puzzle_floor:
 		required_switches = 3
 	elif number >= 2 and (number % 3 != 1 or number == 4):
 		required_switches = mini(1 + number / 2, 4)
-	objective_type = "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
-	portal_open = required_switches == 0
+	objective_type = "sokoban" if sokoban_mode else "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
+	portal_open = required_switches == 0 and not sokoban_mode
 	var occupied := {player_position: true, portal_position: true}
 	var walkable := _reachable_cells(player_position)
 	if puzzle_floor:
@@ -821,18 +905,22 @@ func generate_floor(number: int) -> void:
 				else:
 					traps.append({"pos": position, "type": "one_shot", "armed": true, "revealed": false})
 				occupied[position] = true
-	_build_nav_chevrons()
+	if sokoban_mode:
+		_configure_sokoban_floor(floor_number, special_sokoban_data)
+		nav_chevrons.clear()
+	else:
+		_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
 	jumps_this_floor = 0
 	hits_this_floor = 0
 	coins_this_floor = 0
 	var route_length := _estimate_route_length()
-	challenge_par = ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
+	challenge_par = sokoban_move_par if sokoban_mode else ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
 	var available_challenges := CHALLENGE_KINDS.duplicate()
 	if route_length < 0:
 		available_challenges.erase("moves")
-	challenge_kind = available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
+	challenge_kind = "moves" if sokoban_mode else available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
 	challenge_complete = false
 	last_notice = "%s   /   seed %d" % [get_challenge_text(), level_seed]
 	notice_timer = 3.8
@@ -843,7 +931,84 @@ func generate_floor(number: int) -> void:
 	queue_redraw()
 
 
+func _configure_sokoban_floor(number: int, data: Dictionary) -> void:
+	world_size = data.size
+	grid = data.grid
+	player_position = data.start
+	portal_position = data.portal
+	player_from = _cell_center(player_position)
+	player_to = player_from
+	player_anim = 1.0
+	rooms.clear()
+	room_graph_edges.clear()
+	enemies.clear()
+	crates.clear()
+	coins.clear()
+	shields.clear()
+	breakers.clear()
+	powerups.clear()
+	switches.clear()
+	traps.clear()
+	water_current_dirs.clear()
+	electrified_water.clear()
+	brittle_ice.clear()
+	ice_stress.clear()
+	broken_ice.clear()
+	sokoban_goals.assign(data.goals)
+	sokoban_history.clear()
+	sokoban_pushes = 0
+	sokoban_push_par = int(data.push_par)
+	sokoban_move_par = int(data.move_par)
+	sokoban_title = str(data.title)
+	sokoban_template_id = str(data.id)
+	for box_position in data.boxes:
+		var center := _cell_center(box_position)
+		crates.append({"pos": box_position, "from": center, "to": center, "t": 1.0, "floating": false, "sokoban": true})
+	objective_type = "sokoban"
+	portal_open = false
+	moves_this_floor = 0
+	turn_number = 0
+	jumps_this_floor = 0
+	hits_this_floor = 0
+	coins_this_floor = 0
+	coins_spawned_this_floor = 0
+	last_notice = "%s — EMPURRA AS CAIXAS PARA OS ALVOS" % sokoban_title
+	notice_timer = 3.2
+	_update_sokoban_portal(false)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
+
+
+func _update_sokoban_portal(play_feedback: bool = true) -> bool:
+	if not sokoban_mode or sokoban_goals.is_empty():
+		return false
+	var was_open := portal_open
+	var filled := _sokoban_goals_filled()
+	portal_open = filled == sokoban_goals.size()
+	if portal_open and not was_open and play_feedback:
+		last_notice = "TODOS OS ALVOS ATIVADOS — ALCANCA O PORTAL"
+		notice_timer = 2.6
+		_spawn_burst(_cell_center(portal_position), Color("ffd35e"), 28, 165.0)
+		_spawn_shockwave(_cell_center(portal_position), 12.0, 66.0, Color("ffd35e"), 0.52)
+		_trigger_shake(0.14, 3.0)
+		_emit_feedback("PORTAL_OPEN")
+	elif was_open and not portal_open and play_feedback:
+		last_notice = "UM ALVO FICOU VAZIO — REPOSICIONA A CAIXA"
+		notice_timer = 2.0
+	return portal_open
+
+
+func _sokoban_goals_filled() -> int:
+	var filled := 0
+	for goal in sokoban_goals:
+		if _crate_index_at(goal) >= 0:
+			filled += 1
+	return filled
+
+
 func get_challenge_text() -> String:
+	if sokoban_mode:
+		return "Z / B DESFAZ   ·   R REINICIA   ·   SEM PUXAR"
 	match challenge_kind:
 		"no_jump": return "Atravessa sem saltar"
 		"no_hit": return "Chega ao portal sem sofrer dano"
@@ -853,6 +1018,8 @@ func get_challenge_text() -> String:
 
 
 func is_challenge_failed() -> bool:
+	if sokoban_mode:
+		return sokoban_pushes > sokoban_push_par + 5
 	match challenge_kind:
 		"no_jump": return jumps_this_floor > 0
 		"no_hit": return hits_this_floor > 0
@@ -861,6 +1028,8 @@ func is_challenge_failed() -> bool:
 
 
 func is_challenge_met() -> bool:
+	if sokoban_mode:
+		return sokoban_pushes <= sokoban_push_par
 	match challenge_kind:
 		"no_jump": return jumps_this_floor == 0
 		"no_hit": return hits_this_floor == 0
@@ -1583,6 +1752,9 @@ func try_move(dx: int, dy: int) -> void:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
+	if sokoban_mode:
+		_try_sokoban_move(next)
+		return
 	var crate_index := _crate_index_at(next)
 	if crate_index >= 0 and not _push_crate(crate_index, facing):
 		_blocked_move()
@@ -1601,6 +1773,81 @@ func try_move(dx: int, dy: int) -> void:
 	_take_turn(facing)
 
 
+func _try_sokoban_move(next: Vector2i) -> void:
+	if not _inside(next) or grid[next.y][next.x] != TILE_FLOOR:
+		_blocked_move()
+		return
+	var crate_index := _crate_index_at(next)
+	if crate_index >= 0:
+		var destination: Vector2i = crates[crate_index].pos + facing
+		if not _can_crate_occupy(destination, crate_index):
+			_blocked_move()
+			return
+	_record_sokoban_history()
+	if crate_index >= 0:
+		if not _push_crate(crate_index, facing):
+			sokoban_history.pop_back()
+			_blocked_move()
+			return
+		sokoban_pushes += 1
+	_begin_player_move(next, [next])
+	moves_this_floor += 1
+	turn_number += 1
+	_emit_feedback("MOVE", {"material": "stone", "push": crate_index >= 0})
+	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
+	_check_portal()
+	queue_redraw()
+
+
+func _record_sokoban_history() -> void:
+	sokoban_history.append({
+		"player": player_position,
+		"facing": facing,
+		"crates": crates.duplicate(true),
+		"moves": moves_this_floor,
+		"turn": turn_number,
+		"pushes": sokoban_pushes,
+	})
+
+
+func undo_sokoban_move() -> void:
+	if not sokoban_mode or game_state != "playing":
+		return
+	if sokoban_history.is_empty():
+		last_notice = "AINDA NAO HA MOVIMENTOS PARA DESFAZER"
+		notice_timer = 1.4
+		_emit_feedback("BLOCKED")
+		return
+	var previous: Dictionary = sokoban_history.pop_back()
+	var old_player_visual := _player_visual_position()
+	var old_crate_visuals: Array[Vector2] = []
+	for crate in crates:
+		old_crate_visuals.append(_crate_visual_position(crate))
+	player_position = previous.player
+	facing = previous.facing
+	player_from = old_player_visual
+	player_to = _cell_center(player_position)
+	player_anim = 0.0
+	player_step_path.assign([player_position])
+	var old_crates: Array = previous.crates
+	crates.clear()
+	for index in old_crates.size():
+		var crate: Dictionary = old_crates[index].duplicate(true)
+		var from: Vector2 = old_crate_visuals[index] if index < old_crate_visuals.size() else _cell_center(crate.pos)
+		crate["from"] = from
+		crate["to"] = _cell_center(crate.pos)
+		crate["t"] = 0.0
+		crates.append(crate)
+	moves_this_floor = int(previous.moves)
+	turn_number = int(previous.turn)
+	sokoban_pushes = int(previous.pushes)
+	_update_sokoban_portal(false)
+	last_notice = "ULTIMO PASSO DESFEITO"
+	notice_timer = 1.1
+	_emit_feedback("UNDO")
+	queue_redraw()
+
+
 func _blocked_move() -> void:
 	last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
 	notice_timer = 1.0
@@ -1612,6 +1859,8 @@ func _blocked_move() -> void:
 
 func wait_turn() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	moves_this_floor += 1
 	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
@@ -1673,10 +1922,17 @@ func _push_crate(crate_index: int, direction: Vector2i) -> bool:
 	crate["t"] = 0.0
 	crate["floating"] = get_biome_index(floor_number) == 1 and grid[destination.y][destination.x] == TILE_WATER
 	crates[crate_index] = crate
-	last_notice = "CAIXA DE MADEIRA EMPURRADA"
+	last_notice = "CAIXA DE MADEIRA EMPURRADA" if not sokoban_mode else "CAIXA EMPURRADA — %d EMPURROES" % (sokoban_pushes + 1)
 	notice_timer = 1.0
 	_spawn_burst(_cell_center(destination), Color("e5b66c"), 8, 72.0)
 	_emit_feedback("CRATE_PUSH")
+	if sokoban_mode:
+		if sokoban_goals.has(destination):
+			_spawn_burst(_cell_center(destination), Color("ffd76a"), 18, 112.0)
+			_spawn_shockwave(_cell_center(destination), 5.0, 28.0, Color("ffe28b"), 0.3)
+			_trigger_shake(0.09, 2.0)
+			_emit_feedback("SWITCH_ON")
+		_update_sokoban_portal()
 	return true
 
 
@@ -1706,6 +1962,8 @@ func _crate_visual_position(crate: Dictionary) -> Vector2:
 
 func try_jump() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	if charges <= 0:
 		last_notice = "Sem escudo para saltar"
@@ -1739,6 +1997,8 @@ func try_jump() -> void:
 func try_blink() -> void:
 	if game_state != "playing":
 		return
+	if sokoban_mode:
+		return
 	if blink_charges <= 0:
 		last_notice = "SEM CARGAS DE BLINK"
 		notice_timer = 1.4
@@ -1771,6 +2031,8 @@ func try_blink() -> void:
 
 func try_break_wall() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	var target := player_position + facing
 	if not _inside(target):
@@ -2512,7 +2774,7 @@ func _check_portal() -> void:
 	if player_position != portal_position or game_state != "playing":
 		return
 	if not portal_open:
-		last_notice = "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
+		last_notice = "PORTAL BLOQUEADO — COLOCA TODAS AS CAIXAS NOS ALVOS" if sokoban_mode else "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
 		return
 	if is_challenge_met() and not challenge_complete:
@@ -2559,6 +2821,12 @@ func advance_floor() -> void:
 
 
 func _stars_for_floor() -> int:
+	if sokoban_mode:
+		if sokoban_pushes <= sokoban_push_par: return 5
+		if sokoban_pushes <= sokoban_push_par + 1: return 4
+		if sokoban_pushes <= sokoban_push_par + 3: return 3
+		if sokoban_pushes <= sokoban_push_par + 5: return 2
+		return 1
 	var fraction := float(coins_this_floor) / maxf(1.0, float(coins.size() + coins_this_floor))
 	if fraction >= 1.0: return 5
 	if fraction >= 0.75: return 4
@@ -2568,6 +2836,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if sokoban_mode:
+		return "ALVOS %d/%d   /   EMPURROES %d" % [_sokoban_goals_filled(), sokoban_goals.size(), sokoban_pushes]
 	if objective_type == "puzzle":
 		return "RUNAS %d/3  /  %s" % [_active_switches(), "PORTAL ABERTO" if portal_open else "SEGUIR A ORDEM"]
 	if objective_type == "switches":
@@ -2638,24 +2908,25 @@ func _save_profile() -> void:
 	if not persistence_enabled:
 		return
 	var profile := ConfigFile.new()
+	var campaign := dev_profile_snapshot if dev_sandbox_active else _capture_campaign_profile()
 	profile.set_value("controller", "vibration", controller_vibration_enabled)
 	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
 	profile.set_value("controller", "vibration_intensity_version", VIBRATION_PROFILE_VERSION)
 	profile.set_value("controller", "mappings", controller_mappings)
-	profile.set_value("progress", "best_score", best_score)
-	profile.set_value("progress", "rescues", rescues_completed)
-	profile.set_value("progress", "furthest_floor", furthest_floor)
-	profile.set_value("progress", "floor_stars", floor_stars)
-	profile.set_value("progress", "has_resume", has_resume)
-	profile.set_value("progress", "resume_floor", resume_floor)
-	profile.set_value("progress", "resume_coins", resume_coins)
-	profile.set_value("progress", "resume_charges", resume_charges)
-	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
-	profile.set_value("progress", "resume_powers", resume_powers)
-	profile.set_value("progress", "resume_facing", resume_facing)
-	profile.set_value("progress", "resume_seed", resume_seed)
-	profile.set_value("progress", "resume_history", resume_history)
-	profile.set_value("story", "captor_intro_seen", captor_intro_seen)
+	profile.set_value("progress", "best_score", campaign.best_score)
+	profile.set_value("progress", "rescues", campaign.rescues_completed)
+	profile.set_value("progress", "furthest_floor", campaign.furthest_floor)
+	profile.set_value("progress", "floor_stars", campaign.floor_stars)
+	profile.set_value("progress", "has_resume", campaign.has_resume)
+	profile.set_value("progress", "resume_floor", campaign.resume_floor)
+	profile.set_value("progress", "resume_coins", campaign.resume_coins)
+	profile.set_value("progress", "resume_charges", campaign.resume_charges)
+	profile.set_value("progress", "resume_breach_charges", campaign.resume_breach_charges)
+	profile.set_value("progress", "resume_powers", campaign.resume_powers)
+	profile.set_value("progress", "resume_facing", campaign.resume_facing)
+	profile.set_value("progress", "resume_seed", campaign.resume_seed)
+	profile.set_value("progress", "resume_history", campaign.resume_history)
+	profile.set_value("story", "captor_intro_seen", campaign.captor_intro_seen)
 	var error := profile.save(profile_path)
 	if error == OK:
 		best_score_dirty = false
@@ -2842,6 +3113,10 @@ func _on_controller_action(action: String) -> void:
 			hud.activate_focus()
 		return
 	if game_state == "playing":
+		if sokoban_mode and action == "cancel":
+			undo_sokoban_move()
+			controller.feedback("menu_move")
+			return
 		if directions.has(action):
 			facing = directions[action]
 			try_move(facing.x, facing.y)
@@ -3026,6 +3301,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_ESCAPE:
 			game_state = "title"
 		return
+	if sokoban_mode and event.keycode in [KEY_Z, KEY_BACKSPACE]:
+		undo_sokoban_move()
+		return
 	match event.keycode:
 		KEY_ESCAPE: game_state = "paused"
 		KEY_UP, KEY_W:
@@ -3119,6 +3397,10 @@ func _draw() -> void:
 	for item in powerups:
 		if item_view.has_point(_cell_center(item.pos)):
 			_draw_powerup(item)
+	if sokoban_mode:
+		for goal in sokoban_goals:
+			if item_view.has_point(_cell_center(goal)):
+				_draw_sokoban_goal(goal)
 	if view.grow(64.0).has_point(_cell_center(portal_position)):
 		_draw_portal()
 	for crate in crates:
@@ -3781,6 +4063,9 @@ func _draw_powerup(item: Dictionary) -> void:
 
 
 func _draw_crate(crate: Dictionary) -> void:
+	if sokoban_mode:
+		_draw_sokoban_crate(crate)
+		return
 	var center := _crate_visual_position(crate)
 	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
 	var impact := 1.0 + sin((1.0 - t) * PI) * 0.08
@@ -3813,6 +4098,53 @@ func _draw_crate(crate: Dictionary) -> void:
 	draw_line(Vector2(left + 3, center.y + 3), Vector2(right - 2, center.y + 3), Color("e7ba70", 0.58), 1.4, true)
 	for nail in [Vector2(left + 4, top + 12), Vector2(right - 4, top + 12), Vector2(left + 4, bottom - 4), Vector2(right - 4, bottom - 4)]:
 		draw_circle(nail, 1.4, Color("f5d88e"))
+
+
+func _draw_sokoban_goal(point: Vector2i) -> void:
+	var center := _cell_center(point)
+	var pulse := 0.5 + 0.5 * sin(animation_clock * 3.1 + float(point.x + point.y))
+	var tint := Color("ffd56b") if portal_open else Color("7adce9")
+	draw_circle(center + Vector2(0, 8), 17.0 + pulse * 2.0, Color(tint, 0.08))
+	draw_arc(center + Vector2(0, 4), 12.0 + pulse, 0.0, TAU, 32, Color(tint, 0.45 + pulse * 0.28), 1.6, true)
+	var diamond := PackedVector2Array([
+		center + Vector2(0, -7), center + Vector2(7, 0),
+		center + Vector2(0, 7), center + Vector2(-7, 0),
+	])
+	draw_colored_polygon(diamond, Color(tint, 0.17 + pulse * 0.13))
+	draw_polyline(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3], diamond[0]]), Color(tint, 0.9), 1.5, true)
+	draw_circle(center, 2.2, Color("fff7d2", 0.9))
+
+
+func _draw_sokoban_crate(crate: Dictionary) -> void:
+	var center := _crate_visual_position(crate)
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var scale := 1.0 + sin((1.0 - t) * PI) * 0.08
+	var goal_lit := sokoban_goals.has(crate.pos)
+	var accent := Color("ffd778") if goal_lit else Color("9c7aff")
+	var pulse := 0.5 + sin(animation_clock * 4.0 + float(crate.pos.x)) * 0.5
+	var half := Vector2(15.0, 13.0) * scale
+	var depth := 7.0 * scale
+	var left := center.x - half.x
+	var right := center.x + half.x
+	var top := center.y - half.y
+	var bottom := center.y + half.y
+	draw_colored_polygon(PackedVector2Array([
+		center + Vector2(-18, 13), center + Vector2(18, 13),
+		center + Vector2(23, 17), center + Vector2(-22, 17),
+	]), Color("030713", 0.55))
+	var front := PackedVector2Array([Vector2(left, top + depth), Vector2(right, top + depth), Vector2(right, bottom), Vector2(left, bottom)])
+	var side := PackedVector2Array([Vector2(right, top + depth), Vector2(right + 4, top + depth - 2), Vector2(right + 4, bottom - 3), Vector2(right, bottom)])
+	var lid := PackedVector2Array([Vector2(left, top + depth), Vector2(left + 5, top), Vector2(right + 5, top), Vector2(right, top + depth)])
+	draw_colored_polygon(front, Color("27233f"))
+	draw_colored_polygon(side, Color("17172b"))
+	draw_colored_polygon(lid, Color("5d4d7e"))
+	draw_polyline(PackedVector2Array([front[0], front[1], front[2], front[3], front[0]]), Color("bf9d63", 0.94), 1.5, true)
+	draw_polyline(PackedVector2Array([lid[0], lid[1], lid[2], lid[3], lid[0]]), Color(accent, 0.95), 1.5, true)
+	draw_rect(Rect2(left + 5, top + 12, half.x * 2.0 - 10, 8), Color("161529", 0.95), true)
+	draw_rect(Rect2(left + 6, top + 13, half.x * 2.0 - 12, 1.4), Color(accent, 0.72 + pulse * 0.2), true)
+	draw_circle(center + Vector2(0, 1), 4.4, Color(accent, 0.17))
+	draw_arc(center + Vector2(0, 1), 4.8, 0.0, TAU, 18, Color(accent, 0.86), 1.2, true)
+	draw_colored_polygon(PackedVector2Array([center + Vector2(0, -4), center + Vector2(4, 0), center + Vector2(0, 4), center + Vector2(-4, 0)]), Color(accent, 0.9))
 
 
 func _draw_coin(point: Vector2i) -> void:

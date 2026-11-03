@@ -149,6 +149,8 @@ func _draw() -> void:
 		_draw_boss_bar(screen)
 		if game.objective_type == "puzzle":
 			_draw_puzzle_guide()
+		elif game.sokoban_mode:
+			_draw_sokoban_guide()
 		_draw_effect_strip(screen)
 		if game.captor_flyover_time > 0.0:
 			_draw_captor_flyover_hint(screen)
@@ -285,7 +287,7 @@ func _draw_header(screen: Vector2) -> void:
 	# ── OBJETIVO (centro) ─────────────────────────────────────────────────────────
 	# On smaller windows, hide the minimap and give the objective its own space
 	# instead of letting the stat chips overlap it.
-	var show_minimap := screen.x >= 1100.0
+	var show_minimap := screen.x >= 1100.0 and not game.sokoban_mode
 	var chip_w := 70.0
 	var chip_h := 40.0
 	var chip_gap := 4.0
