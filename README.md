@@ -2,11 +2,13 @@
 
 Jogo tático 2D por turnos feito em Godot 4.7.2. A protagonista é uma bola vermelha que atravessa ruínas para encontrar Lia. Cada ação válida faz avançar o turno; salas, rotas alternativas, objetivos e inimigos exigem decisões diferentes em cada andar.
 
+A [auditoria e o plano de evolução](docs/auditoria-e-plano.md) distinguem o que existe do que ainda precisa de design, implementação e validação visual.
+
 ## Jogar
 
 - Abra `project.godot` no Godot 4.7.2 e pressione **F6/F5**. O menu permite continuar, iniciar uma campanha ou consultar o diário de andares.
 - Mova com **WASD** ou as **setas**. Tocar numa parede dá feedback, mas não gasta turno. **X** espera um turno sem mudar de direção; também há um botão no ecrã e o botão superior esquerdo do comando.
-- Recolha escudos ciano: cada carga absorve um impacto ou permite saltar duas casas com **Espaço**. Uma ação só pode gastar um escudo, mesmo que várias ameaças atinjam o jogador no mesmo turno.
+- Recolha escudos ciano: cada carga absorve um impacto ou permite saltar duas casas com **Espaço**. Ao bloquear um inimigo comum, o escudo projeta-o até duas casas livres, sem o destruir; paredes, fronteiras e outros inimigos limitam o recuo. Se a direção principal estiver bloqueada, o inimigo recua por outra direção livre; sem espaço, permanece onde está. Os chefes conservam o seu contra-ataque próprio. Uma ação só pode gastar um escudo, mesmo que várias ameaças atinjam o jogador no mesmo turno.
 - Recolha cargas de demolição e use **B** para abrir uma parede adjacente ou atingir um inimigo à frente; a ação gasta um turno e uma carga. A fronteira do mundo não pode ser destruída.
 - Ative os interruptores necessários para abrir o portal. Recolha moedas, evite armadilhas e encontre o caminho até ele.
 - O desafio opcional aparece no cabeçalho: não saltar, não sofrer danos, escapar dentro do limite de ações ou recolher todas as moedas. O limite tem em conta uma rota real pelos interruptores e pelo portal, incluindo a ordem das runas nos puzzles. Concluir o desafio rende **5 moedas**, incluídas uma única vez na recompensa apresentada no resultado.

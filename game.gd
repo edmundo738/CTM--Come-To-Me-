@@ -1403,7 +1403,7 @@ func _plan_reactive_mirrors(action_direction: Vector2i) -> void:
 		if enemy.get("role", "") != "mirror" and enemy.next != enemy.pos:
 			reserved.append(enemy.next)
 	for enemy in enemies:
-		if enemy.get("role", "") != "mirror":
+		if enemy.get("role", "") != "mirror" or int(enemy.get("shield_repel_turn", -1)) == turn_number:
 			continue
 		var origin: Vector2i = enemy.pos
 		var target: Vector2i = origin - action_direction
@@ -1655,7 +1655,7 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	_activate_switches()
 	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
 	# the player could pass through a stationary enemy without consequence.
-	_check_enemy_collision()
+	_check_enemy_collision(action_direction)
 	if game_state != "playing":
 		_tick_power_effects()
 		queue_redraw()
@@ -1673,6 +1673,10 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 				crossings.append(i)
 		for i in enemies.size():
 			var enemy: Dictionary = enemies[i]
+			# A shield impact before the enemy phase already committed the recoil.
+			# Do not overwrite its interpolation with a stationary movement.
+			if int(enemy.get("shield_repel_turn", -1)) == turn_number:
+				continue
 			var previous_position: Vector2i = enemy.pos
 			enemy.from = _cell_center(enemy.pos)
 			enemy.pos = positions[i]
@@ -1681,14 +1685,11 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 			enemies[i] = enemy
 			if enemy.pos != previous_position and _manhattan(enemy.pos, player_position) == 1 and _enemy_sees_player(enemy.pos):
 				enemy_advanced_near = true
-		_check_enemy_collision()
+		_check_enemy_collision(Vector2i.ZERO, true)
 		if game_state == "playing" and not damage_this_turn:
 			for index in crossings:
 				var enemy: Dictionary = enemies[index]
-				if _is_elite(enemy) and charges > 0:
-					_stagger_elite(index)
-				else:
-					_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
+				_resolve_enemy_contact(index, _shield_recoil_direction(enemy, Vector2i.ZERO, true))
 				break
 	if game_state == "playing":
 		if feedback_bus != null and enemy_advanced_near and not damage_this_turn and not dev_god_mode:
@@ -1748,7 +1749,7 @@ func _collect_pickups() -> void:
 	if shields.has(player_position):
 		shields.erase(player_position)
 		charges += 1
-		last_notice = "ESCUDO +1  /  a aura protege de um impacto e permite saltar"
+		last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
 		notice_timer = 2.2
 		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
 		_emit_feedback("SHIELD_PICKUP")
@@ -1863,18 +1864,92 @@ func _trigger_traps() -> void:
 			_apply_damage("ARMADILHA!", Color("ff7456"))
 
 
-func _check_enemy_collision() -> void:
+func _check_enemy_collision(action_direction: Vector2i = Vector2i.ZERO, enemy_moved: bool = false) -> void:
 	if dev_god_mode:
 		return
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		if enemy.pos != player_position:
 			continue
-		if _is_elite(enemy) and charges > 0 and not damage_this_turn:
-			_stagger_elite(i)
-		else:
-			_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
+		_resolve_enemy_contact(i, _shield_recoil_direction(enemy, action_direction, enemy_moved))
 		return
+
+
+# In an incoming collision or a dash crossing, rebound toward the attacker's
+# starting cell. When the player enters an occupied cell, push forward instead.
+func _shield_recoil_direction(enemy: Dictionary, action_direction: Vector2i, enemy_moved: bool) -> Vector2i:
+	if enemy_moved:
+		var source: Vector2 = enemy.get("from", _cell_center(enemy.pos))
+		var source_cell := Vector2i(floori(source.x / CELL), floori(source.y / CELL))
+		var delta := source_cell - player_position
+		if delta.x != 0 and absi(delta.x) >= absi(delta.y):
+			return Vector2i(signi(delta.x), 0)
+		if delta.y != 0:
+			return Vector2i(0, signi(delta.y))
+	if action_direction in FOUR_WAY:
+		return action_direction
+	return facing if facing in FOUR_WAY else Vector2i.RIGHT
+
+
+func _resolve_enemy_contact(index: int, recoil_direction: Vector2i) -> void:
+	if index < 0 or index >= enemies.size():
+		return
+	var enemy: Dictionary = enemies[index]
+	if _is_elite(enemy) and charges > 0 and not damage_this_turn and not dev_god_mode:
+		_stagger_elite(index)
+		return
+	var shielded := charges > 0 and not damage_this_turn and not dev_god_mode
+	_apply_damage("FOSTE ALCANCADO", Color("6ceeff") if shielded else Color("ff4e70"))
+	if shielded and not _is_elite(enemy):
+		_repel_common_enemy(index, recoil_direction)
+
+
+func _shield_recoil_cell_free(point: Vector2i, enemy_index: int) -> bool:
+	if point == player_position or not _is_floor(point):
+		return false
+	for i in enemies.size():
+		if i == enemy_index:
+			continue
+		var other: Dictionary = enemies[i]
+		if other.pos == point or other.get("next", other.pos) == point or other.get("path", []).has(point):
+			return false
+	return true
+
+
+# Move at most two open cells, stopping at walls/occupants/reservations. If the
+# primary direction is blocked, try the sides and then the rear deterministically.
+# Recoil never damages ordinary enemies and does not consume an extra turn.
+func _repel_common_enemy(index: int, direction: Vector2i) -> void:
+	var enemy: Dictionary = enemies[index]
+	var primary := direction if direction in FOUR_WAY else Vector2i.RIGHT
+	var options: Array[Vector2i] = [primary, Vector2i(-primary.y, primary.x), Vector2i(primary.y, -primary.x), -primary]
+	var destination := player_position
+	for option in options:
+		var candidate := player_position
+		for _step in 2:
+			var next: Vector2i = candidate + option
+			if not _shield_recoil_cell_free(next, index):
+				break
+			candidate = next
+		if candidate != player_position:
+			destination = candidate
+			break
+	if destination != player_position:
+		enemy.from = _cell_center(player_position)
+		enemy.pos = destination
+		enemy.to = _cell_center(destination)
+		enemy.t = 0.0
+		last_notice = "INIMIGO PROJETADO — O ESCUDO ABSORVEU O IMPACTO"
+	else:
+		# Fully surrounded: retain the existing position rather than inventing
+		# an illegal destination or tunnelling through a wall.
+		last_notice = "ESCUDO ABSORVEU O IMPACTO — SEM ESPACO PARA RECUAR"
+	notice_timer = 2.0
+	enemy.next = enemy.pos
+	enemy["path"] = []
+	enemy["shield_repel_turn"] = turn_number
+	enemy["shield_repel_visual"] = destination != player_position
+	enemies[index] = enemy
 
 
 func _stagger_elite(index: int) -> void:
@@ -2981,9 +3056,14 @@ func _draw_floor_shadows(target: CanvasItem, point: Vector2i, top_left: Vector2)
 
 
 func _enemy_visual_position(enemy: Dictionary) -> Vector2:
-	var t: float = enemy.get("t", 1.0)
-	t = t * t * (3.0 - 2.0 * t)
-	return enemy.from.lerp(enemy.to, t)
+	var t: float = clampf(float(enemy.get("t", 1.0)), 0.0, 1.0)
+	var eased := t * t * (3.0 - 2.0 * t)
+	var position: Vector2 = enemy.from.lerp(enemy.to, eased)
+	if int(enemy.get("shield_repel_turn", -1)) == turn_number and enemy.get("shield_repel_visual", false):
+		# A short kick arc is presentation only; the board cell was resolved
+		# immediately and no additional turn or collision is generated here.
+		position.y -= sin(t * PI) * 8.0
+	return position
 
 
 func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
