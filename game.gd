@@ -6,11 +6,38 @@ const TILE_WALL := 1
 const TILE_BORDER := 2
 const TILE_WATER := 3
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
-const CHALLENGES := [
-	"Atravesse sem saltar",
-	"Chegue ao portal sem sofrer dano",
-	"Escape em ate 14 movimentos",
+const DIAGONALS := [Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)]
+const KNIGHT_OFFSETS := [Vector2i(2, 1), Vector2i(2, -1), Vector2i(-2, 1), Vector2i(-2, -1), Vector2i(1, 2), Vector2i(-1, 2), Vector2i(1, -2), Vector2i(-1, -2)]
+# Every fifth floor features the next piece in this cycle. The portal remains
+# an escape route: defeating the boss is optional, not a soft-lock condition.
+const BOSS_TYPES := [
+	{"id": "pawn", "name": "PEAO", "hp": 2, "rule": "1 CASA ORTOGONAL"},
+	{"id": "rook", "name": "TORRE", "hp": 3, "rule": "LINHAS DE ATE 3 CASAS"},
+	{"id": "knight", "name": "CAVALO", "hp": 4, "rule": "SALTO EM L"},
+	{"id": "bishop", "name": "BISPO", "hp": 5, "rule": "DIAGONAIS DE ATE 3 CASAS"},
+	{"id": "queen", "name": "RAINHA", "hp": 6, "rule": "LINHAS E DIAGONAIS"},
+	{"id": "king", "name": "REI", "hp": 7, "rule": "1 CASA EM QUALQUER DIRECAO"},
 ]
+# Each chess piece has its own original silhouette; the Warden remains a
+# separate mini-boss, not a reskinned chess piece.
+const BOSS_TEXTURES := {
+	"pawn": preload("res://assets/bosses/pawn.svg"),
+	"rook": preload("res://assets/bosses/rook.svg"),
+	"knight": preload("res://assets/bosses/knight.svg"),
+	"bishop": preload("res://assets/bosses/bishop.svg"),
+	"queen": preload("res://assets/bosses/queen.svg"),
+	"king": preload("res://assets/bosses/king.svg"),
+}
+const BOSS_COLORS := {"pawn": "5ff6ef", "rook": "ffb65b", "knight": "5cbfff", "bishop": "84f3bd", "queen": "f578dc", "king": "ffd474"}
+const POWERUP_TYPES := ["speed", "magnet", "blink", "time_freeze"]
+const POWERUP_COLORS := {"speed": "ffce5c", "magnet": "ff68aa", "blink": "9af4ff", "time_freeze": "92a4ff"}
+const SPEED_DURATION := 6
+const MAGNET_DURATION := 8
+const FREEZE_DURATION := 4
+const PUZZLE_COLORS := ["5df4f2", "ffbe60", "d78aff"]
+const PUZZLE_NAMES := ["CIANO", "AMBAR", "VIOLETA"]
+const PATROL_DIRECTIONS := [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]
+const CHALLENGE_KINDS := ["no_jump", "no_hit", "moves", "all_coins"]
 const MAP_SIZES := [Vector2i(19, 15), Vector2i(25, 17), Vector2i(31, 21), Vector2i(37, 23), Vector2i(43, 27)]
 const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA", "CATEDRAL DE GELO", "TRONO DO GUARDIAO"]
 const LEVELS_PER_PAGE := 5
@@ -19,8 +46,12 @@ const CAPTURE_END_TIME := 1.95
 const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
+const ControllerScript = preload("res://controller_input.gd")
+const VIBRATION_PROFILE_VERSION := 2
+const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
+const TerrainRenderer = preload("res://terrain_renderer.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -34,6 +65,7 @@ var portal_open := true
 var enemies: Array[Dictionary] = []
 var shields: Array[Vector2i] = []
 var breakers: Array[Vector2i] = []
+var powerups: Array[Dictionary] = []
 var coins: Array[Vector2i] = []
 var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
@@ -46,14 +78,24 @@ var particles: Array[Dictionary] = []
 var camera: Camera2D
 var hud: Control
 var audio: Node
+var controller
+var feedback_bus: Node
 var capture_overlay: ColorRect
 var capture_material: ShaderMaterial
+var background_rect: ColorRect
+var terrain_renderer: Node2D
 var generator = Generator.new()
 var rng := RandomNumberGenerator.new()
 var active_seed := 0
 var generation_report := ""
 var charges := 0
 var breach_charges := 0
+var speed_turns := 0
+# Zero means the next speed-affected action prevents enemy movement.
+var speed_phase := 0
+var magnet_turns := 0
+var freeze_turns := 0
+var blink_charges := 0
 var total_coins := 0
 var floor_number := 1
 var turn_number := 0
@@ -71,13 +113,22 @@ var furthest_floor := 1
 var has_resume := false
 var resume_floor := 1
 var resume_coins := 0
+var resume_charges := 0
+var resume_breach_charges := 0
+var resume_facing := Vector2i.RIGHT
 var resume_seed := 0
 var resume_history: Array[int] = []
+var resume_powers: Dictionary = {}
 var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
-var joy_axis_cooldown: float = 0.0
-var coins_at_floor_start := 0
+var controller_vibration_enabled := true
+var controller_vibration_intensity := ControllerScript.MAX_VIBRATION_INTENSITY
+var controller_mappings: Dictionary = {}
+var controller_return_state := "title"
+var controller_message := ""
+# Snapshot of the run at entry, used both by R and by the defeat checkpoint.
+var floor_start_snapshot: Dictionary = {}
 var persistence_enabled := true
 var profile_path := "user://come_to_me_profile.cfg"
 var flash_time := 0.0
@@ -85,8 +136,10 @@ var flash_color := Color.WHITE
 var game_state := "ready"
 var damage_this_turn := false
 var objective_type := "escape"
-var challenge_index := 0
+var challenge_kind := "no_jump"
+var challenge_par := 0
 var challenge_complete := false
+var best_score_dirty := false
 var last_notice := ""
 var notice_timer := 0.0
 var floor_history: Array[int] = []
@@ -94,6 +147,12 @@ var level_page_start := 1
 var animation_clock := 0.0
 var shake_time := 0.0
 var shake_strength := 0.0
+var turn_pulse_time := -1.0
+var turn_pulse_position := Vector2.ZERO
+var landing_feedback_time := 0.0
+var near_miss_feedback_time := 0.0
+var visible_threat_distance := -1
+var threat_aura := 0.0
 var capture_time := 0.0
 var capture_darkness := 0.0
 var capture_flash := 0.0
@@ -113,12 +172,12 @@ func _ready() -> void:
 	var background_layer := CanvasLayer.new()
 	background_layer.layer = -2
 	add_child(background_layer)
-	var background := ColorRect.new()
+	background_rect = ColorRect.new()
 	var material := ShaderMaterial.new()
 	material.shader = BackgroundShader
-	background.material = material
-	background_layer.add_child(background)
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background_rect.material = material
+	background_layer.add_child(background_rect)
+	background_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var hud_layer := CanvasLayer.new()
 	hud_layer.layer = 2
 	add_child(hud_layer)
@@ -131,14 +190,25 @@ func _ready() -> void:
 	capture_layer.layer = 1
 	add_child(capture_layer)
 	capture_overlay = ColorRect.new()
+	capture_overlay.visible = false
 	capture_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	capture_material = ShaderMaterial.new()
 	capture_material.shader = CaptureOverlayShader
 	capture_overlay.material = capture_material
 	capture_layer.add_child(capture_overlay)
 	capture_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	controller = ControllerScript.new()
+	add_child(controller)
+	controller.action_requested.connect(_on_controller_action)
+	controller.settings_changed.connect(_on_controller_settings_changed)
+	controller.calibration_finished.connect(_on_controller_calibration_finished)
+	controller.device_changed.connect(_on_controller_device_changed)
 	audio = AudioScript.new()
 	add_child(audio)
+	feedback_bus = TacticalFeedbackScript.new()
+	add_child(feedback_bus)
+	feedback_bus.configure(audio, controller)
+	feedback_bus.event_emitted.connect(_on_tactical_feedback)
 	_init_player_sphere_texture()
 	_init_radial_light_texture()
 	_load_profile()
@@ -146,6 +216,9 @@ func _ready() -> void:
 	camera.name = "Camera2D"
 	camera.enabled = true
 	add_child(camera)
+	terrain_renderer = TerrainRenderer.new()
+	terrain_renderer.setup(self)
+	add_child(terrain_renderer)
 	active_seed = int(Time.get_ticks_usec()) ^ randi()
 	rng.seed = active_seed
 	generate_floor(1)
@@ -164,28 +237,22 @@ func new_game(seed_value: int = -1) -> void:
 	floor_number = 1
 	charges = 0
 	breach_charges = 0
+	_restore_power_state({})
 	total_coins = 0
-	coins_at_floor_start = 0
+	facing = Vector2i.RIGHT
 	has_resume = false
 	resume_floor = 1
 	resume_coins = 0
+	resume_charges = 0
+	resume_breach_charges = 0
+	resume_powers = _capture_power_state()
+	resume_facing = facing
 	resume_seed = active_seed
 	resume_history.clear()
-	capture_time = 0.0
-	capture_darkness = 0.0
-	capture_flash = 0.0
-	capture_popped = false
-	capture_puddle_active = false
-	capture_puddle_points.clear()
-	capture_splats.clear()
-	capture_shockwave_radius = 0.0
-	capture_chromatic = 0.0
-	capture_noise = 0.0
+	_reset_capture_state()
 	game_state = "playing"
-	if audio != null and audio.has_method("reset_cinematic_mix"):
-		audio.reset_cinematic_mix()
 	generate_floor(1)
-	_save_profile()
+	_save_resume(1, total_coins, charges, breach_charges, floor_history, facing)
 
 
 func continue_game() -> void:
@@ -195,20 +262,11 @@ func continue_game() -> void:
 	active_seed = resume_seed
 	total_coins = resume_coins
 	floor_history = resume_history.duplicate()
-	charges = 0
-	breach_charges = 0
-	capture_time = 0.0
-	capture_darkness = 0.0
-	capture_flash = 0.0
-	capture_popped = false
-	capture_puddle_active = false
-	capture_puddle_points.clear()
-	capture_splats.clear()
-	capture_shockwave_radius = 0.0
-	capture_chromatic = 0.0
-	capture_noise = 0.0
-	if audio != null and audio.has_method("reset_cinematic_mix"):
-		audio.reset_cinematic_mix()
+	charges = resume_charges
+	breach_charges = resume_breach_charges
+	_restore_power_state(resume_powers)
+	facing = resume_facing
+	_reset_capture_state()
 	generate_floor(resume_floor)
 	game_state = "playing"
 
@@ -222,6 +280,14 @@ func start_level(number: int) -> void:
 	total_coins = 0
 	charges = 0
 	breach_charges = 0
+	_restore_power_state({})
+	_reset_capture_state()
+	generate_floor(number)
+	game_state = "playing"
+	_save_resume(number, total_coins, charges, breach_charges, floor_history, facing)
+
+
+func _reset_capture_state() -> void:
 	capture_time = 0.0
 	capture_darkness = 0.0
 	capture_flash = 0.0
@@ -232,10 +298,41 @@ func start_level(number: int) -> void:
 	capture_shockwave_radius = 0.0
 	capture_chromatic = 0.0
 	capture_noise = 0.0
+	damage_this_turn = false
+	particles.clear()
+	flash_time = 0.0
+	shake_time = 0.0
+	turn_pulse_time = -1.0
+	landing_feedback_time = 0.0
+	near_miss_feedback_time = 0.0
+	threat_aura = 0.0
+	if camera != null:
+		camera.offset = Vector2.ZERO
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
-	generate_floor(number)
+	if capture_overlay != null:
+		capture_overlay.visible = false
+
+
+func restart_floor() -> void:
+	if floor_start_snapshot.is_empty() or game_state not in ["playing", "paused"]:
+		return
+	# Copy before generate_floor replaces the snapshot. Do not call start_level:
+	# it intentionally starts a fresh run with a new seed and no inventory.
+	var snapshot := floor_start_snapshot.duplicate(true)
+	active_seed = int(snapshot.seed)
+	total_coins = int(snapshot.coins)
+	charges = int(snapshot.charges)
+	breach_charges = int(snapshot.breach_charges)
+	_restore_power_state(snapshot.get("powers", {}))
+	floor_history.assign(snapshot.history)
+	facing = snapshot.facing
+	_reset_capture_state()
 	game_state = "playing"
+	generate_floor(int(snapshot.floor))
+	_save_resume(floor_number, total_coins, charges, breach_charges, floor_history, facing)
+	last_notice = "ANDAR REINICIADO — PROGRESSO ANTERIOR PRESERVADO"
+	notice_timer = 2.5
 
 
 func handle_hud_action(action: String) -> void:
@@ -247,15 +344,14 @@ func handle_hud_action(action: String) -> void:
 		open_level_select()
 	elif action == "levels_previous":
 		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
+		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "levels_next":
 		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
-	elif action == "levels_previous":
-		level_page_start = maxi(1, level_page_start - LEVELS_PER_PAGE)
-	elif action == "levels_next":
-		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
+		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "menu":
 		capture_darkness = 0.0
 		capture_flash = 0.0
+		dev_menu_open = false
 		game_state = "title"
 	elif action == "resume":
 		game_state = "playing"
@@ -264,9 +360,47 @@ func handle_hud_action(action: String) -> void:
 	elif action == "next_floor":
 		advance_floor()
 	elif action == "restart_floor":
-		start_level(floor_number)
+		restart_floor()
+	elif action == "wait":
+		wait_turn()
+	elif action == "blink":
+		try_blink()
 	elif action == "music":
 		audio.toggle_music()
+	elif action == "controller_settings":
+		controller_return_state = "paused" if game_state == "paused" else "title"
+		controller.select_active_device()
+		controller_message = ""
+		game_state = "controller_settings"
+	elif action == "controller_device":
+		controller_message = "COMANDO SELECIONADO" if controller.select_next_device() else "LIGA UM COMANDO PRIMEIRO"
+	elif action == "controller_vibration":
+		controller.set_vibration_enabled(not controller.vibration_enabled)
+		controller_message = "VIBRACAO LIGADA" if controller.vibration_enabled else "VIBRACAO DESLIGADA"
+	elif action.begins_with("controller_intensity:"):
+		set_controller_vibration_intensity(float(action.trim_prefix("controller_intensity:")))
+	elif action == "controller_test":
+		if controller.selected_device < 0:
+			controller_message = "LIGA UM COMANDO PRIMEIRO"
+		elif not controller.vibration_enabled:
+			controller_message = "LIGA A VIBRACAO ANTES DE TESTAR"
+		elif controller.vibration_intensity <= 0.0:
+			controller_message = "AUMENTA A INTENSIDADE ANTES DE TESTAR"
+		elif controller.feedback("test", true, controller.selected_device):
+			controller_message = "PULSO ENVIADO; A RESPOSTA DEPENDE DO COMANDO E DO SISTEMA"
+	elif action == "controller_calibrate":
+		if controller.begin_calibration(controller.selected_device):
+			game_state = "controller_mapping"
+		else:
+			controller_message = "LIGA UM COMANDO PRIMEIRO"
+	elif action == "controller_reset":
+		controller_message = "MAPEAMENTO ORIGINAL RESTAURADO" if controller.clear_active_mapping(controller.selected_device) else "ESTE COMANDO JA USA O MAPEAMENTO ORIGINAL"
+	elif action == "controller_skip":
+		controller.skip_calibration_step()
+	elif action == "controller_cancel_mapping":
+		controller.cancel_calibration()
+	elif action == "controller_back":
+		game_state = controller_return_state
 	elif action.begins_with("floor:"):
 		start_level(int(action.trim_prefix("floor:")))
 	elif action == "dev_toggle":
@@ -332,21 +466,25 @@ func dev_jump_floor(target_floor: int) -> void:
 
 func dev_spawn_enemy(role: String) -> void:
 	var spawn_pos: Vector2i = player_position + facing
-	if not _inside(spawn_pos) or _enemy_at(spawn_pos):
+	if not _is_floor(spawn_pos) or _enemy_at(spawn_pos):
+		spawn_pos = Vector2i(-1, -1)
 		for dir in FOUR_WAY:
 			var cand: Vector2i = player_position + dir
-			if _inside(cand) and not _enemy_at(cand):
+			if _is_floor(cand) and not _enemy_at(cand):
 				spawn_pos = cand
 				break
-	enemies.append({
-		"pos": spawn_pos,
-		"from": _cell_center(spawn_pos),
-		"to": _cell_center(spawn_pos),
-		"next": spawn_pos,
-		"t": 1.0,
-		"role": role,
-		"phase": 0
-	})
+	if spawn_pos == Vector2i(-1, -1):
+		last_notice = "SEM CASA LIVRE PARA O INIMIGO"
+		notice_timer = 2.0
+		return
+	var enemy: Dictionary
+	if role == "warden":
+		enemy = _make_warden(spawn_pos)
+	elif role == "chess_boss":
+		enemy = _make_boss(spawn_pos)
+	else:
+		enemy = _make_enemy(spawn_pos, role)
+	enemies.append(enemy)
 	_spawn_burst(_cell_center(spawn_pos), Color("ff59c7"), 20, 120.0)
 	last_notice = "SPAWN DEV: %s" % role.to_upper()
 	notice_timer = 2.0
@@ -365,9 +503,10 @@ func dev_give_resources() -> void:
 	total_coins += 10
 	charges = mini(charges + 1, 3)
 	breach_charges = mini(breach_charges + 1, 3)
-	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, +1 ESCUDO, +1 DEMOLIR)"
+	blink_charges += 1
+	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, ESCUDO, DEMOLICAO E BLINK)"
 	notice_timer = 2.5
-	audio.play("coin")
+	_emit_feedback("COIN_PICKUP")
 	queue_redraw()
 
 
@@ -404,9 +543,11 @@ func dev_load_sandbox_arena() -> void:
 	coins.clear()
 	shields.clear()
 	breakers.clear()
+	powerups.clear()
 	switches.clear()
 	traps.clear()
 	nav_chevrons.clear()
+	_restore_power_state({})
 	charges = 2
 	breach_charges = 2
 	game_state = "playing"
@@ -415,14 +556,14 @@ func dev_load_sandbox_arena() -> void:
 	notice_timer = 3.0
 	_update_enemy_intents()
 	_update_camera(1.0)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
 	queue_redraw()
 
 
 func _trigger_shake(time: float, strength: float) -> void:
 	shake_time = maxf(shake_time, time)
 	shake_strength = maxf(shake_strength, strength)
-	var rumble := clampf(strength / 15.0, 0.2, 1.0)
-	Input.start_joy_vibration(0, rumble * 0.4, rumble, time)
 
 
 func _handle_world_click(screen_pos: Vector2) -> void:
@@ -485,13 +626,43 @@ func get_floor_size(number: int) -> Vector2i:
 	return Vector2i(last_size.x + width_growth, last_size.y + height_growth)
 
 
-func _save_resume(number: int, coins: int) -> void:
+func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT, powers: Variant = null) -> void:
 	has_resume = true
 	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
+	resume_charges = maxi(0, shield_charges)
+	resume_breach_charges = maxi(0, demolition_charges)
+	resume_powers = _normalized_power_state(_capture_power_state() if powers == null else powers)
+	resume_facing = start_facing if start_facing in FOUR_WAY else Vector2i.RIGHT
 	resume_seed = active_seed
-	resume_history = floor_history.duplicate()
+	var saved_history: Array = (floor_history if history == null else history).duplicate()
+	resume_history.clear()
+	for value in saved_history:
+		resume_history.append(int(value))
 	_save_profile()
+
+
+func _capture_power_state() -> Dictionary:
+	return {"speed_turns": speed_turns, "speed_phase": speed_phase, "magnet_turns": magnet_turns,
+		"freeze_turns": freeze_turns, "blink_charges": blink_charges}
+
+
+func _normalized_power_state(raw: Variant) -> Dictionary:
+	var state: Dictionary = raw if raw is Dictionary else {}
+	var speed := maxi(0, int(state.get("speed_turns", 0)))
+	return {"speed_turns": speed, "speed_phase": posmod(int(state.get("speed_phase", 0)), 2) if speed > 0 else 0,
+		"magnet_turns": maxi(0, int(state.get("magnet_turns", 0))),
+		"freeze_turns": maxi(0, int(state.get("freeze_turns", 0))),
+		"blink_charges": maxi(0, int(state.get("blink_charges", 0)))}
+
+
+func _restore_power_state(raw: Variant) -> void:
+	var state := _normalized_power_state(raw)
+	speed_turns = state.speed_turns
+	speed_phase = state.speed_phase
+	magnet_turns = state.magnet_turns
+	freeze_turns = state.freeze_turns
+	blink_charges = state.blink_charges
 
 
 func generate_floor(number: int) -> void:
@@ -499,7 +670,11 @@ func generate_floor(number: int) -> void:
 	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
 	rng.seed = level_seed
-	coins_at_floor_start = total_coins
+	floor_start_snapshot = {
+		"floor": floor_number, "seed": active_seed, "coins": total_coins,
+		"charges": charges, "breach_charges": breach_charges, "powers": _capture_power_state(),
+		"history": floor_history.duplicate(), "facing": facing,
+	}
 	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
 	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
 	if result.ok:
@@ -532,73 +707,261 @@ func generate_floor(number: int) -> void:
 	enemies.clear()
 	shields.clear()
 	breakers.clear()
+	powerups.clear()
 	coins.clear()
 	switches.clear()
 	traps.clear()
+	var puzzle_floor := number % 5 == 3
 	var required_switches := 0
-	if number >= 2 and (number % 3 != 1 or number == 4):
+	if puzzle_floor:
+		required_switches = 3
+	elif number >= 2 and (number % 3 != 1 or number == 4):
 		required_switches = mini(1 + number / 2, 4)
-	objective_type = "switches" if required_switches > 0 else "escape"
+	objective_type = "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
 	portal_open = required_switches == 0
-	var occupied: Array[Vector2i] = [player_position, portal_position]
+	var occupied := {player_position: true, portal_position: true}
 	var walkable := _reachable_cells(player_position)
-	for i in required_switches:
-		var position: Vector2i = _pick_spaced(walkable, occupied, 7)
-		if position != Vector2i(-1, -1):
-			switches.append({"pos": position, "active": false})
-			occupied.append(position)
-	for i in mini(1 + int(number / 2), 7):
-		var position: Vector2i = _pick_spaced(walkable, occupied, 5)
-		if position != Vector2i(-1, -1):
-			var role := "hunter"
-			if number >= 2 and i % 3 == 1:
-				role = "sentry"
-			elif number >= 4 and i % 3 == 2:
-				role = "wisp"
-			if number >= 6 and i % 4 == 3:
-				role = "rusher"
-			enemies.append({"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position), "t": 1.0, "role": role, "phase": rng.randi_range(0, 1)})
-			occupied.append(position)
-	if number % 5 == 0:
-		var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
-		if boss_position != Vector2i(-1, -1):
-			enemies.append({"pos": boss_position, "next": boss_position, "from": _cell_center(boss_position), "to": _cell_center(boss_position), "t": 1.0, "role": "warden", "phase": 0})
-			occupied.append(boss_position)
+	if puzzle_floor:
+		_place_puzzle_switches(walkable, occupied)
+	else:
+		for i in required_switches:
+			var position: Vector2i = _pick_spaced(walkable, occupied, 7)
+			if position != Vector2i(-1, -1):
+				switches.append({"pos": position, "active": false})
+				occupied[position] = true
+		for i in mini(1 + int(number / 2), 7):
+			var position: Vector2i = _pick_spaced(walkable, occupied, 5)
+			if position != Vector2i(-1, -1):
+				var role := "hunter"
+				if number >= 2 and i % 3 == 1:
+					role = "sentry"
+				elif number >= 4 and i % 3 == 2:
+					role = "wisp"
+				if number >= 6 and i % 4 == 3:
+					role = "patrol"
+				if number >= 7 and i % 5 == 2:
+					role = "mirror"
+				if number >= 10 and i % 6 == 5:
+					role = "rusher"
+				enemies.append(_make_enemy(position, role))
+				occupied[position] = true
+		# The original Guardian keeps its own body and behavior as a mini-boss.
+		if number % 5 == 4:
+			var warden_position: Vector2i = _pick_spaced(walkable, occupied, 9)
+			if warden_position != Vector2i(-1, -1):
+				enemies.append(_make_warden(warden_position))
+				occupied[warden_position] = true
+		if number % 5 == 0:
+			var boss_position: Vector2i = _pick_spaced(walkable, occupied, 9)
+			if boss_position != Vector2i(-1, -1):
+				enemies.append(_make_boss(boss_position))
+				occupied[boss_position] = true
 	for i in rng.randi_range(2, 4):
 		var position: Vector2i = _pick_spaced(walkable, occupied, 2)
 		if position != Vector2i(-1, -1):
 			shields.append(position)
-			occupied.append(position)
+			occupied[position] = true
 	if (number == 1 or number >= 3) and number % 2 == 1:
 		var breaker_position: Vector2i = _pick_spaced(walkable, occupied, 6)
 		if breaker_position != Vector2i(-1, -1):
 			breakers.append(breaker_position)
-			occupied.append(breaker_position)
-	for i in 8 + number:
-		var position: Vector2i = _pick_spaced(walkable, occupied, 1)
-		if position != Vector2i(-1, -1):
-			coins.append(position)
-			occupied.append(position)
+			occupied[breaker_position] = true
+	# Cycle all four abilities across successive floors; the cell is unique and
+	# reachable, just like all other pickups.
+	var power_position: Vector2i = _pick_spaced(walkable, occupied, 3)
+	if power_position != Vector2i(-1, -1):
+		powerups.append({"pos": power_position, "kind": POWERUP_TYPES[posmod(number - 1, POWERUP_TYPES.size())]})
+		occupied[power_position] = true
+	_place_coins(walkable, occupied, 8 + number)
 	coins_spawned_this_floor = coins.size()
-	if number >= 3:
+	# Puzzle floors contain neither enemies nor traps: the sequence itself is
+	# the challenge. Other floors introduce visible recurring rhythm hazards.
+	if number >= 3 and not puzzle_floor:
 		for i in mini(1 + number / 4, 3):
 			var position: Vector2i = _pick_spaced(walkable, occupied, 4)
 			if position != Vector2i(-1, -1):
-				traps.append({"pos": position, "armed": true, "revealed": false})
-				occupied.append(position)
+				if i % 2 == 0:
+					traps.append({"pos": position, "type": "rhythm", "phase": rng.randi_range(0, 2), "armed": true, "revealed": true})
+				else:
+					traps.append({"pos": position, "type": "one_shot", "armed": true, "revealed": false})
+				occupied[position] = true
 	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
 	jumps_this_floor = 0
 	hits_this_floor = 0
 	coins_this_floor = 0
-	challenge_index = rng.randi_range(0, CHALLENGES.size() - 1)
+	var route_length := _estimate_route_length()
+	challenge_par = ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
+	var available_challenges := CHALLENGE_KINDS.duplicate()
+	if route_length < 0:
+		available_challenges.erase("moves")
+	challenge_kind = available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
 	challenge_complete = false
-	last_notice = "%s   /   seed %d" % [CHALLENGES[challenge_index], level_seed]
+	last_notice = "%s   /   seed %d" % [get_challenge_text(), level_seed]
 	notice_timer = 3.8
 	_update_enemy_intents()
 	_update_camera(1.0)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
 	queue_redraw()
+
+
+func get_challenge_text() -> String:
+	match challenge_kind:
+		"no_jump": return "Atravessa sem saltar"
+		"no_hit": return "Chega ao portal sem sofrer dano"
+		"moves": return "Escapa em ate %d acoes (%d/%d)" % [challenge_par, moves_this_floor, challenge_par]
+		"all_coins": return "Apanha todas as moedas (%d restantes)" % coins.size()
+	return ""
+
+
+func is_challenge_failed() -> bool:
+	match challenge_kind:
+		"no_jump": return jumps_this_floor > 0
+		"no_hit": return hits_this_floor > 0
+		"moves": return moves_this_floor > challenge_par
+	return false
+
+
+func is_challenge_met() -> bool:
+	match challenge_kind:
+		"no_jump": return jumps_this_floor == 0
+		"no_hit": return hits_this_floor == 0
+		"moves": return moves_this_floor <= challenge_par
+		"all_coins": return coins_spawned_this_floor > 0 and coins.is_empty()
+	return false
+
+
+# Pick three ordered runes, rejecting placements whose sequence cannot be
+# solved. Merely checking connectivity is insufficient: a future rune can
+# block a corridor and reset the sequence when crossed.
+func _place_puzzle_switches(walkable: Array[Vector2i], occupied: Dictionary) -> void:
+	for attempt in 24:
+		for item in switches:
+			occupied.erase(item.pos)
+		switches.clear()
+		for order in 3:
+			var position := _pick_spaced(walkable, occupied, 7)
+			if position == Vector2i(-1, -1):
+				break
+			switches.append({"pos": position, "active": false, "order": order})
+			occupied[position] = true
+		if switches.size() == 3 and int(_plan_puzzle_route().length) >= 0:
+			return
+	# Deterministic fallback: place runes in order on one simple route from
+	# the start, so no later rune can block an earlier one.
+	for item in switches:
+		occupied.erase(item.pos)
+	switches.clear()
+	var previous := {player_position: player_position}
+	var queue: Array[Vector2i] = [player_position]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not previous.has(next):
+				previous[next] = point
+				queue.append(next)
+	if queue.size() < 4:
+		push_error("O piso puzzle nao tem espaco suficiente para tres runas")
+		return
+	var path: Array[Vector2i] = []
+	var here: Vector2i = queue.back()
+	while here != player_position:
+		path.append(here)
+		here = previous[here]
+	path.reverse()
+	for point in path:
+		if point == portal_position:
+			continue
+		switches.append({"pos": point, "active": false, "order": switches.size()})
+		occupied[point] = true
+		if switches.size() == 3:
+			return
+	push_error("Nao foi possivel colocar as tres runas do puzzle")
+
+
+# BFS over both position and sequence progress. Entering a future rune resets
+# progress; already-lit runes are harmless. Return both exact action count and
+# the first step so tests/bots follow the same rules as the player.
+func _plan_puzzle_route() -> Dictionary:
+	var order_by_pos := {}
+	for item in switches:
+		order_by_pos[item.pos] = int(item.get("order", 0))
+	var start := Vector3i(player_position.x, player_position.y, _active_switches())
+	var distance := {start: 0}
+	var first_step := {start: Vector2i.ZERO}
+	var queue: Array[Vector3i] = [start]
+	var head := 0
+	while head < queue.size():
+		var state: Vector3i = queue[head]
+		head += 1
+		if Vector2i(state.x, state.y) == portal_position and state.z == switches.size():
+			return {"length": int(distance[state]), "step": first_step[state]}
+		for direction in FOUR_WAY:
+			var point: Vector2i = Vector2i(state.x, state.y) + direction
+			if not _is_floor(point):
+				continue
+			var progress := state.z
+			if order_by_pos.has(point):
+				var order: int = order_by_pos[point]
+				if order == progress:
+					progress += 1
+				elif order > progress:
+					progress = 0
+			var next := Vector3i(point.x, point.y, progress)
+			if distance.has(next):
+				continue
+			distance[next] = int(distance[state]) + 1
+			first_step[next] = direction if state == start else first_step[state]
+			queue.append(next)
+	return {"length": -1, "step": Vector2i.ZERO}
+
+
+# A real reachable route through every switch, followed by the portal. Puzzle
+# routes also include the exact ordered-rune/reset rules.
+func _estimate_route_length() -> int:
+	if objective_type == "puzzle":
+		return int(_plan_puzzle_route().length)
+	var total := 0
+	var here := player_position
+	var pending: Array[Vector2i] = []
+	for item in switches:
+		pending.append(item.pos)
+	while not pending.is_empty():
+		var distances := _path_distances(here)
+		var best_index := -1
+		var best_distance := 2147483647
+		for i in pending.size():
+			var distance: int = distances.get(pending[i], -1)
+			if distance >= 0 and distance < best_distance:
+				best_index = i
+				best_distance = distance
+		if best_index < 0:
+			return -1
+		total += best_distance
+		here = pending[best_index]
+		pending.remove_at(best_index)
+	var last_leg: int = _path_distances(here).get(portal_position, -1)
+	return total + last_leg if last_leg >= 0 else -1
+
+
+func _path_distances(start: Vector2i) -> Dictionary:
+	var distances := {start: 0}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not distances.has(next):
+				distances[next] = int(distances[point]) + 1
+				queue.append(next)
+	return distances
 
 
 func _build_nav_chevrons() -> void:
@@ -609,8 +972,10 @@ func _build_nav_chevrons() -> void:
 	var parent: Dictionary = {}
 	parent[player_position] = player_position
 	var found := false
-	while not queue.is_empty():
-		var current: Vector2i = queue.pop_front()
+	var head := 0
+	while head < queue.size():
+		var current: Vector2i = queue[head]
+		head += 1
 		if current == portal_position:
 			found = true
 			break
@@ -786,8 +1151,10 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 	var result: Array[Vector2i] = []
 	var queue: Array[Vector2i] = [start]
 	var visited := {start: true}
-	while not queue.is_empty():
-		var point: Vector2i = queue.pop_front()
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
 		result.append(point)
 		for direction in FOUR_WAY:
 			var next: Vector2i = point + direction
@@ -797,21 +1164,53 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 	return result
 
 
-func _pick_spaced(cells: Array[Vector2i], occupied: Array[Vector2i], min_distance: int) -> Vector2i:
+# Reuse the ordered list of free cells for all coins. Removing the chosen
+# entry preserves the same candidates, random draws and order as _pick_spaced
+# at distance 1; running out of cells used to consume no more random values.
+func _place_coins(cells: Array[Vector2i], occupied: Dictionary, count: int) -> void:
 	var candidates: Array[Vector2i] = []
 	for point in cells:
-		if point == player_position or point == portal_position or occupied.has(point):
+		if not occupied.has(point):
+			candidates.append(point)
+	for _i in mini(count, candidates.size()):
+		var index := rng.randi_range(0, candidates.size() - 1)
+		var position := candidates[index]
+		coins.append(position)
+		occupied[position] = true
+		candidates.remove_at(index)
+
+
+func _pick_spaced(cells: Array[Vector2i], occupied: Dictionary, min_distance: int) -> Vector2i:
+	var candidates: Array[Vector2i] = []
+	# A Manhattan diamond is cheaper than scanning every occupied cell once
+	# there are many coins. It tests the same condition without changing order.
+	var use_local := min_distance > 1 and occupied.size() > 2 * min_distance * (min_distance - 1)
+	var offsets: Array[Vector2i] = []
+	if use_local:
+		for dx in range(1 - min_distance, min_distance):
+			var limit := min_distance - 1 - absi(dx)
+			for dy in range(-limit, limit + 1):
+				if dx != 0 or dy != 0:
+					offsets.append(Vector2i(dx, dy))
+	for point in cells:
+		if occupied.has(point):
 			continue
 		var far_enough := true
-		for other in occupied:
-			if abs(point.x - other.x) + abs(point.y - other.y) < min_distance:
-				far_enough = false
-				break
+		if use_local:
+			for offset in offsets:
+				if occupied.has(point + offset):
+					far_enough = false
+					break
+		elif min_distance > 1:
+			for other in occupied:
+				if _manhattan(point, other) < min_distance:
+					far_enough = false
+					break
 		if far_enough:
 			candidates.append(point)
 	if candidates.is_empty():
 		for point in cells:
-			if point != player_position and point != portal_position and not occupied.has(point):
+			if not occupied.has(point):
 				candidates.append(point)
 	if candidates.is_empty():
 		return Vector2i(-1, -1)
@@ -829,6 +1228,94 @@ func _enemy_at(point: Vector2i, except_enemy: Dictionary = {}) -> bool:
 	return false
 
 
+func _make_enemy(position: Vector2i, role: String) -> Dictionary:
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": role, "phase": rng.randi_range(0, 1),
+		"patrol_dir": PATROL_DIRECTIONS[rng.randi_range(0, 3)]}
+
+
+func _make_warden(position: Vector2i) -> Dictionary:
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": "warden", "phase": 0, "boss_name": "GUARDIAO", "hp": 3, "max_hp": 3}
+
+
+func _make_boss(position: Vector2i) -> Dictionary:
+	var index := posmod(floori(float(maxi(5, floor_number)) / 5.0) - 1, BOSS_TYPES.size())
+	var piece: Dictionary = BOSS_TYPES[index]
+	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
+		"t": 1.0, "role": "chess_boss", "phase": 0, "boss_kind": piece.id,
+		"boss_name": piece.name, "rule": piece.rule, "hp": piece.hp, "max_hp": piece.hp}
+
+
+func _is_elite(enemy: Dictionary) -> bool:
+	return enemy.get("role", "") in ["warden", "chess_boss"]
+
+
+func get_active_boss() -> Dictionary:
+	for enemy in enemies:
+		if enemy.get("role", "") == "chess_boss":
+			return enemy
+	return {}
+
+
+# Choose a legal chess-inspired move, limited to three cells for readability.
+# Sliding pieces cannot pass through walls, other enemies, reserved landings,
+# or blocked diagonal corners. Knights may jump but must land on free floor.
+func _boss_intent(enemy: Dictionary, reserved: Array[Vector2i]) -> Dictionary:
+	var origin: Vector2i = enemy.pos
+	var kind: String = enemy.get("boss_kind", "pawn")
+	var candidates: Array[Dictionary] = []
+	if kind == "knight":
+		for offset in KNIGHT_OFFSETS:
+			var landing: Vector2i = origin + offset
+			if _is_floor(landing) and not _enemy_at(landing, enemy) and not reserved.has(landing):
+				candidates.append({"pos": landing, "path": [landing]})
+	else:
+		var directions: Array = []
+		if kind in ["pawn", "rook", "queen", "king"]:
+			directions.append_array(FOUR_WAY)
+		if kind in ["bishop", "queen", "king"]:
+			directions.append_array(DIAGONALS)
+		var reach := 3 if kind in ["rook", "bishop", "queen"] else 1
+		for direction in directions:
+			var path: Array[Vector2i] = []
+			var previous := origin
+			for step in range(1, reach + 1):
+				var candidate: Vector2i = origin + direction * step
+				if not _is_floor(candidate) or _enemy_at(candidate, enemy) or reserved.has(candidate):
+					break
+				if direction.x != 0 and direction.y != 0:
+					if not _is_floor(previous + Vector2i(direction.x, 0)) or not _is_floor(previous + Vector2i(0, direction.y)):
+						break
+				path.append(candidate)
+				candidates.append({"pos": candidate, "path": path.duplicate()})
+				previous = candidate
+				if candidate == player_position:
+					break
+	var best := origin
+	var best_distance := _manhattan(origin, player_position)
+	var best_path: Array[Vector2i] = []
+	for candidate in candidates:
+		var distance := _manhattan(candidate.pos, player_position)
+		if distance < best_distance:
+			best = candidate.pos
+			best_distance = distance
+			best_path.assign(candidate.path)
+	if best == origin:
+		# Chess diagonals/parity and irregular rooms can otherwise trap a piece
+		# indefinitely. A single orthogonal step follows a real path around walls.
+		var distances := _path_distances(player_position)
+		best_distance = int(distances.get(origin, 2147483647))
+		for direction in FOUR_WAY:
+			var candidate: Vector2i = origin + direction
+			var distance: int = distances.get(candidate, 2147483647)
+			if _is_floor(candidate) and not _enemy_at(candidate, enemy) and not reserved.has(candidate) and distance < best_distance:
+				best = candidate
+				best_distance = distance
+				best_path.assign([candidate])
+	return {"pos": best, "path": best_path}
+
+
 func _update_enemy_intents() -> void:
 	var reserved: Array[Vector2i] = []
 	for enemy in enemies:
@@ -839,6 +1326,34 @@ func _update_enemy_intents() -> void:
 		if face_vector != Vector2i.ZERO:
 			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
 		enemy.alert = _enemy_sees_player(origin)
+		enemy["path"] = []
+		if role == "chess_boss":
+			var intent := _boss_intent(enemy, reserved)
+			enemy.next = intent.pos
+			enemy.path = intent.path
+			if enemy.next != origin:
+				reserved.append(enemy.next)
+			continue
+		if role == "mirror":
+			# A mirror reacts only once the player's direction is known.
+			enemy.next = origin
+			continue
+		if role == "patrol":
+			var direction: Vector2i = enemy.get("patrol_dir", Vector2i.RIGHT)
+			if direction not in PATROL_DIRECTIONS:
+				direction = Vector2i.RIGHT
+			var choice := origin
+			for attempt in 4:
+				var candidate: Vector2i = origin + direction
+				if _is_floor(candidate) and not _enemy_at(candidate, enemy) and not reserved.has(candidate):
+					choice = candidate
+					break
+				direction = Vector2i(-direction.y, direction.x)
+			enemy.patrol_dir = direction
+			enemy.next = choice
+			if choice != origin:
+				reserved.append(choice)
+			continue
 		if role == "wisp" and (turn_number + phase) % 2 == 1:
 			enemy.next = enemy.pos
 			continue
@@ -855,6 +1370,7 @@ func _update_enemy_intents() -> void:
 				var landing := origin + dash_direction * 2
 				if _inside(middle) and _inside(landing) and _is_floor(middle) and _is_floor(landing) and not _enemy_at(middle, enemy) and not _enemy_at(landing, enemy) and not reserved.has(middle) and not reserved.has(landing):
 					enemy.next = landing
+					enemy.path = [middle, landing]
 					reserved.append(landing)
 					continue
 		var best := origin
@@ -877,6 +1393,25 @@ func _update_enemy_intents() -> void:
 		enemy.next = best
 		if best != origin:
 			reserved.append(best)
+
+
+# Unlike planned pursuers, a mirror responds to the direction of the action
+# just taken; waiting/demolishing leaves it still. Reserve the other landings.
+func _plan_reactive_mirrors(action_direction: Vector2i) -> void:
+	var reserved: Array[Vector2i] = []
+	for enemy in enemies:
+		if enemy.get("role", "") != "mirror" and enemy.next != enemy.pos:
+			reserved.append(enemy.next)
+	for enemy in enemies:
+		if enemy.get("role", "") != "mirror" or int(enemy.get("shield_repel_turn", -1)) == turn_number:
+			continue
+		var origin: Vector2i = enemy.pos
+		var target: Vector2i = origin - action_direction
+		enemy.next = origin
+		enemy["path"] = []
+		if action_direction != Vector2i.ZERO and _is_floor(target) and not _enemy_at(target, enemy) and not reserved.has(target):
+			enemy.next = target
+			reserved.append(target)
 
 
 func _enemy_sees_player(origin: Vector2i) -> bool:
@@ -909,6 +1444,11 @@ func _manhattan(first: Vector2i, second: Vector2i) -> int:
 
 
 func _nearest_inactive_switch(origin: Vector2i) -> Vector2i:
+	if objective_type == "puzzle":
+		for item in switches:
+			if int(item.get("order", -1)) == _active_switches() and not item.active:
+				return item.pos
+		return Vector2i(-1, -1)
 	var nearest := Vector2i(-1, -1)
 	var distance := 2147483647
 	for item in switches:
@@ -922,21 +1462,32 @@ func _nearest_inactive_switch(origin: Vector2i) -> Vector2i:
 
 
 func try_move(dx: int, dy: int) -> void:
-	if game_state != "playing":
+	if game_state != "playing" or absi(dx) + absi(dy) != 1:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
 	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
-	if can_walk:
-		_begin_player_move(next)
-		moves_this_floor += 1
-		audio.play("step")
-	else:
+	if not can_walk:
 		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
 		notice_timer = 1.0
 		_trigger_shake(0.12, 5.0)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
+		queue_redraw()
+		return
+	_begin_player_move(next)
+	moves_this_floor += 1
+	_emit_feedback("MOVE", {"material": _current_haptic_material()})
+	_take_turn(facing)
+
+
+func wait_turn() -> void:
+	if game_state != "playing":
+		return
+	moves_this_floor += 1
+	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
+	notice_timer = 1.0
+	_emit_feedback("WAIT")
 	_take_turn()
 
 
@@ -953,7 +1504,7 @@ func try_jump() -> void:
 	if charges <= 0:
 		last_notice = "Sem escudo para saltar"
 		notice_timer = 1.5
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	var middle := player_position + facing
@@ -965,7 +1516,7 @@ func try_jump() -> void:
 		last_notice = "Precisas de duas casas livres para saltar"
 		notice_timer = 1.5
 		_trigger_shake(0.12, 3.5)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	charges -= 1
@@ -973,8 +1524,43 @@ func try_jump() -> void:
 	moves_this_floor += 1
 	_begin_player_move(landing)
 	_spawn_burst(_cell_center(player_position), Color("6bf4ff"), 14, 115.0)
-	audio.play("jump")
-	_take_turn()
+	_emit_feedback("JUMP")
+	_take_turn(facing)
+
+
+# Blink ignores intermediate walls, traps, pickups and enemies, but may only
+# land on floor and cannot cross the indestructible map boundary.
+func try_blink() -> void:
+	if game_state != "playing":
+		return
+	if blink_charges <= 0:
+		last_notice = "SEM CARGAS DE BLINK"
+		notice_timer = 1.4
+		_emit_feedback("BLOCKED")
+		return
+	var origin := player_position
+	var landing := origin
+	for step in range(1, 4):
+		var point: Vector2i = origin + facing * step
+		if not _inside(point) or grid[point.y][point.x] == TILE_BORDER:
+			break
+		if _is_floor(point):
+			landing = point
+	if landing == origin:
+		last_notice = "BLINK PRECISA DE UMA CASA LIVRE ATE 3 PASSOS"
+		notice_timer = 1.6
+		_emit_feedback("BLOCKED")
+		return
+	blink_charges -= 1
+	moves_this_floor += 1
+	_spawn_burst(_cell_center(origin), Color("91faff"), 18, 140.0)
+	_begin_player_move(landing)
+	# Blink is an instantaneous teleport, not a slide through intervening tiles.
+	player_from = player_to
+	player_anim = 1.0
+	_spawn_burst(_cell_center(landing), Color("c2b6ff"), 24, 160.0)
+	_emit_feedback("BLINK")
+	_take_turn(facing)
 
 
 func try_break_wall() -> void:
@@ -994,21 +1580,31 @@ func try_break_wall() -> void:
 		if breach_charges <= 0:
 			last_notice = "CARGA DE DEMOLICAO EM FALTA PARA DESTRUIR INIMIGO"
 			notice_timer = 1.4
-			audio.play("blocked")
+			_emit_feedback("BLOCKED")
 			queue_redraw()
 			return
 		breach_charges -= 1
-		var dead_role: String = enemies[enemy_idx].get("role", "hunter")
-		enemies.remove_at(enemy_idx)
+		var enemy: Dictionary = enemies[enemy_idx]
+		var dead_role: String = enemy.get("role", "hunter")
+		if _is_elite(enemy):
+			enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+			if enemy.hp > 0:
+				enemies[enemy_idx] = enemy
+				last_notice = "%s ATINGIDO: %d/%d" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
+			else:
+				enemies.remove_at(enemy_idx)
+				last_notice = "%s DERROTADO!" % enemy.get("boss_name", "GUARDIAO")
+		else:
+			enemies.remove_at(enemy_idx)
+			last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
 		moves_this_floor += 1
 		_trigger_shake(0.28, 14.0)
 		flash_time = 0.12
 		flash_color = Color("ff4d73")
-		last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
 		notice_timer = 2.0
 		_spawn_burst(_cell_center(target), Color("ff3366"), 42, 220.0)
 		_spawn_shockwave(_cell_center(target), 8.0, 52.0, Color("ff6b8b"), 0.4)
-		audio.play("break_wall")
+		_emit_feedback("DEMOLITION")
 		_take_turn()
 		return
 
@@ -1016,23 +1612,25 @@ func try_break_wall() -> void:
 		last_notice = "A FRONTEIRA DAS RUINAS NAO CEDE"
 		notice_timer = 1.2
 		_trigger_shake(0.1, 4.0)
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	if grid[target.y][target.x] != TILE_WALL:
 		last_notice = "NAO HA PAREDE PARA DEMOLIR"
 		notice_timer = 1.0
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	if breach_charges <= 0:
 		last_notice = "CARGA DE DEMOLICAO EM FALTA"
 		notice_timer = 1.4
-		audio.play("blocked")
+		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
 	breach_charges -= 1
 	grid[target.y][target.x] = TILE_FLOOR
+	if terrain_renderer != null:
+		terrain_renderer.invalidate_cell(target)
 	moves_this_floor += 1
 	_trigger_shake(0.22, 10.0)
 	flash_time = 0.08
@@ -1040,81 +1638,201 @@ func try_break_wall() -> void:
 	last_notice = "PAREDE ABERTA — OS PERSEGUIDORES AVANCAM"
 	notice_timer = 1.7
 	_spawn_burst(_cell_center(target), Color("ff9f59"), 32, 180.0)
-	audio.play("break_wall")
+	_emit_feedback("DEMOLITION")
 	_take_turn()
 
 
-func _take_turn() -> void:
+func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	damage_this_turn = false
 	turn_number += 1
+	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
 	_collect_pickups()
 	_trigger_traps()
+	if game_state != "playing":
+		_tick_power_effects()
+		queue_redraw()
+		return
 	_activate_switches()
-	var positions: Array[Vector2i] = []
-	for enemy in enemies:
-		positions.append(enemy.next)
-	for i in enemies.size():
-		var enemy: Dictionary = enemies[i]
-		enemy.from = _cell_center(enemy.pos)
-		enemy.pos = positions[i]
-		enemy.to = _cell_center(enemy.pos)
-		enemy.t = 0.0
-		enemies[i] = enemy
-	_update_enemy_intents()
-	_check_enemy_collision()
-	_check_portal()
+	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
+	# the player could pass through a stationary enemy without consequence.
+	_check_enemy_collision(action_direction)
+	if game_state != "playing":
+		_tick_power_effects()
+		queue_redraw()
+		return
+	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
+	var enemy_advanced_near := false
+	if not immobilized:
+		_plan_reactive_mirrors(action_direction)
+		var positions: Array[Vector2i] = []
+		var crossings: Array[int] = []
+		for i in enemies.size():
+			var enemy: Dictionary = enemies[i]
+			positions.append(enemy.next)
+			if enemy.next != player_position and enemy.get("path", []).has(player_position):
+				crossings.append(i)
+		for i in enemies.size():
+			var enemy: Dictionary = enemies[i]
+			# A shield impact before the enemy phase already committed the recoil.
+			# Do not overwrite its interpolation with a stationary movement.
+			if int(enemy.get("shield_repel_turn", -1)) == turn_number:
+				continue
+			var previous_position: Vector2i = enemy.pos
+			enemy.from = _cell_center(enemy.pos)
+			enemy.pos = positions[i]
+			enemy.to = _cell_center(enemy.pos)
+			enemy.t = 0.0
+			enemies[i] = enemy
+			if enemy.pos != previous_position and _manhattan(enemy.pos, player_position) == 1 and _enemy_sees_player(enemy.pos):
+				enemy_advanced_near = true
+		_check_enemy_collision(Vector2i.ZERO, true)
+		if game_state == "playing" and not damage_this_turn:
+			for index in crossings:
+				var enemy: Dictionary = enemies[index]
+				_resolve_enemy_contact(index, _shield_recoil_direction(enemy, Vector2i.ZERO, true))
+				break
+	if game_state == "playing":
+		if feedback_bus != null and enemy_advanced_near and not damage_this_turn and not dev_god_mode:
+			feedback_bus.near_miss({"cell": player_position})
+		_update_enemy_intents()
+	_tick_power_effects()
+	# Tick before saving a completed floor, so its checkpoint contains the
+	# duration remaining after the portal action, not one extra turn.
+	if game_state == "playing":
+		_check_portal()
 	queue_redraw()
 
 
+func _tick_power_effects() -> void:
+	if speed_turns > 0:
+		speed_turns -= 1
+		speed_phase = 1 - speed_phase if speed_turns > 0 else 0
+	if magnet_turns > 0:
+		magnet_turns -= 1
+	if freeze_turns > 0:
+		freeze_turns -= 1
+
+
+func _collect_coin(point: Vector2i) -> bool:
+	if not coins.has(point):
+		return false
+	coins.erase(point)
+	coins_this_floor += 1
+	total_coins += 1
+	if total_coins > best_score:
+		best_score = total_coins
+		best_score_dirty = true
+	_spawn_burst(_cell_center(point), Color("ffd15d"), 18, 150.0)
+	return true
+
+
+# Magnetism follows actual floor paths, not Manhattan distance through walls.
+func _nearby_floor_cells(start: Vector2i, reach: int) -> Dictionary:
+	var distances := {start: 0}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point: Vector2i = queue[head]
+		head += 1
+		if int(distances[point]) >= reach:
+			continue
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if _is_floor(next) and not distances.has(next):
+				distances[next] = int(distances[point]) + 1
+				queue.append(next)
+	return distances
+
+
 func _collect_pickups() -> void:
-	if coins.has(player_position):
-		coins.erase(player_position)
-		coins_this_floor += 1
-		total_coins += 1
-		if total_coins > best_score:
-			best_score = total_coins
-			_save_profile()
-		last_notice = "+1 MOEDA"
-		notice_timer = 1.0
-		_spawn_burst(_cell_center(player_position), Color("ffd15d"), 18, 150.0)
-		_audio_coin()
+	var collected_coins := 1 if _collect_coin(player_position) else 0
 	if shields.has(player_position):
 		shields.erase(player_position)
 		charges += 1
-		last_notice = "ESCUDO +1  /  a aura protege de um impacto e permite saltar"
+		last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
 		notice_timer = 2.2
 		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
-		audio.play("shield")
+		_emit_feedback("SHIELD_PICKUP")
 	if breakers.has(player_position):
 		breakers.erase(player_position)
 		breach_charges += 1
 		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
 		notice_timer = 2.6
 		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
-		audio.play("breaker")
+		_emit_feedback("BREAKER_PICKUP")
+	for i in range(powerups.size() - 1, -1, -1):
+		var item: Dictionary = powerups[i]
+		if item.pos == player_position:
+			powerups.remove_at(i)
+			_activate_powerup(item.kind)
+	if magnet_turns > 0 and not coins.is_empty():
+		var nearby := _nearby_floor_cells(player_position, 2)
+		for point in coins.duplicate():
+			if nearby.has(point) and _collect_coin(point):
+				collected_coins += 1
+	if collected_coins > 0:
+		last_notice = "+%d MOEDA%s%s" % [collected_coins, "S" if collected_coins != 1 else "", " / IMA" if collected_coins > 1 else ""]
+		notice_timer = 1.0
+		_audio_coin()
+
+
+func _activate_powerup(kind: String) -> void:
+	match kind:
+		"speed":
+			speed_turns = SPEED_DURATION
+			speed_phase = 0
+			last_notice = "VELOCIDADE / INIMIGOS AVANCAM EM ACOES ALTERNADAS"
+		"magnet":
+			magnet_turns = MAGNET_DURATION
+			last_notice = "IMA / RECOLHE MOEDAS ATE 2 PASSOS"
+		"blink":
+			blink_charges += 1
+			last_notice = "BLINK +1 / Q TELEPORTA ATE 3 CASAS"
+		"time_freeze":
+			freeze_turns = FREEZE_DURATION
+			last_notice = "TEMPO CONGELADO / ARMADILHAS CONTINUAM ATIVAS"
+		_:
+			return
+	notice_timer = 2.6
+	_spawn_burst(_cell_center(player_position), Color(POWERUP_COLORS.get(kind, "ffffff")), 24, 145.0)
+	_emit_feedback("POWER_" + kind.to_upper())
 
 
 func _audio_coin() -> void:
-	audio.play("coin")
+	_emit_feedback("COIN_PICKUP")
 
 
 func _activate_switches() -> void:
 	for i in switches.size():
 		var item: Dictionary = switches[i]
-		if not item.active and item.pos == player_position:
-			item.active = true
-			switches[i] = item
+		if item.active or item.pos != player_position:
+			continue
+		if objective_type == "puzzle" and int(item.get("order", -1)) != _active_switches():
+			for j in switches.size():
+				switches[j].active = false
+			last_notice = "ORDEM ERRADA! RECOMECA: CIANO > AMBAR > VIOLETA"
+			notice_timer = 2.8
+			_spawn_burst(_cell_center(player_position), Color("ff6c82"), 18, 110.0)
+			_emit_feedback("PUZZLE_ERROR")
+			return
+		item.active = true
+		switches[i] = item
+		if objective_type == "puzzle":
+			var order: int = item.order
+			last_notice = "RUNA %d / %s — %d/3" % [order + 1, PUZZLE_NAMES[order], _active_switches()]
+			_spawn_burst(_cell_center(player_position), Color(PUZZLE_COLORS[order]), 20, 130.0)
+		else:
 			last_notice = "INTERRUPTOR %d/%d ATIVADO" % [_active_switches(), switches.size()]
-			notice_timer = 2.1
 			_spawn_burst(_cell_center(player_position), Color("7bf4ff"), 20, 130.0)
-			audio.play("switch")
-	if objective_type == "switches" and _active_switches() >= switches.size():
+		notice_timer = 2.1
+		_emit_feedback("SWITCH_ON")
+	if objective_type in ["switches", "puzzle"] and not switches.is_empty() and _active_switches() >= switches.size():
 		if not portal_open:
 			portal_open = true
-			last_notice = "TODOS OS INTERRUPTORES ATIVOS — PORTAL ABERTO"
+			last_notice = "SEQUENCIA COMPLETA — PORTAL ABERTO" if objective_type == "puzzle" else "TODOS OS INTERRUPTORES ATIVOS — PORTAL ABERTO"
 			notice_timer = 3.0
 			_spawn_burst(_cell_center(portal_position), Color("d57aff"), 32, 175.0)
-			audio.play("portal")
+			_emit_feedback("PORTAL_OPEN")
 
 
 func _active_switches() -> int:
@@ -1125,40 +1843,141 @@ func _active_switches() -> int:
 	return count
 
 
+# Phase zero is dangerous; the drawing previews the next action's phase.
+func _rhythm_is_hot(trap: Dictionary, action_turn: int) -> bool:
+	return posmod(action_turn + int(trap.get("phase", 0)), 3) == 0
+
+
 func _trigger_traps() -> void:
 	for i in traps.size():
 		var trap: Dictionary = traps[i]
-		if trap.armed and trap.pos == player_position:
+		if not trap.get("armed", true) or trap.pos != player_position:
+			continue
+		if trap.get("type", "one_shot") == "rhythm":
+			if _rhythm_is_hot(trap, turn_number):
+				_apply_damage("ARMADILHA DE RITMO!", Color("ff7456"))
+				_emit_feedback("RHYTHM_TRAP")
+		else:
 			trap.armed = false
 			trap.revealed = true
 			traps[i] = trap
 			_apply_damage("ARMADILHA!", Color("ff7456"))
 
 
-func _check_enemy_collision() -> void:
+func _check_enemy_collision(action_direction: Vector2i = Vector2i.ZERO, enemy_moved: bool = false) -> void:
 	if dev_god_mode:
 		return
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		if enemy.pos != player_position:
 			continue
-		if enemy.get("role", "hunter") == "warden" and charges > 0:
-			_stagger_warden(i)
-		else:
-			_apply_damage("FOSTE ALCANCADO", Color("ff4e70"))
+		_resolve_enemy_contact(i, _shield_recoil_direction(enemy, action_direction, enemy_moved))
 		return
 
 
-func _stagger_warden(index: int) -> void:
+# In an incoming collision or a dash crossing, rebound toward the attacker's
+# starting cell. When the player enters an occupied cell, push forward instead.
+func _shield_recoil_direction(enemy: Dictionary, action_direction: Vector2i, enemy_moved: bool) -> Vector2i:
+	if enemy_moved:
+		var source: Vector2 = enemy.get("from", _cell_center(enemy.pos))
+		var source_cell := Vector2i(floori(source.x / CELL), floori(source.y / CELL))
+		var delta := source_cell - player_position
+		if delta.x != 0 and absi(delta.x) >= absi(delta.y):
+			return Vector2i(signi(delta.x), 0)
+		if delta.y != 0:
+			return Vector2i(0, signi(delta.y))
+	if action_direction in FOUR_WAY:
+		return action_direction
+	return facing if facing in FOUR_WAY else Vector2i.RIGHT
+
+
+func _resolve_enemy_contact(index: int, recoil_direction: Vector2i) -> void:
+	if index < 0 or index >= enemies.size():
+		return
+	var enemy: Dictionary = enemies[index]
+	if _is_elite(enemy) and charges > 0 and not damage_this_turn and not dev_god_mode:
+		_stagger_elite(index)
+		return
+	var shielded := charges > 0 and not damage_this_turn and not dev_god_mode
+	_apply_damage("FOSTE ALCANCADO", Color("6ceeff") if shielded else Color("ff4e70"))
+	if shielded and not _is_elite(enemy):
+		_repel_common_enemy(index, recoil_direction)
+
+
+func _shield_recoil_cell_free(point: Vector2i, enemy_index: int) -> bool:
+	if point == player_position or not _is_floor(point):
+		return false
+	for i in enemies.size():
+		if i == enemy_index:
+			continue
+		var other: Dictionary = enemies[i]
+		if other.pos == point or other.get("next", other.pos) == point or other.get("path", []).has(point):
+			return false
+	return true
+
+
+# Move at most two open cells, stopping at walls/occupants/reservations. If the
+# primary direction is blocked, try the sides and then the rear deterministically.
+# Recoil never damages ordinary enemies and does not consume an extra turn.
+func _repel_common_enemy(index: int, direction: Vector2i) -> void:
+	var enemy: Dictionary = enemies[index]
+	var primary := direction if direction in FOUR_WAY else Vector2i.RIGHT
+	var options: Array[Vector2i] = [primary, Vector2i(-primary.y, primary.x), Vector2i(primary.y, -primary.x), -primary]
+	var destination := player_position
+	for option in options:
+		var candidate := player_position
+		for _step in 2:
+			var next: Vector2i = candidate + option
+			if not _shield_recoil_cell_free(next, index):
+				break
+			candidate = next
+		if candidate != player_position:
+			destination = candidate
+			break
+	if destination != player_position:
+		enemy.from = _cell_center(player_position)
+		enemy.pos = destination
+		enemy.to = _cell_center(destination)
+		enemy.t = 0.0
+		last_notice = "INIMIGO PROJETADO — O ESCUDO ABSORVEU O IMPACTO"
+	else:
+		# Fully surrounded: retain the existing position rather than inventing
+		# an illegal destination or tunnelling through a wall.
+		last_notice = "ESCUDO ABSORVEU O IMPACTO — SEM ESPACO PARA RECUAR"
+	notice_timer = 2.0
+	enemy.next = enemy.pos
+	enemy["path"] = []
+	enemy["shield_repel_turn"] = turn_number
+	enemy["shield_repel_visual"] = destination != player_position
+	enemies[index] = enemy
+
+
+func _stagger_elite(index: int) -> void:
+	if damage_this_turn or charges <= 0 or index < 0 or index >= enemies.size():
+		return
 	var enemy: Dictionary = enemies[index]
 	charges -= 1
 	hits_this_floor += 1
 	damage_this_turn = true
+	# A shield counter deals one point of boss damage as well as pushing it away.
+	enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+	if enemy.hp <= 0:
+		enemies.remove_at(index)
+		_trigger_shake(0.28, 10.0)
+		last_notice = "%s DERROTADO PELO CONTRA-ATAQUE" % enemy.get("boss_name", "GUARDIAO")
+		notice_timer = 2.0
+		_spawn_burst(_cell_center(enemy.pos), Color("c476ff"), 30, 190.0)
+		_emit_feedback("ELITE_COUNTER")
+		return
 	var best_position: Vector2i = enemy.pos
 	var best_distance := _manhattan(enemy.pos, player_position)
+	var reserved: Dictionary = {}
+	for other in enemies:
+		if other != enemy:
+			reserved[other.get("next", other.pos)] = true
 	for direction in FOUR_WAY:
 		var candidate: Vector2i = enemy.pos + direction
-		if not _inside(candidate) or not _is_floor(candidate) or _enemy_at(candidate, enemy):
+		if not _inside(candidate) or not _is_floor(candidate) or _enemy_at(candidate, enemy) or reserved.has(candidate):
 			continue
 		var distance := _manhattan(candidate, player_position)
 		if distance > best_distance:
@@ -1168,20 +1987,21 @@ func _stagger_warden(index: int) -> void:
 	enemy.pos = best_position
 	enemy.to = _cell_center(best_position)
 	enemy.next = best_position
+	enemy["path"] = []
 	enemy.t = 0.0
 	enemies[index] = enemy
 	shake_time = 0.2
 	shake_strength = 7.0
 	flash_time = 0.13
 	flash_color = Color("56ebff")
-	last_notice = "O GUARDIAO RECUOU — O ESCUDO QUEBROU"
+	last_notice = "%s RECUOU (%d/%d) — O ESCUDO QUEBROU" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
 	notice_timer = 2.0
 	_spawn_burst(_cell_center(best_position), Color("66eaff"), 24, 170.0)
-	audio.play("hit")
+	_emit_feedback("ELITE_COUNTER")
 
 
 func _apply_damage(message: String, color: Color) -> void:
-	if damage_this_turn:
+	if damage_this_turn or dev_god_mode:
 		return
 	damage_this_turn = true
 	shake_time = 0.25
@@ -1194,7 +2014,7 @@ func _apply_damage(message: String, color: Color) -> void:
 		hits_this_floor += 1
 		last_notice = message + " — O ESCUDO ABSORVEU O IMPACTO"
 		notice_timer = 2.0
-		audio.play("hit")
+		_emit_feedback("SHIELD_IMPACT")
 	else:
 		_begin_capture(message, color)
 
@@ -1220,7 +2040,7 @@ func _begin_capture(message: String, color: Color) -> void:
 	shake_strength = 5.0
 	flash_time = 0.13
 	flash_color = color
-	audio.play("inflate")
+	_emit_feedback("CAPTURE_START")
 	_update_capture_overlay()
 
 
@@ -1237,7 +2057,7 @@ func _trigger_capture_burst() -> void:
 		var offset := Vector2(cos(angle) * radius * 0.98, sin(angle) * radius * 0.84)
 		capture_splats.append({"pos": capture_origin + offset, "radius": rng.randf_range(2.5, 8.0)})
 	_spawn_blood_burst(capture_origin)
-	audio.play("balloon_pop")
+	_emit_feedback("CAPTURE_POP")
 	shake_time = 0.55
 	shake_strength = 22.0
 	flash_time = 0.28
@@ -1338,7 +2158,10 @@ func _update_capture_sequence(delta: float) -> void:
 			capture_chromatic = 0.0
 			capture_noise = 0.25
 			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
-			_save_resume(floor_number, coins_at_floor_start)
+			_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
+				int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
+				floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT),
+				floor_start_snapshot.get("powers", {}))
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
@@ -1350,7 +2173,15 @@ func _update_capture_sequence(delta: float) -> void:
 func _update_capture_overlay() -> void:
 	if audio != null and audio.has_method("set_capture_mix"):
 		audio.set_capture_mix(capture_darkness)
-	if capture_material == null:
+	if capture_material == null or capture_overlay == null:
+		return
+	# All four terms contribute to alpha in the shader. Hide only when the
+	# result is transparent, or an opaque menu completely covers the world.
+	# This avoids a full-screen shader pass during ordinary play.
+	var active := _world_is_visible() and (capture_darkness > 0.0 or capture_flash > 0.0 or capture_noise > 0.0 or (capture_shockwave_radius > 0.001 and capture_shockwave_radius < 1.2))
+	if capture_overlay.visible != active:
+		capture_overlay.visible = active
+	if not active:
 		return
 	var focus := Vector2(0.5, 0.5)
 	var viewport := get_viewport_rect().size
@@ -1372,49 +2203,40 @@ func _check_portal() -> void:
 		last_notice = "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
 		return
-	var challenge_ok := false
-	match challenge_index:
-		0: challenge_ok = jumps_this_floor == 0
-		1: challenge_ok = hits_this_floor == 0
-		2: challenge_ok = moves_this_floor <= 14
-	if challenge_ok and not challenge_complete:
+	if is_challenge_met() and not challenge_complete:
 		challenge_complete = true
-		total_coins += 5
 		last_notice = "DESAFIO CUMPRIDO  +5 MOEDAS"
 		_spawn_burst(_cell_center(portal_position), Color("ffd15d"), 26, 170.0)
-		audio.play("switch")
+		_emit_feedback("SWITCH_ON")
 	stars_last_floor = _stars_for_floor()
 	floor_history.append(stars_last_floor)
 	floor_reward = stars_last_floor * 2 + (5 if challenge_complete else 0)
 	total_coins += floor_reward
 	if total_coins > best_score:
 		best_score = total_coins
+		best_score_dirty = true
 	_spawn_burst(_cell_center(portal_position), Color("c476ff"), 42, 240.0)
-	audio.play("portal")
-	var rescue_milestone := floor_number % 5 == 0
-	if rescue_milestone:
+	_emit_feedback("PORTAL_ENTER")
+	if floor_number == 5:
 		game_state = "rescued"
-		if floor_number == 5:
-			rescues_completed += 1
-			last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
-		elif floor_number == 100:
-			rescues_completed += 1
-			last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
-		else:
-			last_notice = "CICLO %d CONCLUIDO — SETOR SEGUINTE DESBLOQUEADO" % (floori(float(floor_number - 1) / 5.0) + 1)
+		last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
+	elif floor_number == 100:
+		game_state = "rescued"
+		rescues_completed += 1
+		last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
 	else:
 		game_state = "floor_clear"
-		last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
+		if floor_number == 200:
+			last_notice = "ARCO PRINCIPAL CONCLUIDO — A EXPEDICAO PROCEDURAL CONTINUA"
+		elif floor_number % 5 == 0:
+			last_notice = "SETOR %d CONCLUIDO — O PROXIMO ANDAR ESTA DESBLOQUEADO" % floor_number
+		else:
+			last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
 	furthest_floor = maxi(furthest_floor, floor_number + 1)
-	resume_floor = floor_number + 1
-	resume_coins = total_coins
-	resume_seed = active_seed
-	resume_history = floor_history.duplicate()
-	has_resume = true
 	var star_key := str(floor_number)
 	floor_stars[star_key] = maxi(int(floor_stars.get(star_key, 0)), stars_last_floor)
 	notice_timer = 999.0
-	_save_profile()
+	_save_resume(floor_number + 1, total_coins, charges, breach_charges, floor_history, facing)
 
 
 func advance_floor() -> void:
@@ -1433,6 +2255,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if objective_type == "puzzle":
+		return "RUNAS %d/3  /  %s" % [_active_switches(), "PORTAL ABERTO" if portal_open else "SEGUIR A ORDEM"]
 	if objective_type == "switches":
 		return "INTERRUPTORES %d/%d   /   %s" % [_active_switches(), switches.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if game_state == "rescued":
@@ -1445,8 +2269,23 @@ func get_objective_text() -> String:
 
 
 func _load_profile() -> void:
+	if not persistence_enabled:
+		return
 	var profile := ConfigFile.new()
 	if profile.load(profile_path) == OK:
+		controller_vibration_enabled = bool(profile.get_value("controller", "vibration", true))
+		var has_intensity := profile.has_section_key("controller", "vibration_intensity")
+		var intensity_version := int(profile.get_value("controller", "vibration_intensity_version", 1))
+		var saved_intensity := float(profile.get_value("controller", "vibration_intensity", ControllerScript.MAX_VIBRATION_INTENSITY))
+		if not is_finite(saved_intensity):
+			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
+		# The old maximum becomes the new maximum automatically. A deliberately
+		# reduced/off setting remains reduced, and v2 values are never migrated twice.
+		elif has_intensity and intensity_version < VIBRATION_PROFILE_VERSION and is_equal_approx(saved_intensity, 1.0):
+			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
+		controller_vibration_intensity = clampf(saved_intensity, 0.0, ControllerScript.MAX_VIBRATION_INTENSITY)
+		var saved_mappings: Variant = profile.get_value("controller", "mappings", {})
+		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
 		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
@@ -1454,12 +2293,19 @@ func _load_profile() -> void:
 		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
 		has_resume = bool(profile.get_value("progress", "has_resume", false))
 		resume_floor = maxi(1, int(profile.get_value("progress", "resume_floor", 1)))
-		resume_coins = int(profile.get_value("progress", "resume_coins", 0))
+		resume_coins = maxi(0, int(profile.get_value("progress", "resume_coins", 0)))
+		# Older profiles did not store the inventory; zero is their safe default.
+		resume_charges = maxi(0, int(profile.get_value("progress", "resume_charges", 0)))
+		resume_breach_charges = maxi(0, int(profile.get_value("progress", "resume_breach_charges", 0)))
+		resume_powers = _normalized_power_state(profile.get_value("progress", "resume_powers", {}))
+		var saved_facing: Variant = profile.get_value("progress", "resume_facing", Vector2i.RIGHT)
+		resume_facing = saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT
 		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
 		var stored_history = profile.get_value("progress", "resume_history", [])
 		resume_history.clear()
-		for value in stored_history:
-			resume_history.append(int(value))
+		if stored_history is Array or stored_history is PackedInt32Array or stored_history is PackedInt64Array:
+			for value in stored_history:
+				resume_history.append(int(value))
 		# Old saves treated floor five as the campaign ending. Open the next procedural floor for those players.
 		if rescues_completed > 0 and furthest_floor <= 5:
 			furthest_floor = 6
@@ -1470,12 +2316,18 @@ func _load_profile() -> void:
 				resume_seed = int(Time.get_ticks_usec()) ^ randi()
 				resume_history.clear()
 			_save_profile()
+	if controller != null:
+		controller.set_settings(controller_vibration_enabled, controller_mappings, controller_vibration_intensity)
 
 
 func _save_profile() -> void:
 	if not persistence_enabled:
 		return
 	var profile := ConfigFile.new()
+	profile.set_value("controller", "vibration", controller_vibration_enabled)
+	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
+	profile.set_value("controller", "vibration_intensity_version", VIBRATION_PROFILE_VERSION)
+	profile.set_value("controller", "mappings", controller_mappings)
 	profile.set_value("progress", "best_score", best_score)
 	profile.set_value("progress", "rescues", rescues_completed)
 	profile.set_value("progress", "furthest_floor", furthest_floor)
@@ -1483,14 +2335,56 @@ func _save_profile() -> void:
 	profile.set_value("progress", "has_resume", has_resume)
 	profile.set_value("progress", "resume_floor", resume_floor)
 	profile.set_value("progress", "resume_coins", resume_coins)
+	profile.set_value("progress", "resume_charges", resume_charges)
+	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
+	profile.set_value("progress", "resume_powers", resume_powers)
+	profile.set_value("progress", "resume_facing", resume_facing)
 	profile.set_value("progress", "resume_seed", resume_seed)
 	profile.set_value("progress", "resume_history", resume_history)
-	profile.save(profile_path)
+	var error := profile.save(profile_path)
+	if error == OK:
+		best_score_dirty = false
+	else:
+		push_warning("Nao foi possivel guardar o perfil (erro %d)" % error)
+
+
+func set_controller_vibration_intensity(value: float) -> void:
+	var safe_value := clampf(value, 0.0, ControllerScript.MAX_VIBRATION_INTENSITY) if is_finite(value) else ControllerScript.MAX_VIBRATION_INTENSITY
+	var stepped: float = roundf(safe_value * 20.0) / 20.0
+	controller.set_vibration_intensity(stepped)
+	controller_message = "INTENSIDADE: %d%%" % roundi(stepped * 100.0)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and controller != null:
+		# A release event can be lost while the window is unfocused. Never keep
+		# repeating a held direction or vibrating an unattended controller.
+		if controller.calibration_device >= 0:
+			controller.cancel_calibration()
+		controller.reset_held_inputs()
+		controller.note_keyboard_or_mouse()
+		if hud != null:
+			hud.cancel_pointer_drag()
+
+
+func _exit_tree() -> void:
+	# A record earned mid-floor should survive quitting without writing per coin.
+	if best_score_dirty:
+		_save_profile()
 
 
 func _process(delta: float) -> void:
 	animation_clock += delta
+	landing_feedback_time = maxf(0.0, landing_feedback_time - delta)
+	near_miss_feedback_time = maxf(0.0, near_miss_feedback_time - delta)
+	if turn_pulse_time > -1.0:
+		turn_pulse_time += delta
+		if turn_pulse_time > 0.28:
+			turn_pulse_time = -1.0
+	var previous_player_anim := player_anim
 	player_anim = minf(1.0, player_anim + delta / 0.115)
+	if previous_player_anim < 1.0 and player_anim >= 1.0 and game_state != "captured":
+		landing_feedback_time = 0.12
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.t = minf(1.0, enemy.t + delta / 0.14)
@@ -1520,23 +2414,22 @@ func _process(delta: float) -> void:
 	flash_time = maxf(0.0, flash_time - delta)
 	if shake_time > 0.0:
 		shake_time = maxf(0.0, shake_time - delta)
+	if controller != null:
+		# Age existing voices before this frame can emit a capture-pop event;
+		# a long frame must not instantly skip a freshly requested signature.
+		controller.tick(delta)
 	_update_capture_sequence(delta)
-	if audio != null and audio.has_method("set_threat"):
-		audio.set_threat(_current_threat_level())
-	joy_axis_cooldown = maxf(0.0, joy_axis_cooldown - delta)
-	if joy_axis_cooldown == 0.0 and game_state == "playing":
-		var stick_x := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
-		var stick_y := Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)
-		var stick := Vector2(stick_x, stick_y)
-		if stick.length_squared() > 0.35:
-			if absf(stick.x) > absf(stick.y):
-				facing = Vector2i(signi(stick.x), 0)
-				try_move(signi(stick.x), 0)
-			else:
-				facing = Vector2i(0, signi(stick.y))
-				try_move(0, signi(stick.y))
-			joy_axis_cooldown = 0.22
+	visible_threat_distance = _nearest_visible_threat() if game_state == "playing" and not dev_menu_open else -1
+	var target_aura := 0.0 if visible_threat_distance < 0 else clampf((5.0 - visible_threat_distance) / 4.0, 0.0, 1.0)
+	threat_aura = move_toward(threat_aura, target_aura, delta * 2.5)
+	if feedback_bus != null:
+		feedback_bus.tick(delta, visible_threat_distance, game_state == "playing" and not dev_menu_open, _current_threat_level())
 	_update_camera(delta)
+	var view := _visible_world_rect()
+	var draw_world := _world_is_visible()
+	_update_background_visibility(view, draw_world)
+	if terrain_renderer != null:
+		terrain_renderer.sync_view(view, draw_world)
 	queue_redraw()
 
 
@@ -1548,7 +2441,7 @@ func _current_threat_level() -> float:
 		var distance := _manhattan(enemy.pos, player_position)
 		if distance <= 8:
 			intensity = maxf(intensity, 1.0 - float(distance) / 10.0)
-		if enemy.get("role", "") == "warden":
+		if _is_elite(enemy):
 			intensity = maxf(intensity, 0.72)
 	return intensity
 
@@ -1578,36 +2471,131 @@ func _update_camera(delta: float) -> void:
 		camera.offset = Vector2(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0)) * shake_strength * (shake_time / 0.25)
 	else:
 		camera.offset = Vector2.ZERO
+	if near_miss_feedback_time > 0.0:
+		# Deterministic and very small; never consume the gameplay RNG.
+		camera.offset += Vector2(sin(animation_clock * 58.0), cos(animation_clock * 49.0)) * (near_miss_feedback_time / 0.16) * 1.1
+
+
+func _input(event: InputEvent) -> void:
+	if controller == null:
+		return
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		controller.handle_event(event)
+		# Our menus are custom-drawn Controls. Consume joypad input before the
+		# default ui_accept/ui_cancel bindings can also activate them.
+		get_viewport().set_input_as_handled()
+	elif (event is InputEventKey and event.pressed and not event.echo) or (event is InputEventMouseButton and event.pressed) or (event is InputEventScreenTouch and event.pressed) or (event is InputEventMouseMotion and event.relative.length_squared() > 0.0):
+		controller.note_keyboard_or_mouse()
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventJoypadButton and event.pressed:
-		if game_state == "captured":
-			return
-		match event.button_index:
-			JOY_BUTTON_DPAD_UP:
-				facing = Vector2i.UP
-				try_move(0, -1)
-			JOY_BUTTON_DPAD_DOWN:
-				facing = Vector2i.DOWN
-				try_move(0, 1)
-			JOY_BUTTON_DPAD_LEFT:
-				facing = Vector2i.LEFT
-				try_move(-1, 0)
-			JOY_BUTTON_DPAD_RIGHT:
-				facing = Vector2i.RIGHT
-				try_move(1, 0)
-			JOY_BUTTON_A:
-				try_jump()
-			JOY_BUTTON_X:
-				try_break_wall()
-			JOY_BUTTON_START:
-				if game_state == "playing":
-					game_state = "paused"
-				elif game_state == "paused":
-					game_state = "playing"
-			JOY_BUTTON_BACK, JOY_BUTTON_Y:
-				dev_toggle_menu()
+	# Also permits callers/tests that directly deliver an unhandled event.
+	# Normal engine events have already been consumed in _input above.
+	if controller != null and (event is InputEventJoypadButton or event is InputEventJoypadMotion):
+		controller.handle_event(event)
+
+
+func _on_controller_action(action: String) -> void:
+	if game_state in ["captured", "controller_mapping"]:
+		return
+	var directions := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
+	if dev_menu_open and game_state == "playing":
+		if action in ["dev", "cancel", "pause"]:
+			controller.feedback("menu_confirm")
+			dev_toggle_menu()
+		elif directions.has(action):
+			if hud.move_focus(directions[action]):
+				controller.feedback("menu_move")
+		elif action == "confirm":
+			controller.feedback("menu_confirm")
+			hud.activate_focus()
+		return
+	if game_state == "playing":
+		if directions.has(action):
+			facing = directions[action]
+			try_move(facing.x, facing.y)
+		elif action == "confirm":
+			try_jump()
+		elif action == "break":
+			try_break_wall()
+		elif action == "wait":
+			wait_turn()
+		elif action == "blink":
+			try_blink()
+		elif action in ["pause", "cancel"]:
+			controller.feedback("menu_confirm")
+			game_state = "paused"
+		elif action == "dev":
+			controller.feedback("menu_confirm")
+			dev_toggle_menu()
+		return
+	if directions.has(action):
+		if hud.move_focus(directions[action]):
+			controller.feedback("menu_move")
+	elif action == "confirm":
+		controller.feedback("menu_confirm")
+		hud.activate_focus()
+	elif action in ["cancel", "pause"]:
+		controller.feedback("menu_confirm")
+		match game_state:
+			"paused": handle_hud_action("resume")
+			"controller_settings": handle_hud_action("controller_back")
+			"level_select", "game_over", "floor_clear", "rescued": handle_hud_action("menu")
+
+
+func _emit_feedback(event: String, context: Dictionary = {}) -> void:
+	if feedback_bus != null:
+		feedback_bus.emit_event(event, context)
+
+
+func _on_tactical_feedback(event: String, context: Dictionary) -> void:
+	match event:
+		"TURN_COMMITTED":
+			turn_pulse_position = _cell_center(context.get("cell", player_position))
+			# The board is already resolved; only the visual ring waits for landing.
+			turn_pulse_time = -0.115 if player_anim < 1.0 else 0.0
+		"NEAR_MISS":
+			near_miss_feedback_time = 0.16
+		"BLOCKED":
+			landing_feedback_time = 0.10
+
+
+func _current_haptic_material() -> String:
+	match get_biome_index(floor_number):
+		1: return "garden"
+		2: return "forge"
+		3: return "ice"
+		4: return "void"
+	return "neon"
+
+
+func _nearest_visible_threat() -> int:
+	var closest := -1
+	for enemy in enemies:
+		var position: Vector2i = enemy.pos
+		var distance := _manhattan(position, player_position)
+		if distance <= 4 and _enemy_sees_player(position) and (closest < 0 or distance < closest):
+			closest = distance
+	return closest
+
+
+func _on_controller_settings_changed() -> void:
+	controller_vibration_enabled = controller.vibration_enabled
+	controller_vibration_intensity = controller.vibration_intensity
+	controller_mappings = controller.custom_mappings.duplicate(true)
+	_save_profile()
+
+
+func _on_controller_calibration_finished(saved: bool) -> void:
+	game_state = "controller_settings"
+	controller_message = "MAPEAMENTO GUARDADO" if saved else "MAPEAMENTO CANCELADO; ANTERIOR PRESERVADO"
+
+
+func _on_controller_device_changed(device: int, connected: bool) -> void:
+	var message := "COMANDO LIGADO: %s" % controller.device_name(device) if connected else "COMANDO DESLIGADO"
+	controller_message = message
+	last_notice = message
+	notice_timer = 2.5
 
 
 func _player_visual_position() -> Vector2:
@@ -1632,7 +2620,22 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if not event.pressed or event.echo:
 		return
-	if event.keycode == KEY_F1:
+	if game_state == "controller_mapping":
+		if event.keycode == KEY_ESCAPE:
+			controller.cancel_calibration()
+		elif event.keycode == KEY_S:
+			controller.skip_calibration_step()
+		return
+	if game_state == "controller_settings":
+		match event.keycode:
+			KEY_ESCAPE: handle_hud_action("controller_back")
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
+			KEY_LEFT, KEY_A: hud.move_focus(Vector2i.LEFT)
+			KEY_RIGHT, KEY_D: hud.move_focus(Vector2i.RIGHT)
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE: hud.activate_focus()
+		return
+	if event.keycode == KEY_F1 and game_state == "playing":
 		dev_toggle_menu()
 		return
 	if game_state == "captured":
@@ -1663,6 +2666,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			game_state = "playing"
 		elif event.keycode == KEY_L:
 			open_level_select()
+		elif event.keycode == KEY_R:
+			restart_floor()
 		elif event.keycode == KEY_M:
 			audio.toggle_music()
 		return
@@ -1706,81 +2711,96 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			try_move(1, 0)
 		KEY_SPACE: try_jump()
 		KEY_B: try_break_wall()
-		KEY_R: start_level(floor_number)
+		KEY_Q: try_blink()
+		KEY_X: wait_turn()
+		KEY_R: restart_floor()
 		KEY_N: new_game()
 		KEY_L: open_level_select()
 		KEY_M: audio.toggle_music()
 
 
-func _draw() -> void:
-	if world_size == Vector2i.ZERO:
+# Convert the actual viewport through the CanvasItem transform. This accounts
+# for viewport stretching, zoom, camera rotation and shake, unlike subtracting
+# half the viewport from the camera position. A little padding protects AA.
+func _visible_world_rect() -> Rect2:
+	if not is_inside_tree():
+		return Rect2(Vector2.ZERO, Vector2(world_size) * CELL)
+	var viewport := get_viewport_rect()
+	var inverse := get_global_transform_with_canvas().affine_inverse()
+	var corners := [
+		inverse * viewport.position,
+		inverse * Vector2(viewport.end.x, viewport.position.y),
+		inverse * viewport.end,
+		inverse * Vector2(viewport.position.x, viewport.end.y),
+	]
+	var low: Vector2 = corners[0]
+	var high: Vector2 = corners[0]
+	for corner in corners:
+		low = low.min(corner)
+		high = high.max(corner)
+	return Rect2(low, high - low).grow(8.0)
+
+
+func _world_is_visible() -> bool:
+	return game_state not in ["title", "level_select", "controller_settings", "controller_mapping"]
+
+
+func _update_background_visibility(view: Rect2, draw_world: bool) -> void:
+	if background_rect == null:
 		return
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-	var half_view := get_viewport_rect().size * 0.5
-	var first_x := maxi(0, int(floor((camera.global_position.x - half_view.x) / CELL)) - 1)
-	var last_x := mini(world_size.x - 1, int(ceil((camera.global_position.x + half_view.x) / CELL)) + 1)
-	var first_y := maxi(0, int(floor((camera.global_position.y - half_view.y) / CELL)) - 1)
-	var last_y := mini(world_size.y - 1, int(ceil((camera.global_position.y + half_view.y) / CELL)) + 1)
-	
-	var biome_idx := get_biome_index(floor_number)
-	var pal := _get_biome_palette(biome_idx)
-	
-	# CAMADA 1: Chão estruturado (Steel Plates & Terrain)
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			var tcell: int = grid[y][x]
-			if tcell == TILE_FLOOR or tcell == TILE_WATER:
-				_draw_floor_tile(pt, Vector2(pt) * CELL, pal)
-	
-	# CAMADA 1.5: Setas de Navegação Direcionadas (Indicam Portas e Portal)
-	for nav in nav_chevrons:
-		_draw_nav_chevron(nav.pos, nav.dir, pal)
-	
-	# CAMADA 2: Sombras 2.5D projetadas das paredes sobre o chão
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			if _is_floor(pt):
-				_draw_floor_shadows(pt, Vector2(pt) * CELL)
-				
-	# CAMADA 3: Iluminação e Halos Néon no Chão (Radial Glows dos itens e player)
-	_draw_floor_neon_glow()
-	
-	# CAMADA 4: Elementos interativos de chão (Poça de sangue, armadilhas, botões)
-	_draw_blood_puddle()
-	for trap in traps:
-		_draw_trap(trap)
-	for item in switches:
-		_draw_switch(item)
-		
-	# CAMADA 5: Paredes 2.5D com Topo + Frente com Conduta Néon contínua
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			var twall: int = grid[y][x]
-			if twall == TILE_WALL or twall == TILE_BORDER:
-				_draw_wall_tile(pt, Vector2(pt) * CELL, pal, twall == TILE_BORDER)
-				
-	# CAMADA 6: Itens e Pickups 3D
+	# Every cell has an opaque floor or wall base. When the padded viewport is
+	# wholly inside the board, the procedural full-screen background is hidden
+	# behind those cells; show it again at world edges and on small maps.
+	var board := Rect2(Vector2.ZERO, Vector2(world_size) * CELL)
+	var needed := draw_world and (world_size == Vector2i.ZERO or not board.encloses(view))
+	if background_rect.visible != needed:
+		background_rect.visible = needed
+
+
+func _enemy_draw_visible(enemy: Dictionary, view: Rect2) -> bool:
+	# The alert Warden draws a line and reticle all the way to the player; it
+	# must be drawn even when the body is outside the camera's expanded rect.
+	if enemy.get("role", "") == "warden":
+		var alert: bool = enemy["alert"] if enemy.has("alert") else _enemy_sees_player(enemy.pos)
+		if alert:
+			return true
+	# Includes the sentry's 120px scan, boss sprites, bobbing and ice rings.
+	return view.grow(160.0).has_point(_enemy_visual_position(enemy))
+
+
+func _draw() -> void:
+	if world_size == Vector2i.ZERO or not _world_is_visible():
+		return
+	var view := _visible_world_rect()
+	var item_view := view.grow(48.0)
+	# Static ground, shadows and walls are retained by terrain_renderer. The
+	# remaining dynamic actors are culled conservatively, never removed from
+	# the game state, so objectives and collision still use the full level.
 	for pos in coins:
-		_draw_coin(pos)
+		if item_view.has_point(_cell_center(pos)):
+			_draw_coin(pos)
 	for pos in shields:
-		_draw_shield(pos)
+		if item_view.has_point(_cell_center(pos)):
+			_draw_shield(pos)
 	for pos in breakers:
-		_draw_breaker(pos)
-	_draw_portal()
-	
-	# CAMADA 7: Inimigos
+		if item_view.has_point(_cell_center(pos)):
+			_draw_breaker(pos)
+	for item in powerups:
+		if item_view.has_point(_cell_center(item.pos)):
+			_draw_powerup(item)
+	if view.grow(64.0).has_point(_cell_center(portal_position)):
+		_draw_portal()
 	for enemy in enemies:
+		if not _enemy_draw_visible(enemy, view):
+			continue
 		_draw_enemy(enemy)
-		
-	# CAMADA 8: Jogador (Bola vermelha 3D)
+		if freeze_turns > 0:
+			var ice_center := _enemy_visual_position(enemy)
+			var ice_radius := 36.0 if _is_elite(enemy) else 23.0
+			draw_arc(ice_center, ice_radius, animation_clock, animation_clock + TAU * 0.8, 28, Color("b4d8ff", 0.85), 1.7, true)
+			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
 	_draw_player()
-	
-	# CAMADA 9: Partículas e Efeitos
 	_draw_particles()
-	
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -1883,30 +2903,30 @@ func _get_biome_palette(idx: int) -> Dictionary:
 			}
 
 
-func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
+func _draw_floor_tile(target: CanvasItem, point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
 	var base_col: Color = pal.floor_base if (point.x + point.y) % 2 == 0 else pal.floor_alt
 	var btype: String = pal.get("biome_type", "neon")
 	
 	# Preenchimento base da placa (quadrado cheio)
-	draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
+	target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
 	
 	# Borda 3D raised: borda superior/esquerda mais clara (luz), inferior/direita escura (sombra)
 	var bevel_light := Color(pal.wall_bevel, 0.30)
 	var bevel_shadow := Color(0, 0, 0, 0.65)
-	draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
-	draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
-	draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
-	draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
+	target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
+	target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
+	target.draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
+	target.draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
 	
 	# Linha néon característica na borda inferior da placa
-	draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.40), 1.2, true)
+	target.draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.40), 1.2, true)
 	
 	# Parafusos/rebites nos cantos das placas
 	var rivet: Color = pal.floor_rivet
-	draw_circle(top_left + Vector2(4, 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(4, CELL - 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(4, 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(CELL - 4, 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(4, CELL - 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.4, rivet)
 	
 	var tile_hash := (point.x * 37 + point.y * 79) % 18
 	
@@ -1915,14 +2935,14 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 		# BIO-LAB: Painéis com nós de dados e circuitos biológicos verde-esmeralda
 		if tile_hash in [1, 5]:
 			# Circuito em cruz / barramento hexagonal no centro da laje
-			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 3.2, Color(pal.neon_accent, 0.65))
-			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 1.5, Color("ffffff", 0.9))
-			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 4), Color(pal.neon_accent, 0.25), 1.0, true)
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(pal.neon_accent, 0.25), 1.0, true)
+			target.draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 3.2, Color(pal.neon_accent, 0.65))
+			target.draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 1.5, Color("ffffff", 0.9))
+			target.draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 4), Color(pal.neon_accent, 0.25), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(pal.neon_accent, 0.25), 1.0, true)
 		elif tile_hash == 2:
 			# Pequeno broto de flora bio-mecânica no canto
-			draw_circle(top_left + Vector2(6, 6), 2.2, Color("34d399", 0.7))
-			draw_circle(top_left + Vector2(9, 5), 1.6, Color("6ee7b7", 0.6))
+			target.draw_circle(top_left + Vector2(6, 6), 2.2, Color("34d399", 0.7))
+			target.draw_circle(top_left + Vector2(9, 5), 1.6, Color("6ee7b7", 0.6))
 			
 	elif btype == "factory":
 		# INDUSTRIAL: Placas estriadas de aço (diamond plate) e faixas de perigo (hazard stripes)
@@ -1930,14 +2950,14 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 			# Faixas diagonais amarelas e pretas de advertência industrial (hazard stripes)
 			for s in 3:
 				var ox := float(s) * 7.0
-				draw_line(top_left + Vector2(6 + ox, 6), top_left + Vector2(13 + ox, 13), Color("ffd000", 0.75), 2.2, true)
-				draw_line(top_left + Vector2(3 + ox, 6), top_left + Vector2(10 + ox, 13), Color("120904", 0.85), 2.0, true)
+				target.draw_line(top_left + Vector2(6 + ox, 6), top_left + Vector2(13 + ox, 13), Color("ffd000", 0.75), 2.2, true)
+				target.draw_line(top_left + Vector2(3 + ox, 6), top_left + Vector2(10 + ox, 13), Color("120904", 0.85), 2.0, true)
 		elif tile_hash in [2, 6]:
 			# Grelha de drenagem de metal perfurado / saída de vapor
-			draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 16)), Color("0a0710", 0.9), true)
+			target.draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 16)), Color("0a0710", 0.9), true)
 			for i in 3:
 				var vy := top_left.y + 11.0 + float(i) * 5.5
-				draw_line(Vector2(top_left.x + 10, vy), Vector2(top_left.x + CELL - 10, vy), Color("ff8b3d", 0.5), 1.4, true)
+				target.draw_line(Vector2(top_left.x + 10, vy), Vector2(top_left.x + CELL - 10, vy), Color("ff8b3d", 0.5), 1.4, true)
 				
 	elif btype == "glacier":
 		# CATEDRAL DE GELO: Cantaria de pedra antiga com fendas glaciais azul-celeste
@@ -1949,49 +2969,49 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 				top_left + Vector2(CELL * 0.55, CELL * 0.68),
 				top_left + Vector2(CELL - 4, CELL * 0.82)
 			])
-			draw_polyline(crack, Color("6de9ff", 0.65), 1.6, true)
-			draw_polyline(crack, Color("ffffff", 0.85), 0.8, true)
+			target.draw_polyline(crack, Color("6de9ff", 0.65), 1.6, true)
+			target.draw_polyline(crack, Color("ffffff", 0.85), 0.8, true)
 		elif tile_hash in [2, 7]:
 			# Cantaria de blocos antigos lapidados (linha de argamassa de pedra)
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(0, 0, 0, 0.4), 1.2, true)
-			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(0, 0, 0, 0.35), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(0, 0, 0, 0.4), 1.2, true)
+			target.draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(0, 0, 0, 0.35), 1.0, true)
 			
 	elif btype == "mystic":
 		# MÍSTICO: Mármore negro com runas circulares e linhas de canalização arcanas
 		if tile_hash in [1, 4]:
 			# Glifo rúnico circular entalhado no piso
 			var center_pt := top_left + Vector2(CELL * 0.5, CELL * 0.5)
-			draw_arc(center_pt, 7.0, 0.0, TAU, 18, Color(pal.neon_accent, 0.55), 1.2, true)
-			draw_circle(center_pt, 2.2, Color("ffffff", 0.8))
-			draw_circle(center_pt, 1.2, Color(pal.neon_accent))
+			target.draw_arc(center_pt, 7.0, 0.0, TAU, 18, Color(pal.neon_accent, 0.55), 1.2, true)
+			target.draw_circle(center_pt, 2.2, Color("ffffff", 0.8))
+			target.draw_circle(center_pt, 1.2, Color(pal.neon_accent))
 		elif tile_hash in [2, 5]:
 			# Linhas de canalização mágica diagonais
-			draw_line(top_left + Vector2(4, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
-			draw_line(top_left + Vector2(CELL - 4, CELL - 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			target.draw_line(top_left + Vector2(4, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			target.draw_line(top_left + Vector2(CELL - 4, CELL - 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
 			
 	else:
 		# NEON RUINS (Urbano Cyberpunk padrão)
 		if tile_hash == 1:
 			var vent_rect := Rect2(top_left + Vector2(10, 11), Vector2(CELL - 20, CELL - 22))
-			draw_rect(vent_rect, Color("040610", 0.95), true)
-			draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
+			target.draw_rect(vent_rect, Color("040610", 0.95), true)
+			target.draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
 			for i in 4:
 				var vy := top_left.y + 15.0 + float(i) * 7.0
-				draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
+				target.draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
 		elif tile_hash == 2:
-			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
-			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
+			target.draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
+			target.draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
 		elif tile_hash == 3:
-			draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
+			target.draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
 
 
-func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
+func _draw_nav_chevron(target: CanvasItem, point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
 	var center := _cell_center(point)
 	var angle := dir.angle()
 	var pulse := 0.85 + sin(animation_clock * 4.5 + float(point.x + point.y)) * 0.15
 	var chevron_col: Color = pal.neon_accent
 	
-	draw_set_transform(center, angle, Vector2.ONE)
+	target.draw_set_transform(center, angle, Vector2.ONE)
 	for ci in 2:
 		var ox := (float(ci) - 0.5) * 9.0
 		var p := PackedVector2Array([
@@ -2000,81 +3020,102 @@ func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
 			Vector2(ox - 5.0, 7.0)
 		])
 		# Halo emissivo de fundo
-		draw_polyline(p, Color(chevron_col, 0.25 * pulse), 4.5, true)
+		target.draw_polyline(p, Color(chevron_col, 0.25 * pulse), 4.5, true)
 		# Linha néon principal intensa
-		draw_polyline(p, Color(chevron_col, 0.95 * pulse), 1.8, true)
+		target.draw_polyline(p, Color(chevron_col, 0.95 * pulse), 1.8, true)
 		# Centro branco puro de incandescência
-		draw_polyline(p, Color("ffffff", 0.75 * pulse), 0.8, true)
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		target.draw_polyline(p, Color("ffffff", 0.75 * pulse), 0.8, true)
+	target.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_radial_light(pos: Vector2, radius: float, core_color: Color, glow_color: Color, pulse: float = 1.0) -> void:
+func _draw_radial_light(target: CanvasItem, pos: Vector2, radius: float, core_color: Color, glow_color: Color, pulse: float = 1.0) -> void:
 	if radial_light_texture == null:
 		return
 	var r := radius * pulse
 	# Halo difuso exterior (dispersão ambiental suave)
 	var outer_rect := Rect2(pos - Vector2(r, r), Vector2(r * 2.0, r * 2.0))
-	draw_texture_rect(radial_light_texture, outer_rect, false, glow_color)
+	target.draw_texture_rect(radial_light_texture, outer_rect, false, glow_color)
 	# Manto de iluminação intermediário saturado
 	var mr := r * 0.62
 	var mid_rect := Rect2(pos - Vector2(mr, mr), Vector2(mr * 2.0, mr * 2.0))
-	draw_texture_rect(radial_light_texture, mid_rect, false, Color(glow_color.r, glow_color.g, glow_color.b, minf(1.0, glow_color.a * 1.5)))
+	target.draw_texture_rect(radial_light_texture, mid_rect, false, Color(glow_color.r, glow_color.g, glow_color.b, minf(1.0, glow_color.a * 1.5)))
 	# Núcleo quente incandescente
 	var cr := r * 0.32
 	var core_rect := Rect2(pos - Vector2(cr, cr), Vector2(cr * 2.0, cr * 2.0))
-	draw_texture_rect(radial_light_texture, core_rect, false, core_color)
+	target.draw_texture_rect(radial_light_texture, core_rect, false, core_color)
 
 
-func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
+func _draw_floor_shadows(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	# Sombra profunda que cai das paredes ao norte sobre o chão
 	if _is_wall(point + Vector2i.UP):
-		draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
-		draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
 	# Sombra lateral projetada das paredes a oeste
 	if _is_wall(point + Vector2i.LEFT):
-		draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
-		draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
+		target.draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
+		target.draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
 
 
 func _enemy_visual_position(enemy: Dictionary) -> Vector2:
-	var t: float = enemy.get("t", 1.0)
-	t = t * t * (3.0 - 2.0 * t)
-	return enemy.from.lerp(enemy.to, t)
+	var t: float = clampf(float(enemy.get("t", 1.0)), 0.0, 1.0)
+	var eased := t * t * (3.0 - 2.0 * t)
+	var position: Vector2 = enemy.from.lerp(enemy.to, eased)
+	if int(enemy.get("shield_repel_turn", -1)) == turn_number and enemy.get("shield_repel_visual", false):
+		# A short kick arc is presentation only; the board cell was resolved
+		# immediately and no additional turn or collision is generated here.
+		position.y -= sin(t * PI) * 8.0
+	return position
 
 
-func _draw_floor_neon_glow() -> void:
+func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	var pulse := 1.0 + sin(animation_clock * 3.8) * 0.07
+	var light_view := view.grow(116.0)
+	var coin_view := view.grow(36.0)
 	
 	# Halo néon suave da bola vermelha do jogador no chão (sem anel ruidoso)
 	var p_pos := _player_visual_position()
-	_draw_radial_light(p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
+	_draw_radial_light(target, p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
 	
 	# Halo dos escudos cibernéticos (ciano radiante)
 	for s in shields:
 		var sc := _cell_center(s)
-		_draw_radial_light(sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
+		if not light_view.has_point(sc): continue
+		_draw_radial_light(target, sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
 		
 	# Halo dos baús breaker (âmbar / dourado quente)
 	for b in breakers:
 		var bc := _cell_center(b)
-		_draw_radial_light(bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
+		if not light_view.has_point(bc): continue
+		_draw_radial_light(target, bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
 		
+	# Four power-up colors also match their in-world icon and HUD effects.
+	for item in powerups:
+		if not light_view.has_point(_cell_center(item.pos)): continue
+		var color := Color(POWERUP_COLORS.get(item.kind, "ffffff"))
+		_draw_radial_light(target, _cell_center(item.pos) + Vector2(0, 4), 43.0, Color(color, 0.9), Color(color, 0.4), pulse)
 	# Halo das moedas (dourado compacto)
 	for c in coins:
 		var cc := _cell_center(c)
-		_draw_radial_light(cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
+		if not coin_view.has_point(cc): continue
+		_draw_radial_light(target, cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
 		
 	# Halo dos interruptores (azul/ciano inativo, verde esmeralda ativado)
 	for sw in switches:
 		var sc := _cell_center(sw.pos)
+		if not light_view.has_point(sc): continue
 		var sw_on: bool = sw.get("active", false)
 		var sw_core := Color("a0ffcf", 0.92) if sw_on else Color("6de9ff", 0.82)
 		var sw_glow := Color("15b565", 0.48) if sw_on else Color("1468b8", 0.38)
-		_draw_radial_light(sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
+		if sw.has("order"):
+			var rune_color := Color(PUZZLE_COLORS[clampi(int(sw.order), 0, 2)])
+			sw_core = Color(rune_color, 0.95 if sw_on else 0.7)
+			sw_glow = Color(rune_color, 0.45 if sw_on else 0.27)
+		_draw_radial_light(target, sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
 		
 	# Halo dos inimigos no chão (luz volumétrica viva e colorida por tipo de mob)
 	for enemy in enemies:
 		var ec := _enemy_visual_position(enemy)
+		if not light_view.has_point(ec): continue
 		var role: String = enemy.get("role", "hunter")
 		var alert: bool = enemy.get("alert", false)
 		var e_radius := 44.0
@@ -2097,21 +3138,35 @@ func _draw_floor_neon_glow() -> void:
 				e_radius = 46.0
 				e_core = Color("ff8b3d", 0.95) if alert else Color("e66a1a", 0.80)
 				e_glow = Color("b33500", 0.46)
+			"patrol":
+				e_radius = 42.0
+				e_core = Color("72f7ac", 0.9)
+				e_glow = Color("1da866", 0.43)
+			"mirror":
+				e_radius = 43.0
+				e_core = Color("bce8ff", 0.9)
+				e_glow = Color("3189d5", 0.44)
 			"warden":
 				e_radius = 62.0
 				e_core = Color("c95eff", 0.95)
 				e_glow = Color("680ca8", 0.52)
-		_draw_radial_light(ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
+			"chess_boss":
+				var piece_color := Color(BOSS_COLORS.get(enemy.get("boss_kind", "pawn"), "c95eff"))
+				e_radius = 72.0
+				e_core = Color(piece_color, 0.95)
+				e_glow = Color(piece_color, 0.48)
+		_draw_radial_light(target, ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
 		
 	# Halo do portal dimensional (vórtice violeta/ciano expansivo)
 	var pc := _cell_center(portal_position)
-	var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
-	var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
-	var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
-	_draw_radial_light(pc, 96.0, portal_core, portal_glow, portal_pulse)
+	if light_view.has_point(pc):
+		var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
+		var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
+		var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
+		_draw_radial_light(target, pc, 96.0, portal_core, portal_glow, portal_pulse)
 
 
-func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
+func _draw_wall_tile(target: CanvasItem, point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
 	var has_front: bool = _has_wall_front(point) and not border
 	
 	if has_front:
@@ -2121,23 +3176,23 @@ func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border
 		
 		# TOPO DA PAREDE (Roof — superfície plana superior, levemente texturizada)
 		var roof_rect := Rect2(top_left, Vector2(CELL, roof_h))
-		draw_rect(roof_rect, pal.wall_roof, true)
+		target.draw_rect(roof_rect, pal.wall_roof, true)
 		# Painel interno texturizado (inner surface com recuo)
-		draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, roof_h - 3)), pal.wall_roof.lightened(0.05), true)
+		target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, roof_h - 3)), pal.wall_roof.lightened(0.05), true)
 		# Linha de topo iluminada (aresta superior da parede)
-		draw_line(top_left + Vector2(0, 0), top_left + Vector2(CELL, 0), Color(pal.wall_bevel, 0.5), 1.5, true)
+		target.draw_line(top_left + Vector2(0, 0), top_left + Vector2(CELL, 0), Color(pal.wall_bevel, 0.5), 1.5, true)
 		# Cornija — borda inferior do topo
-		draw_line(top_left + Vector2(0, roof_h), top_left + Vector2(CELL, roof_h), Color(0, 0, 0, 0.9), 2.0, true)
+		target.draw_line(top_left + Vector2(0, roof_h), top_left + Vector2(CELL, roof_h), Color(0, 0, 0, 0.9), 2.0, true)
 		
 		# FRENTE DA PAREDE (Face vertical iluminada)
 		var face_top := top_left.y + roof_h
 		var face_rect := Rect2(Vector2(top_left.x, face_top), Vector2(CELL, front_h))
-		draw_rect(face_rect, pal.wall_face, true)
+		target.draw_rect(face_rect, pal.wall_face, true)
 		# Linha central de divisória
-		draw_line(Vector2(top_left.x + CELL * 0.5, face_top), Vector2(top_left.x + CELL * 0.5, face_top + front_h), Color(0, 0, 0, 0.55), 1.0, true)
+		target.draw_line(Vector2(top_left.x + CELL * 0.5, face_top), Vector2(top_left.x + CELL * 0.5, face_top + front_h), Color(0, 0, 0, 0.55), 1.0, true)
 		
 		# BORDA SUPERIOR ILUMINADA DA FACE FRONTAL (cornija neon)
-		draw_rect(Rect2(Vector2(top_left.x, face_top), Vector2(CELL, 2.0)), Color(pal.wall_bevel, 0.6), true)
+		target.draw_rect(Rect2(Vector2(top_left.x, face_top), Vector2(CELL, 2.0)), Color(pal.wall_bevel, 0.6), true)
 		
 		# CONDUTA NÉON HORIZONTAL CONTÍNUA (na metade da frente)
 		var tube_y := face_top + float(front_h) * 0.55
@@ -2147,85 +3202,89 @@ func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border
 		var x_end := top_left.x + CELL if right_conn else top_left.x + CELL - 6.0
 		
 		# Glow néon amplo externo
-		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), Color(pal.neon_accent, 0.30), 6.0, true)
+		target.draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), Color(pal.neon_accent, 0.30), 6.0, true)
 		# Tubo néon emissivo colorido
-		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), pal.neon_accent, 2.2, true)
+		target.draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), pal.neon_accent, 2.2, true)
 		# Núcleo branco brilhante
-		draw_line(Vector2(x_start + 2, tube_y), Vector2(x_end - 2, tube_y), Color("ffffff", 0.95), 0.8, true)
+		target.draw_line(Vector2(x_start + 2, tube_y), Vector2(x_end - 2, tube_y), Color("ffffff", 0.95), 0.8, true)
 		
 		# Terminações/Suportes nos extremos do tubo (se não continua)
 		if not left_conn:
-			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
-			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+			target.draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			target.draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
 		if not right_conn:
-			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
-			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+			target.draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			target.draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
 		
 		# Rodapé escuro de contacto com o chão
-		draw_rect(Rect2(Vector2(top_left.x, top_left.y + CELL - 2.0), Vector2(CELL, 2.0)), Color("02030a", 0.9), true)
+		target.draw_rect(Rect2(Vector2(top_left.x, top_left.y + CELL - 2.0), Vector2(CELL, 2.0)), Color("02030a", 0.9), true)
 		
 		# Trepadeiras/Vegetação cibernética pendente (nas paredes com bioma verde)
 		if pal.has_vines and ((point.x * 29 + point.y * 61) % 5 == 0):
-			_draw_wall_vines(Vector2(top_left.x, face_top), pal.vine_color, pal.neon_accent)
+			_draw_wall_vines(target, Vector2(top_left.x, face_top), pal.vine_color, pal.neon_accent)
 	else:
 		# PAREDE SÓLIDA (não tem face frontal — parede interna ou borda)
 		var roof_col: Color = pal.wall_roof.darkened(0.05) if not border else pal.wall_roof.darkened(0.30)
 		var bevel_col: Color = pal.wall_bevel if not border else pal.wall_bevel.darkened(0.5)
-		draw_rect(Rect2(top_left, Vector2(CELL, CELL)), roof_col, true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), roof_col, true)
 		# Interior mais claro (raised effect)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), roof_col.lightened(0.06), true)
+		target.draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), roof_col.lightened(0.06), true)
 		# Bordas 3D raised: topo e esquerda iluminados
-		draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), Color(bevel_col, 0.45), 1.5, true)
-		draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), Color(bevel_col, 0.25), 1.0, true)
+		target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), Color(bevel_col, 0.45), 1.5, true)
+		target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), Color(bevel_col, 0.25), 1.0, true)
 		# Fundo e direita em sombra
-		draw_line(top_left + Vector2(0, CELL - 1), top_left + Vector2(CELL, CELL - 1), Color(0, 0, 0, 0.65), 1.5, true)
-		draw_line(top_left + Vector2(CELL - 1, 0), top_left + Vector2(CELL - 1, CELL), Color(0, 0, 0, 0.4), 1.0, true)
+		target.draw_line(top_left + Vector2(0, CELL - 1), top_left + Vector2(CELL, CELL - 1), Color(0, 0, 0, 0.65), 1.5, true)
+		target.draw_line(top_left + Vector2(CELL - 1, 0), top_left + Vector2(CELL - 1, CELL), Color(0, 0, 0, 0.4), 1.0, true)
 		# Decoração interna (variar por tipo)
 		var wall_var := (point.x * 23 + point.y * 41) % 5
 		if wall_var == 0 and not border:
 			# Faixas horizontais de painel
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(bevel_col, 0.20), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(bevel_col, 0.20), 1.0, true)
 		elif wall_var == 1 and not border:
 			# Grelha de ventilação
 			for gi in 3:
-				draw_line(top_left + Vector2(9, 13 + gi * 9), top_left + Vector2(CELL - 9, 13 + gi * 9), Color(bevel_col, 0.30), 1.2, true)
+				target.draw_line(top_left + Vector2(9, 13 + gi * 9), top_left + Vector2(CELL - 9, 13 + gi * 9), Color(bevel_col, 0.30), 1.2, true)
 
 
-func _draw_wall_vines(pos: Vector2, vine_col: Color, bio_glow: Color) -> void:
+func _draw_wall_vines(target: CanvasItem, pos: Vector2, vine_col: Color, bio_glow: Color) -> void:
 	# Pequenas folhas e gavinhas que descem da borda da parede
 	var offsets := [Vector2(12, 0), Vector2(16, 6), Vector2(14, 13)]
 	for i in range(offsets.size() - 1):
-		draw_line(pos + offsets[i], pos + offsets[i+1], vine_col, 1.6, true)
-	draw_circle(pos + Vector2(13, 8), 2.2, vine_col)
-	draw_circle(pos + Vector2(17, 12), 1.8, vine_col)
-	draw_circle(pos + Vector2(14, 14), 1.2, bio_glow)
+		target.draw_line(pos + offsets[i], pos + offsets[i+1], vine_col, 1.6, true)
+	target.draw_circle(pos + Vector2(13, 8), 2.2, vine_col)
+	target.draw_circle(pos + Vector2(17, 12), 1.8, vine_col)
+	target.draw_circle(pos + Vector2(14, 14), 1.2, bio_glow)
 	
 	var offsets2 := [Vector2(CELL - 16, 0), Vector2(CELL - 13, 5), Vector2(CELL - 15, 10)]
 	for i in range(offsets2.size() - 1):
-		draw_line(pos + offsets2[i], pos + offsets2[i+1], vine_col, 1.4, true)
-	draw_circle(pos + Vector2(CELL - 14, 6), 2.0, vine_col)
-	draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
+		target.draw_line(pos + offsets2[i], pos + offsets2[i+1], vine_col, 1.4, true)
+	target.draw_circle(pos + Vector2(CELL - 14, 6), 2.0, vine_col)
+	target.draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
 
 
-func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
+func _draw_water_base(target: CanvasItem, _point: Vector2i, top_left: Vector2) -> void:
 	var is_garden := get_biome_index(floor_number) == 1
 	var deep := Color("082029") if is_garden else Color("0d2538")
 	var water := Color("134c56") if is_garden else Color("21536b")
+	# Static base is retained with the underlying floor tile.
+	target.draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
+	target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
+
+
+func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	var is_garden := get_biome_index(floor_number) == 1
 	var caustic := Color("7bf6e4", 0.32) if is_garden else Color("8de4ff", 0.34)
 	var shore := Color("8bfad0", 0.65) if is_garden else Color("9fe9ff", 0.68)
-	# Fundo abissal
-	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
-	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
 	# Caustics procedurais animadas (redes de luz de água)
 	var phase := animation_clock * 1.6 + point.x * 0.8 + point.y * 0.6
 	var cy1 := 14.0 + sin(phase) * 3.2
 	var cy2 := 32.0 + cos(phase * 1.3) * 3.0
-	draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
-	draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
-	draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
+	target.draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
+	target.draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
+	target.draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
 	# Bolhas de luz cintilantes
 	var bubble_y := fposmod(CELL - 6.0 - (animation_clock * 16.0 + (point.x + point.y) * 12.0), CELL - 8.0)
-	draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
+	target.draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
 	# Contornos de margem e espuma neon
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
@@ -2241,28 +3300,31 @@ func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
 			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
-		draw_line(start, finish, shore, 2.2, true)
+		target.draw_line(start, finish, shore, 2.2, true)
 
 
-func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
+func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var ice_deep := Color("0b1e33")
 	var ice_surface := Color("1a3d5e")
 	var crack_color := Color("c6f3ff", 0.65)
-	var glow := Color("6ee3ff", 0.40)
-	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), ice_deep, true)
-	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), ice_surface, true)
-	# Rachas cristalinas procedurais deterministas
+	target.draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), ice_deep, true)
+	target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), ice_surface, true)
+	# Rachas cristalinas procedurais deterministas, retidas com o chão.
 	var seed_val := (point.x * 47 + point.y * 89)
 	var r1 := float(seed_val % 10) / 10.0
 	var r2 := float((seed_val / 10) % 10) / 10.0
-	draw_line(top_left + Vector2(6, 8 + r1 * 10), top_left + Vector2(24, 22), crack_color, 1.4, true)
-	draw_line(top_left + Vector2(24, 22), top_left + Vector2(CELL - 8, 16 + r2 * 14), crack_color, 1.2, true)
-	draw_line(top_left + Vector2(24, 22), top_left + Vector2(18 + r1 * 8, CELL - 8), Color(crack_color, 0.45), 1.0, true)
+	target.draw_line(top_left + Vector2(6, 8 + r1 * 10), top_left + Vector2(24, 22), crack_color, 1.4, true)
+	target.draw_line(top_left + Vector2(24, 22), top_left + Vector2(CELL - 8, 16 + r2 * 14), crack_color, 1.2, true)
+	target.draw_line(top_left + Vector2(24, 22), top_left + Vector2(18 + r1 * 8, CELL - 8), Color(crack_color, 0.45), 1.0, true)
+
+
+func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	var glow := Color("6ee3ff", 0.40)
 	# Brilho especular dinâmico que desliza sobre o gelo
 	var sweep := fposmod(animation_clock * 0.45 + point.x * 0.12 - point.y * 0.08, 1.8)
 	if sweep < 1.0:
 		var glint_x := top_left.x + sweep * (CELL + 16.0) - 8.0
-		draw_line(Vector2(glint_x, top_left.y + 4), Vector2(glint_x - 14.0, top_left.y + CELL - 4), Color("ffffff", 0.28), 2.5, true)
+		target.draw_line(Vector2(glint_x, top_left.y + 4), Vector2(glint_x - 14.0, top_left.y + CELL - 4), Color("ffffff", 0.28), 2.5, true)
 	# Contorno de geada e cristalização nas margens
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
@@ -2278,7 +3340,40 @@ func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
 			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
-		draw_line(start, finish, glow, 2.0, true)
+		target.draw_line(start, finish, glow, 2.0, true)
+
+
+func _draw_powerup(item: Dictionary) -> void:
+	var kind: String = item.get("kind", "speed")
+	var tint := Color(POWERUP_COLORS.get(kind, "ffffff"))
+	var center := _cell_center(item.pos) + Vector2(0, -5 + sin(animation_clock * 3.0 + item.pos.x) * 2.0)
+	draw_circle(center + Vector2(0, 6), 17.0, Color(tint, 0.12))
+	var frame := PackedVector2Array([center + Vector2(0, -17), center + Vector2(15, -3), center + Vector2(10, 13), center + Vector2(0, 17), center + Vector2(-10, 13), center + Vector2(-15, -3)])
+	draw_colored_polygon(frame, Color("0a1427"))
+	var outline := frame.duplicate()
+	outline.append(frame[0])
+	draw_polyline(outline, Color(tint, 0.95), 2.2, true)
+	var facet := PackedVector2Array([center + Vector2(0, -13), center + Vector2(11, -3), center + Vector2(7, 9), center + Vector2(0, 13), center + Vector2(-7, 9), center + Vector2(-11, -3)])
+	draw_colored_polygon(facet, Color(tint, 0.26))
+	var bright := Color("f4ffff")
+	match kind:
+		"speed":
+			draw_colored_polygon(PackedVector2Array([center + Vector2(1, -10), center + Vector2(-6, 1), center + Vector2(-1, 1), center + Vector2(-3, 9), center + Vector2(7, -3), center + Vector2(2, -3)]), bright)
+		"magnet":
+			draw_arc(center + Vector2(0, 1), 6.0, 0.0, PI, 16, bright, 2.8, true)
+			draw_line(center + Vector2(-6, 1), center + Vector2(-6, -6), bright, 2.8, true)
+			draw_line(center + Vector2(6, 1), center + Vector2(6, -6), bright, 2.8, true)
+			draw_line(center + Vector2(-8, -6), center + Vector2(-4, -6), tint, 2.5, true)
+			draw_line(center + Vector2(4, -6), center + Vector2(8, -6), tint, 2.5, true)
+		"blink":
+			draw_arc(center + Vector2(-4, 0), 5.5, -PI * 0.55, PI * 0.55, 14, bright, 2.0, true)
+			draw_arc(center + Vector2(4, 0), 5.5, PI * 0.45, PI * 1.55, 14, bright, 2.0, true)
+			draw_line(center + Vector2(-6, 0), center + Vector2(6, 0), bright, 1.8, true)
+		"time_freeze":
+			for i in 3:
+				var axis := Vector2.from_angle(float(i) * PI / 3.0) * 8.0
+				draw_line(center - axis, center + axis, bright, 1.7, true)
+			draw_circle(center, 2.2, tint)
 
 
 func _draw_coin(point: Vector2i) -> void:
@@ -2528,69 +3623,102 @@ func _draw_portal() -> void:
 		draw_arc(center, 18.0, 0.0, TAU, 40, Color("ff7990"), 2.2, true)
 
 
-func _draw_switch(item: Dictionary) -> void:
+func _draw_switch(target: CanvasItem, item: Dictionary) -> void:
 	var center := _cell_center(item.pos)
 	var is_active: bool = item.active
 	var state_col := Color("5ef59f") if is_active else Color("52e3ff")
+	if item.has("order"):
+		state_col = Color(PUZZLE_COLORS[clampi(int(item.order), 0, 2)])
 	var pulse := 1.0 + sin(animation_clock * 4.2 + center.x * 0.05) * 0.08
 	
 	# Sombra da consola projetada no chão
-	draw_circle(center + Vector2(0, 5), 14.0, Color("02050f", 0.45))
+	target.draw_circle(center + Vector2(0, 5), 14.0, Color("02050f", 0.45))
 	
 	# Placa base octogonal industrial chanfrada
 	var base_poly := _chamfered_square_points(center, 13.5, 4.0)
-	draw_colored_polygon(base_poly, Color("151a2d"))
+	target.draw_colored_polygon(base_poly, Color("151a2d"))
 	var base_border := base_poly.duplicate()
 	base_border.append(base_poly[0])
-	draw_polyline(base_border, Color("35426b"), 1.2, true)
+	target.draw_polyline(base_border, Color("35426b"), 1.2, true)
 	
 	# Parafusos / rebites nos 4 cantos
 	var bolt_offsets := [Vector2(-9, -9), Vector2(9, -9), Vector2(-9, 9), Vector2(9, 9)]
 	for bo in bolt_offsets:
-		draw_circle(center + bo, 1.4, Color("4a5987"))
-		draw_circle(center + bo + Vector2(-0.4, -0.4), 0.5, Color("9ab0e6"))
+		target.draw_circle(center + bo, 1.4, Color("4a5987"))
+		target.draw_circle(center + bo + Vector2(-0.4, -0.4), 0.5, Color("9ab0e6"))
 	
 	# Ranhuras de conduta nos 4 lados ligando ao chão
-	draw_line(center + Vector2(0, -13), center + Vector2(0, -8), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(0, 8), center + Vector2(0, 13), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(-13, 0), center + Vector2(-8, 0), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(8, 0), center + Vector2(13, 0), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(0, -13), center + Vector2(0, -8), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(0, 8), center + Vector2(0, 13), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(-13, 0), center + Vector2(-8, 0), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(8, 0), center + Vector2(13, 0), Color(state_col, 0.7), 1.6, true)
 	
 	# Anel metálico interno elevado (cilindro 2.5D)
-	draw_circle(center + Vector2(0, 1), 8.2, Color("0c101e"))
-	draw_circle(center, 8.0, Color("202842"))
-	draw_circle(center, 7.0, Color("10162a"))
+	target.draw_circle(center + Vector2(0, 1), 8.2, Color("0c101e"))
+	target.draw_circle(center, 8.0, Color("202842"))
+	target.draw_circle(center, 7.0, Color("10162a"))
 	
 	# Cristal / Pilar holográfico central pulsante
 	var crystal_radius := 4.6 * (pulse if is_active else 1.0)
-	draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
-	draw_circle(center, crystal_radius, state_col)
+	target.draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
+	target.draw_circle(center, crystal_radius, state_col)
 	# Núcleo branco brilhante de alta energia
-	draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
+	target.draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
 	
 	# Anel de status circular giratório
 	if is_active:
 		var rot := animation_clock * 2.4
-		draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
+		target.draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
 	else:
-		draw_arc(center, 10.5, 0.0, TAU, 24, Color("3488aa", 0.5), 1.0, true)
+		target.draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5), 1.0, true)
+	# One, two or three white dots distinguish the ordered runes without color.
+	if item.has("order"):
+		var count := clampi(int(item.order) + 1, 1, 3)
+		target.draw_rect(Rect2(center + Vector2(-10, 14), Vector2(20, 7)), Color("07101d", 0.9))
+		for dot in count:
+			target.draw_circle(center + Vector2((float(dot) - float(count - 1) * 0.5) * 5.5, 17.5), 1.8, Color("f3ffff"))
 
 
-func _draw_trap(trap: Dictionary) -> void:
+func _draw_trap(target: CanvasItem, trap: Dictionary) -> void:
 	var center := _cell_center(trap.pos)
-	if not trap.armed and not trap.revealed:
+	if trap.get("type", "one_shot") == "rhythm":
+		# Three LEDs: the outlined one is the phase of the NEXT action. The
+		# first (red/spiked) phase is dangerous, the other two are safe.
+		var next_phase := posmod(turn_number + 1 + int(trap.get("phase", 0)), 3)
+		var hot := _rhythm_is_hot(trap, turn_number + 1)
+		var color := Color("ff6957") if hot else Color("70dfd8")
+		target.draw_circle(center, 18.0, Color(color, 0.14))
+		target.draw_arc(center, 13.0, 0.0, TAU, 28, Color(color, 0.9), 2.2, true)
+		var spikes := PackedVector2Array([center + Vector2(0, -9), center + Vector2(7, 7), center + Vector2(-7, 7)])
+		target.draw_colored_polygon(spikes, Color(color, 0.8 if hot else 0.28))
+		target.draw_rect(Rect2(center + Vector2(-14, 15), Vector2(28, 8)), Color("07101d", 0.92))
+		for i in 3:
+			var led := center + Vector2((float(i) - 1.0) * 8.0, 19.0)
+			target.draw_circle(led, 2.0, Color("ff7761") if i == 0 else Color("83eee5"))
+			if i == next_phase:
+				target.draw_arc(led, 3.4, 0.0, TAU, 12, Color("ffffff"), 1.0, true)
 		return
-	var alpha := 0.64 + sin(animation_clock * 5.0 + center.x) * 0.16
-	draw_circle(center, 18.0, Color("ff684c", alpha * 0.12))
-	draw_arc(center, 13.0, animation_clock * 0.25, animation_clock * 0.25 + TAU, 28, Color("ff775c", alpha), 2.0, true)
+	if not trap.get("armed", true) and not trap.get("revealed", false):
+		return
+	var armed: bool = trap.get("armed", true)
+	var alpha := (0.64 + sin(animation_clock * 5.0 + center.x) * 0.16) if armed else 0.2
+	target.draw_circle(center, 18.0, Color("ff684c", alpha * 0.12))
+	target.draw_arc(center, 13.0, animation_clock * 0.25, animation_clock * 0.25 + TAU, 28, Color("ff775c", alpha), 2.0, true)
 	for i in 4:
 		var angle := i * TAU / 4.0
-		draw_circle(center + Vector2(cos(angle), sin(angle)) * 7.0, 2.0, Color("ffbd73", alpha))
+		target.draw_circle(center + Vector2(cos(angle), sin(angle)) * 7.0, 2.0, Color("ffbd73", alpha))
 
 
 func _draw_enemy(enemy: Dictionary) -> void:
 	var center := _enemy_visual_position(enemy)
 	var role: String = enemy.get("role", "hunter")
+	if role == "chess_boss":
+		var kind: String = enemy.get("boss_kind", "pawn")
+		var texture: Texture2D = BOSS_TEXTURES.get(kind, BOSS_TEXTURES["pawn"])
+		var size := 110.0 if kind in ["queen", "king"] else 100.0
+		center.y += sin(animation_clock * 2.5 + center.x * 0.01) * 1.5
+		draw_texture_rect(texture, Rect2(center + Vector2(-size * 0.5, -size * 0.78), Vector2(size, size)), false)
+		return
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
 	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.08 if role == "sentry" else 1.02
 	var bob := sin(animation_clock * (5.5 if alert else 3.2) + center.x * 0.015) * (3.0 if role == "wisp" else 1.4)
@@ -2605,6 +3733,40 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	draw_set_transform(center + Vector2(0, 12 * size_scale), 0.0, Vector2(1.0, 0.45))
 	draw_circle(Vector2.ZERO, half_size * 1.15, Color("020612", 0.48))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+	if role == "patrol":
+		# Low, tracked scout; the chevron points along its patrol direction.
+		var direction: Vector2i = enemy.get("patrol_dir", Vector2i.RIGHT)
+		var heading := Vector2(direction)
+		if heading.length_squared() < 0.1:
+			heading = Vector2.RIGHT
+		var side := Vector2(-heading.y, heading.x)
+		draw_line(center + side * 14.0 - heading * 11.0, center + side * 14.0 + heading * 11.0, Color("081e18"), 7.0, true)
+		draw_line(center - side * 14.0 - heading * 11.0, center - side * 14.0 + heading * 11.0, Color("081e18"), 7.0, true)
+		var shell := _chamfered_square_points(center, 15.0, 5.0)
+		draw_colored_polygon(shell, Color("174b3f"))
+		var rim := shell.duplicate()
+		rim.append(shell[0])
+		draw_polyline(rim, Color("75f7b6"), 1.8, true)
+		draw_circle(center, 8.0, Color("0b2523"))
+		draw_line(center - heading * 5.0 + side * 4.0, center + heading * 6.0, Color("ddffe9"), 2.2, true)
+		draw_line(center - heading * 5.0 - side * 4.0, center + heading * 6.0, Color("ddffe9"), 2.2, true)
+		return
+
+	if role == "mirror":
+		# Split reflective diamond, visibly unlike the drones or chess pieces.
+		var shell := PackedVector2Array([center + Vector2(0, -19), center + Vector2(16, 0), center + Vector2(0, 19), center + Vector2(-16, 0)])
+		draw_colored_polygon(shell, Color("132742"))
+		draw_colored_polygon(PackedVector2Array([center + Vector2(0, -16), center + Vector2(13, 0), center + Vector2(0, 16)]), Color("4b9bce"))
+		draw_colored_polygon(PackedVector2Array([center + Vector2(0, -16), center + Vector2(-13, 0), center + Vector2(0, 16)]), Color("89d7ed"))
+		var rim := shell.duplicate()
+		rim.append(shell[0])
+		draw_polyline(rim, Color("c8f6ff"), 1.7, true)
+		draw_line(center + Vector2(0, -14), center + Vector2(0, 14), Color("efffff", 0.8), 1.3, true)
+		draw_line(center + Vector2(-9, -2), center + Vector2(-3, -2), Color("122f47"), 2.2, true)
+		draw_line(center + Vector2(3, 2), center + Vector2(9, 2), Color("e3ffff"), 2.2, true)
+		draw_circle(center + Vector2(-6, -7), 1.8, Color("ffffff"))
+		return
 
 	if role == "hunter":
 		# HUNTER: Drone de Assalto Tático (Armadura Titânio Carmesim, Antenas Chifres, Visor Angular)
@@ -2837,7 +3999,7 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		return
 
 	if role == "warden":
-		# WARDEN: Colosso Titã Boss (Gólem Mecha Violeta, Fagulhas Orbitais, Reator de Fusão Central)
+		# WARDEN: mini-chefe original (Gólem Mecha Violeta, Fagulhas Orbitais, Reator de Fusão Central)
 		# 1. Ombros / Punhos flutuantes pesados à esquerda e direita
 		var hand_bob := sin(animation_clock * 4.0) * 2.5
 		var hand_l := center + Vector2(-half_size * 1.35, hand_bob)
@@ -2934,9 +4096,13 @@ func _draw_player() -> void:
 			visibility = 0.3
 	else:
 		var squash := sin(movement * PI)
-		stretch = Vector2(1.0 + squash * 0.09, 1.0 - squash * 0.07)
+		var landing := clampf(landing_feedback_time / 0.12, 0.0, 1.0)
+		stretch = Vector2(1.0 + squash * 0.09 + landing * 0.07, 1.0 - squash * 0.07 - landing * 0.055)
 		hop += sin(animation_clock * 7.0) * 0.8
-	var shadow_color := Color("00040d", 0.36 * visibility)
+	if threat_aura > 0.01 and game_state == "playing":
+		var pulse := 1.0 + 0.05 * sin(animation_clock * 5.0)
+		draw_arc(center, 21.0 * pulse, 0.0, TAU, 32, Color("ff6a71", threat_aura * 0.22), 1.4, true)
+	var shadow_color := Color("00040d", (0.36 + threat_aura * 0.10) * visibility)
 	draw_set_transform(center + Vector2(0, 13.0), 0.0, Vector2(1.0 + movement * 0.08, 0.46))
 	draw_circle(Vector2.ZERO, 12.5 * size_scale, shadow_color)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -3021,45 +4187,45 @@ func _draw_player() -> void:
 		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
 
 
-func _draw_blood_puddle() -> void:
+func _draw_blood_puddle(target: CanvasItem) -> void:
 	if not capture_puddle_active or capture_puddle_points.size() < 3:
 		return
 	# Sombra profunda sob a poça
 	var shadow_outline := PackedVector2Array()
 	for point in capture_puddle_points:
 		shadow_outline.append(point + Vector2(0, 3.5))
-	draw_colored_polygon(shadow_outline, Color("000000", 0.45))
+	target.draw_colored_polygon(shadow_outline, Color("000000", 0.45))
 	
 	# Camada viscosa base
-	draw_colored_polygon(capture_puddle_points, Color("590519", 0.98))
+	target.draw_colored_polygon(capture_puddle_points, Color("590519", 0.98))
 	
 	# Camada interna arterial
 	var inset := PackedVector2Array()
 	for point in capture_puddle_points:
 		inset.append(capture_origin + (point - capture_origin) * 0.74)
-	draw_colored_polygon(inset, Color("a10b2a", 0.95))
+	target.draw_colored_polygon(inset, Color("a10b2a", 0.95))
 	
 	# Centro líquido reflexivo
 	var center_inset := PackedVector2Array()
 	for point in capture_puddle_points:
 		center_inset.append(capture_origin + (point - capture_origin) * 0.48)
-	draw_colored_polygon(center_inset, Color("c91638", 0.90))
+	target.draw_colored_polygon(center_inset, Color("c91638", 0.90))
 	
 	# Reflexos especulares de líquido fresco
 	var spec1 := capture_origin + Vector2(-CELL * 0.35, -CELL * 0.28)
-	draw_circle(spec1, 4.2, Color("ffffff", 0.65))
-	draw_circle(spec1 + Vector2(7, 2), 2.2, Color("ffffff", 0.45))
+	target.draw_circle(spec1, 4.2, Color("ffffff", 0.65))
+	target.draw_circle(spec1 + Vector2(7, 2), 2.2, Color("ffffff", 0.45))
 	
 	# Contorno neon arterial pulsante
 	var outline := capture_puddle_points.duplicate()
 	outline.append(capture_puddle_points[0])
-	draw_polyline(outline, Color("ff365c", 0.88), 2.4, true)
+	target.draw_polyline(outline, Color("ff365c", 0.88), 2.4, true)
 	
 	# Gotículas e respingos periféricos com mini-brilho
 	for splat in capture_splats:
-		draw_circle(splat.pos + Vector2(0, 1.5), splat.radius, Color("000000", 0.35))
-		draw_circle(splat.pos, splat.radius, Color("ab0c2e", 0.96))
-		draw_circle(splat.pos + Vector2(-splat.radius * 0.25, -splat.radius * 0.25), maxf(1.0, splat.radius * 0.35), Color("ff6379", 0.85))
+		target.draw_circle(splat.pos + Vector2(0, 1.5), splat.radius, Color("000000", 0.35))
+		target.draw_circle(splat.pos, splat.radius, Color("ab0c2e", 0.96))
+		target.draw_circle(splat.pos + Vector2(-splat.radius * 0.25, -splat.radius * 0.25), maxf(1.0, splat.radius * 0.35), Color("ff6379", 0.85))
 
 
 func _player_is_frightened() -> bool:
