@@ -8,6 +8,9 @@ const TILE_WATER := 3
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
 const DIAGONALS := [Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)]
 const KNIGHT_OFFSETS := [Vector2i(2, 1), Vector2i(2, -1), Vector2i(-2, 1), Vector2i(-2, -1), Vector2i(1, 2), Vector2i(-1, 2), Vector2i(1, -2), Vector2i(-1, -2)]
+const CAPTOR_FLYOVER_SECONDS := 5.2
+const DIVINE_CAPTOR_TEXTURE := preload("res://assets/story/divine_captor.svg")
+const CAPTIVE_CAGE_TEXTURE := preload("res://assets/story/captive_cage.svg")
 # Every fifth floor features the next piece in this cycle. The portal remains
 # an escape route: defeating the boss is optional, not a soft-lock condition.
 const BOSS_TYPES := [
@@ -52,6 +55,7 @@ const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 const TerrainRenderer = preload("res://terrain_renderer.gd")
+const SokobanScript = preload("res://sokoban_generator.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -63,16 +67,24 @@ var facing := Vector2i.RIGHT
 var portal_position := Vector2i.ZERO
 var portal_open := true
 var enemies: Array[Dictionary] = []
+var crates: Array[Dictionary] = []
 var shields: Array[Vector2i] = []
 var breakers: Array[Vector2i] = []
 var powerups: Array[Dictionary] = []
 var coins: Array[Vector2i] = []
 var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
+var water_current_dirs: Dictionary = {}
+var electrified_water: Dictionary = {}
+var brittle_ice: Dictionary = {}
+var ice_stress: Dictionary = {}
+var broken_ice: Dictionary = {}
+var player_step_path: Array[Vector2i] = []
 var rooms: Array[Dictionary] = []
 var room_graph_edges: Array[Dictionary] = []
 var nav_chevrons: Array[Dictionary] = []
 var player_sphere_texture: ImageTexture = null
+var lia_sphere_texture: ImageTexture = null
 var radial_light_texture: ImageTexture = null
 var particles: Array[Dictionary] = []
 var camera: Camera2D
@@ -85,6 +97,7 @@ var capture_material: ShaderMaterial
 var background_rect: ColorRect
 var terrain_renderer: Node2D
 var generator = Generator.new()
+var sokoban_generator = SokobanScript.new()
 var rng := RandomNumberGenerator.new()
 var active_seed := 0
 var generation_report := ""
@@ -109,6 +122,8 @@ var floor_reward := 0
 var best_score := 0
 var rescues_completed := 0
 var floor_stars: Dictionary = {}
+var captor_intro_seen := false
+var captor_flyover_time := 0.0
 var furthest_floor := 1
 var has_resume := false
 var resume_floor := 1
@@ -131,11 +146,21 @@ var controller_message := ""
 var floor_start_snapshot: Dictionary = {}
 var persistence_enabled := true
 var profile_path := "user://come_to_me_profile.cfg"
+var dev_sandbox_active := false
+var dev_profile_snapshot: Dictionary = {}
 var flash_time := 0.0
 var flash_color := Color.WHITE
 var game_state := "ready"
 var damage_this_turn := false
 var objective_type := "escape"
+var sokoban_mode := false
+var sokoban_title := ""
+var sokoban_template_id := ""
+var sokoban_goals: Array[Vector2i] = []
+var sokoban_history: Array[Dictionary] = []
+var sokoban_pushes := 0
+var sokoban_push_par := 0
+var sokoban_move_par := 0
 var challenge_kind := "no_jump"
 var challenge_par := 0
 var challenge_complete := false
@@ -226,6 +251,7 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	_leave_dev_sandbox()
 	if camera != null:
 		camera.enabled = true
 	if seed_value >= 0:
@@ -256,6 +282,7 @@ func new_game(seed_value: int = -1) -> void:
 
 
 func continue_game() -> void:
+	_leave_dev_sandbox()
 	if not has_resume:
 		new_game()
 		return
@@ -269,9 +296,11 @@ func continue_game() -> void:
 	_reset_capture_state()
 	generate_floor(resume_floor)
 	game_state = "playing"
+	_begin_captor_flyover_if_needed()
 
 
 func start_level(number: int) -> void:
+	_leave_dev_sandbox()
 	if number < 1 or number > furthest_floor:
 		return
 	active_seed = int(Time.get_ticks_usec()) ^ randi()
@@ -285,6 +314,20 @@ func start_level(number: int) -> void:
 	generate_floor(number)
 	game_state = "playing"
 	_save_resume(number, total_coins, charges, breach_charges, floor_history, facing)
+	_begin_captor_flyover_if_needed()
+
+
+func _begin_captor_flyover_if_needed() -> void:
+	captor_flyover_time = 0.0
+	if floor_number != 5 or captor_intro_seen:
+		return
+	captor_intro_seen = true
+	captor_flyover_time = CAPTOR_FLYOVER_SECONDS
+	last_notice = "LIA NA JAULA — O CAPTURADOR DIVINO ATRAVESSA AS RUINAS!"
+	notice_timer = CAPTOR_FLYOVER_SECONDS
+	if audio != null:
+		audio.play("captor_reveal")
+	_save_profile()
 
 
 func _reset_capture_state() -> void:
@@ -336,6 +379,8 @@ func restart_floor() -> void:
 
 
 func handle_hud_action(action: String) -> void:
+	if captor_flyover_time > 0.0 and action != "skip_captor_flyover":
+		return
 	if action == "new_run":
 		new_game()
 	elif action == "continue":
@@ -361,8 +406,13 @@ func handle_hud_action(action: String) -> void:
 		advance_floor()
 	elif action == "restart_floor":
 		restart_floor()
+	elif action == "skip_captor_flyover":
+		captor_flyover_time = 0.0
+		queue_redraw()
 	elif action == "wait":
 		wait_turn()
+	elif action == "sokoban_undo":
+		undo_sokoban_move()
 	elif action == "blink":
 		try_blink()
 	elif action == "music":
@@ -454,14 +504,57 @@ func dev_toggle_noclip() -> void:
 
 
 func dev_jump_floor(target_floor: int) -> void:
+	if not dev_sandbox_active:
+		dev_profile_snapshot = _capture_campaign_profile()
+		dev_sandbox_active = true
 	target_floor = clampi(target_floor, 1, 200)
 	floor_number = target_floor
 	generate_floor(target_floor)
 	game_state = "playing"
 	dev_menu_open = false
-	last_notice = "TELEPORTE DEV: ANDAR %02d" % target_floor
+	last_notice = "TESTE DEV: ANDAR %02d — CAMPANHA GUARDADA" % target_floor
 	notice_timer = 2.5
 	queue_redraw()
+
+
+func _capture_campaign_profile() -> Dictionary:
+	return {
+		"best_score": best_score,
+		"rescues_completed": rescues_completed,
+		"furthest_floor": furthest_floor,
+		"floor_stars": floor_stars.duplicate(true),
+		"has_resume": has_resume,
+		"resume_floor": resume_floor,
+		"resume_coins": resume_coins,
+		"resume_charges": resume_charges,
+		"resume_breach_charges": resume_breach_charges,
+		"resume_powers": resume_powers.duplicate(true),
+		"resume_facing": resume_facing,
+		"resume_seed": resume_seed,
+		"resume_history": resume_history.duplicate(),
+		"captor_intro_seen": captor_intro_seen,
+	}
+
+
+func _leave_dev_sandbox() -> void:
+	if not dev_sandbox_active:
+		return
+	best_score = int(dev_profile_snapshot.get("best_score", best_score))
+	rescues_completed = int(dev_profile_snapshot.get("rescues_completed", rescues_completed))
+	furthest_floor = int(dev_profile_snapshot.get("furthest_floor", furthest_floor))
+	floor_stars = dev_profile_snapshot.get("floor_stars", floor_stars).duplicate(true)
+	has_resume = bool(dev_profile_snapshot.get("has_resume", has_resume))
+	resume_floor = int(dev_profile_snapshot.get("resume_floor", resume_floor))
+	resume_coins = int(dev_profile_snapshot.get("resume_coins", resume_coins))
+	resume_charges = int(dev_profile_snapshot.get("resume_charges", resume_charges))
+	resume_breach_charges = int(dev_profile_snapshot.get("resume_breach_charges", resume_breach_charges))
+	resume_powers = dev_profile_snapshot.get("resume_powers", resume_powers).duplicate(true)
+	resume_facing = dev_profile_snapshot.get("resume_facing", resume_facing)
+	resume_seed = int(dev_profile_snapshot.get("resume_seed", resume_seed))
+	resume_history.assign(dev_profile_snapshot.get("resume_history", resume_history))
+	captor_intro_seen = bool(dev_profile_snapshot.get("captor_intro_seen", captor_intro_seen))
+	dev_sandbox_active = false
+	dev_profile_snapshot.clear()
 
 
 func dev_spawn_enemy(role: String) -> void:
@@ -608,9 +701,15 @@ func get_biome_index(number: int) -> int:
 
 func get_floor_name(number: int) -> String:
 	var safe_number := maxi(1, number)
+	if _is_sokoban_floor(safe_number):
+		return "SOKOBAN / %s" % sokoban_generator.get_title(safe_number)
 	var name: String = FLOOR_NAMES[get_biome_index(safe_number)]
 	var cycle := floori(float(safe_number - 1) / FLOOR_NAMES.size()) + 1
 	return name if cycle == 1 else "%s / CICLO %d" % [name, cycle]
+
+
+func _is_sokoban_floor(number: int) -> bool:
+	return sokoban_generator.is_special_floor(number)
 
 
 func get_floor_size(number: int) -> Vector2i:
@@ -627,6 +726,8 @@ func get_floor_size(number: int) -> Vector2i:
 
 
 func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_charges: int = 0, history: Variant = null, start_facing: Vector2i = Vector2i.RIGHT, powers: Variant = null) -> void:
+	if dev_sandbox_active:
+		return
 	has_resume = true
 	resume_floor = maxi(1, number)
 	resume_coins = maxi(0, coins)
@@ -667,6 +768,7 @@ func _restore_power_state(raw: Variant) -> void:
 
 func generate_floor(number: int) -> void:
 	floor_number = maxi(1, number)
+	sokoban_mode = _is_sokoban_floor(floor_number)
 	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
 	rng.seed = level_seed
@@ -675,21 +777,33 @@ func generate_floor(number: int) -> void:
 		"charges": charges, "breach_charges": breach_charges, "powers": _capture_power_state(),
 		"history": floor_history.duplicate(), "facing": facing,
 	}
-	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
-	generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
-	if result.ok:
-		grid = result.grid
-		rooms = result.rooms
-		room_graph_edges = result.edges
-		player_position = result.start
-		portal_position = result.goal
-	else:
-		grid = _fallback_layout(world_size.x, world_size.y)
+	var result: Dictionary = {"ok": true, "attempts": 0}
+	var special_sokoban_data: Dictionary = {}
+	if sokoban_mode:
+		special_sokoban_data = sokoban_generator.generate(floor_number, level_seed)
+		world_size = special_sokoban_data.size
+		grid = special_sokoban_data.grid
 		rooms.clear()
 		room_graph_edges.clear()
-		player_position = Vector2i(1, world_size.y / 2)
-		portal_position = Vector2i(world_size.x - 2, rng.randi_range(1, world_size.y - 2))
-		generation_report += "; fallback: %s" % result.reason
+		player_position = special_sokoban_data.start
+		portal_position = special_sokoban_data.portal
+		generation_report = "Fase especial Sokoban / modulo %s / espelhamento pela seed %d" % [special_sokoban_data.id, level_seed]
+	else:
+		result = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
+		generation_report = "WFC seed %d; contradicoes tentadas: %d" % [level_seed, result.attempts]
+		if result.ok:
+			grid = result.grid
+			rooms = result.rooms
+			room_graph_edges = result.edges
+			player_position = result.start
+			portal_position = result.goal
+		else:
+			grid = _fallback_layout(world_size.x, world_size.y)
+			rooms.clear()
+			room_graph_edges.clear()
+			player_position = Vector2i(1, world_size.y / 2)
+			portal_position = Vector2i(world_size.x - 2, rng.randi_range(1, world_size.y - 2))
+			generation_report += "; fallback: %s" % result.reason
 	for x in world_size.x:
 		grid[0][x] = TILE_BORDER
 		grid[world_size.y - 1][x] = TILE_BORDER
@@ -700,7 +814,10 @@ func generate_floor(number: int) -> void:
 	grid[portal_position.y][portal_position.x] = TILE_FLOOR
 	if not result.ok:
 		_carve_route(player_position, portal_position)
-	_add_biome_landmarks(number)
+	crates.clear()
+	if not sokoban_mode:
+		_add_biome_landmarks(number)
+		_configure_biome_surfaces(number)
 	player_from = _cell_center(player_position)
 	player_to = player_from
 	player_anim = 1.0
@@ -713,12 +830,14 @@ func generate_floor(number: int) -> void:
 	traps.clear()
 	var puzzle_floor := number % 5 == 3
 	var required_switches := 0
-	if puzzle_floor:
+	if sokoban_mode:
+		required_switches = 0
+	elif puzzle_floor:
 		required_switches = 3
 	elif number >= 2 and (number % 3 != 1 or number == 4):
 		required_switches = mini(1 + number / 2, 4)
-	objective_type = "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
-	portal_open = required_switches == 0
+	objective_type = "sokoban" if sokoban_mode else "puzzle" if puzzle_floor else "switches" if required_switches > 0 else "escape"
+	portal_open = required_switches == 0 and not sokoban_mode
 	var occupied := {player_position: true, portal_position: true}
 	var walkable := _reachable_cells(player_position)
 	if puzzle_floor:
@@ -772,6 +891,7 @@ func generate_floor(number: int) -> void:
 	if power_position != Vector2i(-1, -1):
 		powerups.append({"pos": power_position, "kind": POWERUP_TYPES[posmod(number - 1, POWERUP_TYPES.size())]})
 		occupied[power_position] = true
+	_place_biome_crates(walkable, occupied)
 	_place_coins(walkable, occupied, 8 + number)
 	coins_spawned_this_floor = coins.size()
 	# Puzzle floors contain neither enemies nor traps: the sequence itself is
@@ -785,18 +905,22 @@ func generate_floor(number: int) -> void:
 				else:
 					traps.append({"pos": position, "type": "one_shot", "armed": true, "revealed": false})
 				occupied[position] = true
-	_build_nav_chevrons()
+	if sokoban_mode:
+		_configure_sokoban_floor(floor_number, special_sokoban_data)
+		nav_chevrons.clear()
+	else:
+		_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
 	jumps_this_floor = 0
 	hits_this_floor = 0
 	coins_this_floor = 0
 	var route_length := _estimate_route_length()
-	challenge_par = ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
+	challenge_par = sokoban_move_par if sokoban_mode else ceili(float(route_length) * 1.3) + 4 if route_length >= 0 else 0
 	var available_challenges := CHALLENGE_KINDS.duplicate()
 	if route_length < 0:
 		available_challenges.erase("moves")
-	challenge_kind = available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
+	challenge_kind = "moves" if sokoban_mode else available_challenges[rng.randi_range(0, available_challenges.size() - 1)]
 	challenge_complete = false
 	last_notice = "%s   /   seed %d" % [get_challenge_text(), level_seed]
 	notice_timer = 3.8
@@ -807,7 +931,84 @@ func generate_floor(number: int) -> void:
 	queue_redraw()
 
 
+func _configure_sokoban_floor(number: int, data: Dictionary) -> void:
+	world_size = data.size
+	grid = data.grid
+	player_position = data.start
+	portal_position = data.portal
+	player_from = _cell_center(player_position)
+	player_to = player_from
+	player_anim = 1.0
+	rooms.clear()
+	room_graph_edges.clear()
+	enemies.clear()
+	crates.clear()
+	coins.clear()
+	shields.clear()
+	breakers.clear()
+	powerups.clear()
+	switches.clear()
+	traps.clear()
+	water_current_dirs.clear()
+	electrified_water.clear()
+	brittle_ice.clear()
+	ice_stress.clear()
+	broken_ice.clear()
+	sokoban_goals.assign(data.goals)
+	sokoban_history.clear()
+	sokoban_pushes = 0
+	sokoban_push_par = int(data.push_par)
+	sokoban_move_par = int(data.move_par)
+	sokoban_title = str(data.title)
+	sokoban_template_id = str(data.id)
+	for box_position in data.boxes:
+		var center := _cell_center(box_position)
+		crates.append({"pos": box_position, "from": center, "to": center, "t": 1.0, "floating": false, "sokoban": true})
+	objective_type = "sokoban"
+	portal_open = false
+	moves_this_floor = 0
+	turn_number = 0
+	jumps_this_floor = 0
+	hits_this_floor = 0
+	coins_this_floor = 0
+	coins_spawned_this_floor = 0
+	last_notice = "%s — EMPURRA AS CAIXAS PARA OS ALVOS" % sokoban_title
+	notice_timer = 3.2
+	_update_sokoban_portal(false)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
+
+
+func _update_sokoban_portal(play_feedback: bool = true) -> bool:
+	if not sokoban_mode or sokoban_goals.is_empty():
+		return false
+	var was_open := portal_open
+	var filled := _sokoban_goals_filled()
+	portal_open = filled == sokoban_goals.size()
+	if portal_open and not was_open and play_feedback:
+		last_notice = "TODOS OS ALVOS ATIVADOS — ALCANCA O PORTAL"
+		notice_timer = 2.6
+		_spawn_burst(_cell_center(portal_position), Color("ffd35e"), 28, 165.0)
+		_spawn_shockwave(_cell_center(portal_position), 12.0, 66.0, Color("ffd35e"), 0.52)
+		_trigger_shake(0.14, 3.0)
+		_emit_feedback("PORTAL_OPEN")
+	elif was_open and not portal_open and play_feedback:
+		last_notice = "UM ALVO FICOU VAZIO — REPOSICIONA A CAIXA"
+		notice_timer = 2.0
+	return portal_open
+
+
+func _sokoban_goals_filled() -> int:
+	var filled := 0
+	for goal in sokoban_goals:
+		if _crate_index_at(goal) >= 0:
+			filled += 1
+	return filled
+
+
 func get_challenge_text() -> String:
+	if sokoban_mode:
+		return "Z / B DESFAZ   ·   R REINICIA   ·   SEM PUXAR"
 	match challenge_kind:
 		"no_jump": return "Atravessa sem saltar"
 		"no_hit": return "Chega ao portal sem sofrer dano"
@@ -817,6 +1018,8 @@ func get_challenge_text() -> String:
 
 
 func is_challenge_failed() -> bool:
+	if sokoban_mode:
+		return sokoban_pushes > sokoban_push_par + 5
 	match challenge_kind:
 		"no_jump": return jumps_this_floor > 0
 		"no_hit": return hits_this_floor > 0
@@ -825,6 +1028,8 @@ func is_challenge_failed() -> bool:
 
 
 func is_challenge_met() -> bool:
+	if sokoban_mode:
+		return sokoban_pushes <= sokoban_push_par
 	match challenge_kind:
 		"no_jump": return jumps_this_floor == 0
 		"no_hit": return hits_this_floor == 0
@@ -1023,6 +1228,11 @@ func _init_radial_light_texture() -> void:
 
 
 func _init_player_sphere_texture() -> void:
+	player_sphere_texture = _make_sphere_texture(Color("380410"), Color("d81636"), Color("ff3b5c"), Color("ff8ca3"))
+	lia_sphere_texture = _make_sphere_texture(Color("210b35"), Color("8734ad"), Color("e75ce4"), Color("ffc4fb"))
+
+
+func _make_sphere_texture(col_deep: Color, col_mid: Color, col_bright: Color, col_rim: Color) -> ImageTexture:
 	var size := 96
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var center := Vector2(float(size) * 0.5, float(size) * 0.5)
@@ -1030,11 +1240,6 @@ func _init_player_sphere_texture() -> void:
 	var light_dir := Vector3(-0.55, -0.62, 0.56).normalized()
 	var view_dir := Vector3(0.0, 0.0, 1.0)
 	var half_vec := (light_dir + view_dir).normalized()
-	var col_deep := Color("380410")
-	var col_mid := Color("d81636")
-	var col_bright := Color("ff3b5c")
-	var col_rim := Color("ff8ca3")
-	
 	for y in size:
 		for x in size:
 			var diff_vec := Vector2(x, y) - center
@@ -1069,7 +1274,7 @@ func _init_player_sphere_texture() -> void:
 			if dist > radius - 1.0:
 				alpha = clampf((radius + 1.0 - dist) / 2.0, 0.0, 1.0)
 			img.set_pixel(x, y, Color(final_rgb.r, final_rgb.g, final_rgb.b, alpha))
-	player_sphere_texture = ImageTexture.create_from_image(img)
+	return ImageTexture.create_from_image(img)
 
 
 func _add_biome_landmarks(number: int) -> void:
@@ -1117,6 +1322,87 @@ func _add_biome_landmarks(number: int) -> void:
 				break
 			for point in patch:
 				grid[point.y][point.x] = TILE_FLOOR
+
+
+func _configure_biome_surfaces(number: int) -> void:
+	water_current_dirs.clear()
+	electrified_water.clear()
+	brittle_ice.clear()
+	ice_stress.clear()
+	broken_ice.clear()
+	player_step_path.clear()
+	var biome_index := get_biome_index(number)
+	var water_cells: Array[Vector2i] = []
+	for y in world_size.y:
+		for x in world_size.x:
+			if grid[y][x] != TILE_WATER:
+				continue
+			var point := Vector2i(x, y)
+			water_cells.append(point)
+			if biome_index == 1:
+				water_current_dirs[point] = Vector2i.RIGHT
+			elif biome_index == 3 and posmod(x * 5 + y * 3 + number + active_seed, 4) == 0:
+				brittle_ice[point] = true
+	# The first electrified pool arrives after the player has already seen the
+	# water biome. It is placed only when an alternate route remains open.
+	if biome_index == 1 and number >= 7 and posmod(number, 5) == 2:
+		for point in water_cells:
+			var old_tile: int = grid[point.y][point.x]
+			grid[point.y][point.x] = TILE_WALL
+			var has_safe_route := _reachable_cells(player_position).has(portal_position)
+			grid[point.y][point.x] = old_tile
+			if has_safe_route:
+				electrified_water[point] = true
+				break
+
+
+func _place_biome_crates(walkable: Array[Vector2i], occupied: Dictionary) -> void:
+	var biome_index := get_biome_index(floor_number)
+	if biome_index not in [1, 3]:
+		return
+	var candidates: Array[Dictionary] = []
+	var water_cells: Array[Vector2i] = []
+	for point in walkable:
+		if grid[point.y][point.x] == TILE_WATER:
+			water_cells.append(point)
+	for crate_pos in walkable:
+		if grid[crate_pos.y][crate_pos.x] != TILE_FLOOR or occupied.has(crate_pos):
+			continue
+		var near_water := false
+		for water in water_cells:
+			if _manhattan(crate_pos, water) <= 4:
+				near_water = true
+				break
+		if not near_water or _manhattan(crate_pos, player_position) < 4 or _manhattan(crate_pos, portal_position) < 4:
+			continue
+		for direction in FOUR_WAY:
+			var approach: Vector2i = crate_pos - direction
+			var destination: Vector2i = crate_pos + direction
+			if not _terrain_is_floor(approach) or not _terrain_is_floor(destination):
+				continue
+			if occupied.has(approach) or occupied.has(destination) or electrified_water.has(destination):
+				continue
+			candidates.append({"pos": crate_pos, "direction": direction, "approach": approach, "destination": destination})
+	if candidates.is_empty():
+		return
+	var start_index := posmod(active_seed + floor_number, candidates.size())
+	for offset in candidates.size():
+		if crates.size() >= 2:
+			break
+		var candidate: Dictionary = candidates[posmod(start_index + offset, candidates.size())]
+		var crate_pos: Vector2i = candidate.pos
+		var approach: Vector2i = candidate.approach
+		if occupied.has(crate_pos) or occupied.has(approach) or occupied.has(candidate.destination):
+			continue
+		var old_tile: int = grid[crate_pos.y][crate_pos.x]
+		grid[crate_pos.y][crate_pos.x] = TILE_WALL
+		var has_route_around := _reachable_cells(player_position).has(portal_position)
+		grid[crate_pos.y][crate_pos.x] = old_tile
+		if not has_route_around:
+			continue
+		var center := _cell_center(crate_pos)
+		crates.append({"pos": crate_pos, "from": center, "to": center, "t": 1.0, "floating": false})
+		occupied[crate_pos] = true
 
 
 func _fallback_layout(width: int, height: int) -> Array:
@@ -1466,23 +1752,115 @@ func try_move(dx: int, dy: int) -> void:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
-	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
-	if not can_walk:
-		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
-		notice_timer = 1.0
-		_trigger_shake(0.12, 5.0)
-		_emit_feedback("BLOCKED")
-		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
-		queue_redraw()
+	if sokoban_mode:
+		_try_sokoban_move(next)
 		return
-	_begin_player_move(next)
+	var crate_index := _crate_index_at(next)
+	if crate_index >= 0 and not _push_crate(crate_index, facing):
+		_blocked_move()
+		return
+	var can_walk: bool = (_inside(next) and _terrain_is_floor(next) and _crate_index_at(next) < 0) or (dev_noclip and _inside(next))
+	if not can_walk:
+		_blocked_move()
+		return
+	var path: Array[Vector2i] = [next]
+	if _is_slippery_ice(next):
+		path = _ice_slide_path(next, facing)
+	var landing: Vector2i = path[path.size() - 1]
+	_begin_player_move(landing, path)
 	moves_this_floor += 1
-	_emit_feedback("MOVE", {"material": _current_haptic_material()})
+	_emit_feedback("MOVE", {"material": _current_haptic_material(), "slide": path.size() > 1})
 	_take_turn(facing)
+
+
+func _try_sokoban_move(next: Vector2i) -> void:
+	if not _inside(next) or grid[next.y][next.x] != TILE_FLOOR:
+		_blocked_move()
+		return
+	var crate_index := _crate_index_at(next)
+	if crate_index >= 0:
+		var destination: Vector2i = crates[crate_index].pos + facing
+		if not _can_crate_occupy(destination, crate_index):
+			_blocked_move()
+			return
+	_record_sokoban_history()
+	if crate_index >= 0:
+		if not _push_crate(crate_index, facing):
+			sokoban_history.pop_back()
+			_blocked_move()
+			return
+		sokoban_pushes += 1
+	_begin_player_move(next, [next])
+	moves_this_floor += 1
+	turn_number += 1
+	_emit_feedback("MOVE", {"material": "stone", "push": crate_index >= 0})
+	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
+	_check_portal()
+	queue_redraw()
+
+
+func _record_sokoban_history() -> void:
+	sokoban_history.append({
+		"player": player_position,
+		"facing": facing,
+		"crates": crates.duplicate(true),
+		"moves": moves_this_floor,
+		"turn": turn_number,
+		"pushes": sokoban_pushes,
+	})
+
+
+func undo_sokoban_move() -> void:
+	if not sokoban_mode or game_state != "playing":
+		return
+	if sokoban_history.is_empty():
+		last_notice = "AINDA NAO HA MOVIMENTOS PARA DESFAZER"
+		notice_timer = 1.4
+		_emit_feedback("BLOCKED")
+		return
+	var previous: Dictionary = sokoban_history.pop_back()
+	var old_player_visual := _player_visual_position()
+	var old_crate_visuals: Array[Vector2] = []
+	for crate in crates:
+		old_crate_visuals.append(_crate_visual_position(crate))
+	player_position = previous.player
+	facing = previous.facing
+	player_from = old_player_visual
+	player_to = _cell_center(player_position)
+	player_anim = 0.0
+	player_step_path.assign([player_position])
+	var old_crates: Array = previous.crates
+	crates.clear()
+	for index in old_crates.size():
+		var crate: Dictionary = old_crates[index].duplicate(true)
+		var from: Vector2 = old_crate_visuals[index] if index < old_crate_visuals.size() else _cell_center(crate.pos)
+		crate["from"] = from
+		crate["to"] = _cell_center(crate.pos)
+		crate["t"] = 0.0
+		crates.append(crate)
+	moves_this_floor = int(previous.moves)
+	turn_number = int(previous.turn)
+	sokoban_pushes = int(previous.pushes)
+	_update_sokoban_portal(false)
+	last_notice = "ULTIMO PASSO DESFEITO"
+	notice_timer = 1.1
+	_emit_feedback("UNDO")
+	queue_redraw()
+
+
+func _blocked_move() -> void:
+	last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
+	notice_timer = 1.0
+	_trigger_shake(0.12, 5.0)
+	_emit_feedback("BLOCKED")
+	_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
+	queue_redraw()
 
 
 func wait_turn() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	moves_this_floor += 1
 	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
@@ -1491,15 +1869,101 @@ func wait_turn() -> void:
 	_take_turn()
 
 
-func _begin_player_move(next: Vector2i) -> void:
+func _begin_player_move(next: Vector2i, path: Array[Vector2i] = []) -> void:
 	player_from = _player_visual_position()
 	player_position = next
 	player_to = _cell_center(next)
 	player_anim = 0.0
+	player_step_path.clear()
+	if path.is_empty():
+		player_step_path.append(next)
+	else:
+		for point in path:
+			player_step_path.append(point)
+
+
+func _crate_index_at(point: Vector2i, except_index: int = -1) -> int:
+	for index in crates.size():
+		if index == except_index:
+			continue
+		if crates[index].pos == point:
+			return index
+	return -1
+
+
+func _can_crate_occupy(point: Vector2i, crate_index: int) -> bool:
+	if not _terrain_is_floor(point) or point == player_position or point == portal_position:
+		return false
+	if _crate_index_at(point, crate_index) >= 0 or _enemy_at(point):
+		return false
+	for item in switches:
+		if item.pos == point:
+			return false
+	return true
+
+
+func _push_crate(crate_index: int, direction: Vector2i) -> bool:
+	if crate_index < 0 or crate_index >= crates.size():
+		return false
+	var crate: Dictionary = crates[crate_index]
+	var first: Vector2i = crate.pos + direction
+	if not _can_crate_occupy(first, crate_index):
+		return false
+	var destination := first
+	if _is_slippery_ice(first):
+		for slide_point in _ice_slide_path(first, direction).slice(1):
+			if not _can_crate_occupy(slide_point, crate_index):
+				break
+			destination = slide_point
+	var from: Vector2 = _crate_visual_position(crate)
+	crate["from"] = from
+	crate["pos"] = destination
+	crate["to"] = _cell_center(destination)
+	crate["t"] = 0.0
+	crate["floating"] = get_biome_index(floor_number) == 1 and grid[destination.y][destination.x] == TILE_WATER
+	crates[crate_index] = crate
+	last_notice = "CAIXA DE MADEIRA EMPURRADA" if not sokoban_mode else "CAIXA EMPURRADA — %d EMPURROES" % (sokoban_pushes + 1)
+	notice_timer = 1.0
+	_spawn_burst(_cell_center(destination), Color("e5b66c"), 8, 72.0)
+	_emit_feedback("CRATE_PUSH")
+	if sokoban_mode:
+		if sokoban_goals.has(destination):
+			_spawn_burst(_cell_center(destination), Color("ffd76a"), 18, 112.0)
+			_spawn_shockwave(_cell_center(destination), 5.0, 28.0, Color("ffe28b"), 0.3)
+			_trigger_shake(0.09, 2.0)
+			_emit_feedback("SWITCH_ON")
+		_update_sokoban_portal()
+	return true
+
+
+func _ice_slide_path(first: Vector2i, direction: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = [first]
+	var point := first
+	for _step in 8:
+		if not _is_slippery_ice(point):
+			break
+		var next := point + direction
+		if not _terrain_is_floor(next) or _crate_index_at(next) >= 0 or _enemy_at(next):
+			break
+		path.append(next)
+		point = next
+		if _enemy_at(point):
+			break
+	return path
+
+
+func _crate_visual_position(crate: Dictionary) -> Vector2:
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var eased := t * t * (3.0 - 2.0 * t)
+	var from: Vector2 = crate.get("from", _cell_center(crate.pos))
+	var to: Vector2 = crate.get("to", _cell_center(crate.pos))
+	return from.lerp(to, eased)
 
 
 func try_jump() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	if charges <= 0:
 		last_notice = "Sem escudo para saltar"
@@ -1533,6 +1997,8 @@ func try_jump() -> void:
 func try_blink() -> void:
 	if game_state != "playing":
 		return
+	if sokoban_mode:
+		return
 	if blink_charges <= 0:
 		last_notice = "SEM CARGAS DE BLINK"
 		notice_timer = 1.4
@@ -1565,6 +2031,8 @@ func try_blink() -> void:
 
 func try_break_wall() -> void:
 	if game_state != "playing":
+		return
+	if sokoban_mode:
 		return
 	var target := player_position + facing
 	if not _inside(target):
@@ -1646,18 +2114,30 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	damage_this_turn = false
 	turn_number += 1
 	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
-	_collect_pickups()
-	_trigger_traps()
+	var turn_path: Array[Vector2i] = []
+	for point in player_step_path:
+		turn_path.append(point)
+	if turn_path.is_empty():
+		turn_path.append(player_position)
+	player_step_path.clear()
+	_collect_pickups(turn_path)
+	_resolve_water_currents(turn_path)
+	_collect_pickups(turn_path)
+	_trigger_traps(turn_path)
+	_resolve_electrified_water(turn_path)
+	_stress_brittle_ice(turn_path)
 	if game_state != "playing":
 		_tick_power_effects()
+		player_step_path.clear()
 		queue_redraw()
 		return
-	_activate_switches()
+	_activate_switches(turn_path)
 	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
 	# the player could pass through a stationary enemy without consequence.
 	_check_enemy_collision(action_direction)
 	if game_state != "playing":
 		_tick_power_effects()
+		player_step_path.clear()
 		queue_redraw()
 		return
 	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
@@ -1700,6 +2180,7 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	# duration remaining after the portal action, not one extra turn.
 	if game_state == "playing":
 		_check_portal()
+	player_step_path.clear()
 	queue_redraw()
 
 
@@ -1711,6 +2192,78 @@ func _tick_power_effects() -> void:
 		magnet_turns -= 1
 	if freeze_turns > 0:
 		freeze_turns -= 1
+
+
+func _resolve_water_currents(path: Array[Vector2i]) -> void:
+	if freeze_turns > 0:
+		return
+	_advance_floating_crates()
+	var direction: Vector2i = water_current_dirs.get(player_position, Vector2i.ZERO)
+	if direction == Vector2i.ZERO:
+		return
+	var destination := player_position + direction
+	if not _terrain_is_floor(destination) or _crate_index_at(destination) >= 0 or _enemy_at(destination):
+		return
+	player_position = destination
+	player_to = _cell_center(destination)
+	if not path.has(destination):
+		path.append(destination)
+	_spawn_burst(_cell_center(destination), Color("63eedb"), 5, 48.0)
+	_emit_feedback("CURRENT_DRIFT")
+
+
+func _advance_floating_crates() -> void:
+	var moved_any := false
+	for index in crates.size():
+		var crate: Dictionary = crates[index]
+		if not crate.get("floating", false):
+			continue
+		var source: Vector2i = crate.pos
+		var direction: Vector2i = water_current_dirs.get(source, Vector2i.ZERO)
+		var destination := source + direction
+		if direction == Vector2i.ZERO or not _can_crate_occupy(destination, index):
+			continue
+		if grid[destination.y][destination.x] != TILE_WATER or not water_current_dirs.has(destination):
+			continue
+		crate["from"] = _crate_visual_position(crate)
+		crate["pos"] = destination
+		crate["to"] = _cell_center(destination)
+		crate["t"] = 0.0
+		crates[index] = crate
+		moved_any = true
+		_spawn_burst(_cell_center(destination), Color("80f0d7"), 4, 40.0)
+	if moved_any:
+		_emit_feedback("CURRENT_DRIFT")
+
+
+func _resolve_electrified_water(path: Array[Vector2i]) -> void:
+	if freeze_turns > 0:
+		return
+	for point in path:
+		if not electrified_water.has(point):
+			continue
+		_apply_damage("AGUA ELETRIFICADA", Color("8af5ff"))
+		_spawn_burst(_cell_center(point), Color("a2faff"), 14, 130.0)
+		_emit_feedback("ELECTRIC_WATER")
+		return
+
+
+func _stress_brittle_ice(path: Array[Vector2i]) -> void:
+	var seen: Dictionary = {}
+	for point in path:
+		if not brittle_ice.has(point) or broken_ice.has(point) or seen.has(point):
+			continue
+		seen[point] = true
+		var stress := int(ice_stress.get(point, 0)) + 1
+		ice_stress[point] = stress
+		if stress < 3:
+			continue
+		broken_ice[point] = true
+		_spawn_burst(_cell_center(point), Color("b5f5ff"), 12, 104.0)
+		last_notice = "GELO FINO PARTIU — A SUPERFICIE FICOU LISA"
+		notice_timer = 1.8
+		_emit_feedback("ICE_CRACK")
+		queue_redraw()
 
 
 func _collect_coin(point: Vector2i) -> bool:
@@ -1744,25 +2297,34 @@ func _nearby_floor_cells(start: Vector2i, reach: int) -> Dictionary:
 	return distances
 
 
-func _collect_pickups() -> void:
-	var collected_coins := 1 if _collect_coin(player_position) else 0
-	if shields.has(player_position):
-		shields.erase(player_position)
-		charges += 1
-		last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
-		notice_timer = 2.2
-		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
-		_emit_feedback("SHIELD_PICKUP")
-	if breakers.has(player_position):
-		breakers.erase(player_position)
-		breach_charges += 1
-		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
-		notice_timer = 2.6
-		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
-		_emit_feedback("BREAKER_PICKUP")
+func _collect_pickups(path: Array[Vector2i] = []) -> void:
+	var pickup_path: Array[Vector2i] = []
+	if path.is_empty():
+		pickup_path.append(player_position)
+	else:
+		for point in path:
+			pickup_path.append(point)
+	var collected_coins := 0
+	for point in pickup_path:
+		if _collect_coin(point):
+			collected_coins += 1
+		if shields.has(point):
+			shields.erase(point)
+			charges += 1
+			last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
+			notice_timer = 2.2
+			_spawn_burst(_cell_center(point), Color("53edff"), 22, 130.0)
+			_emit_feedback("SHIELD_PICKUP")
+		if breakers.has(point):
+			breakers.erase(point)
+			breach_charges += 1
+			last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
+			notice_timer = 2.6
+			_spawn_burst(_cell_center(point), Color("ffad67"), 26, 155.0)
+			_emit_feedback("BREAKER_PICKUP")
 	for i in range(powerups.size() - 1, -1, -1):
 		var item: Dictionary = powerups[i]
-		if item.pos == player_position:
+		if pickup_path.has(item.pos):
 			powerups.remove_at(i)
 			_activate_powerup(item.kind)
 	if magnet_turns > 0 and not coins.is_empty():
@@ -1790,7 +2352,7 @@ func _activate_powerup(kind: String) -> void:
 			last_notice = "BLINK +1 / Q TELEPORTA ATE 3 CASAS"
 		"time_freeze":
 			freeze_turns = FREEZE_DURATION
-			last_notice = "TEMPO CONGELADO / ARMADILHAS CONTINUAM ATIVAS"
+			last_notice = "TEMPO E CORRENTES CONGELADOS / AGUA ELETRICA SEGURA / ARMADILHAS ATIVAS"
 		_:
 			return
 	notice_timer = 2.6
@@ -1802,10 +2364,16 @@ func _audio_coin() -> void:
 	_emit_feedback("COIN_PICKUP")
 
 
-func _activate_switches() -> void:
+func _activate_switches(path: Array[Vector2i] = []) -> void:
+	var activation_path: Array[Vector2i] = []
+	if path.is_empty():
+		activation_path.append(player_position)
+	else:
+		for point in path:
+			activation_path.append(point)
 	for i in switches.size():
 		var item: Dictionary = switches[i]
-		if item.active or item.pos != player_position:
+		if item.active or not activation_path.has(item.pos):
 			continue
 		if objective_type == "puzzle" and int(item.get("order", -1)) != _active_switches():
 			for j in switches.size():
@@ -1848,10 +2416,16 @@ func _rhythm_is_hot(trap: Dictionary, action_turn: int) -> bool:
 	return posmod(action_turn + int(trap.get("phase", 0)), 3) == 0
 
 
-func _trigger_traps() -> void:
+func _trigger_traps(path: Array[Vector2i] = []) -> void:
+	var trap_path: Array[Vector2i] = []
+	if path.is_empty():
+		trap_path.append(player_position)
+	else:
+		for point in path:
+			trap_path.append(point)
 	for i in traps.size():
 		var trap: Dictionary = traps[i]
-		if not trap.get("armed", true) or trap.pos != player_position:
+		if not trap.get("armed", true) or not trap_path.has(trap.pos):
 			continue
 		if trap.get("type", "one_shot") == "rhythm":
 			if _rhythm_is_hot(trap, turn_number):
@@ -2200,7 +2774,7 @@ func _check_portal() -> void:
 	if player_position != portal_position or game_state != "playing":
 		return
 	if not portal_open:
-		last_notice = "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
+		last_notice = "PORTAL BLOQUEADO — COLOCA TODAS AS CAIXAS NOS ALVOS" if sokoban_mode else "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
 		return
 	if is_challenge_met() and not challenge_complete:
@@ -2217,20 +2791,21 @@ func _check_portal() -> void:
 		best_score_dirty = true
 	_spawn_burst(_cell_center(portal_position), Color("c476ff"), 42, 240.0)
 	_emit_feedback("PORTAL_ENTER")
-	var rescue_milestone := floor_number % 5 == 0
-	if rescue_milestone:
+	if floor_number == 5:
 		game_state = "rescued"
-		if floor_number == 5:
-			rescues_completed += 1
-			last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
-		elif floor_number == 100:
-			rescues_completed += 1
-			last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
-		else:
-			last_notice = "CICLO %d CONCLUIDO — SETOR SEGUINTE DESBLOQUEADO" % (floori(float(floor_number - 1) / 5.0) + 1)
+		last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
+	elif floor_number == 100:
+		game_state = "rescued"
+		rescues_completed += 1
+		last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
 	else:
 		game_state = "floor_clear"
-		last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
+		if floor_number == 200:
+			last_notice = "ARCO PRINCIPAL CONCLUIDO — A EXPEDICAO PROCEDURAL CONTINUA"
+		elif floor_number % 5 == 0:
+			last_notice = "SETOR %d CONCLUIDO — O PROXIMO ANDAR ESTA DESBLOQUEADO" % floor_number
+		else:
+			last_notice = "ANDAR %d CONCLUIDO — ENTER PARA AVANCAR" % floor_number
 	furthest_floor = maxi(furthest_floor, floor_number + 1)
 	var star_key := str(floor_number)
 	floor_stars[star_key] = maxi(int(floor_stars.get(star_key, 0)), stars_last_floor)
@@ -2242,9 +2817,16 @@ func advance_floor() -> void:
 	if game_state == "floor_clear" or game_state == "rescued":
 		generate_floor(floor_number + 1)
 		game_state = "playing"
+		_begin_captor_flyover_if_needed()
 
 
 func _stars_for_floor() -> int:
+	if sokoban_mode:
+		if sokoban_pushes <= sokoban_push_par: return 5
+		if sokoban_pushes <= sokoban_push_par + 1: return 4
+		if sokoban_pushes <= sokoban_push_par + 3: return 3
+		if sokoban_pushes <= sokoban_push_par + 5: return 2
+		return 1
 	var fraction := float(coins_this_floor) / maxf(1.0, float(coins.size() + coins_this_floor))
 	if fraction >= 1.0: return 5
 	if fraction >= 0.75: return 4
@@ -2254,6 +2836,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if sokoban_mode:
+		return "ALVOS %d/%d   /   EMPURROES %d" % [_sokoban_goals_filled(), sokoban_goals.size(), sokoban_pushes]
 	if objective_type == "puzzle":
 		return "RUNAS %d/3  /  %s" % [_active_switches(), "PORTAL ABERTO" if portal_open else "SEGUIR A ORDEM"]
 	if objective_type == "switches":
@@ -2287,6 +2871,7 @@ func _load_profile() -> void:
 		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
+		captor_intro_seen = bool(profile.get_value("story", "captor_intro_seen", false))
 		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
 		var stored_stars = profile.get_value("progress", "floor_stars", {})
 		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
@@ -2323,23 +2908,25 @@ func _save_profile() -> void:
 	if not persistence_enabled:
 		return
 	var profile := ConfigFile.new()
+	var campaign := dev_profile_snapshot if dev_sandbox_active else _capture_campaign_profile()
 	profile.set_value("controller", "vibration", controller_vibration_enabled)
 	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
 	profile.set_value("controller", "vibration_intensity_version", VIBRATION_PROFILE_VERSION)
 	profile.set_value("controller", "mappings", controller_mappings)
-	profile.set_value("progress", "best_score", best_score)
-	profile.set_value("progress", "rescues", rescues_completed)
-	profile.set_value("progress", "furthest_floor", furthest_floor)
-	profile.set_value("progress", "floor_stars", floor_stars)
-	profile.set_value("progress", "has_resume", has_resume)
-	profile.set_value("progress", "resume_floor", resume_floor)
-	profile.set_value("progress", "resume_coins", resume_coins)
-	profile.set_value("progress", "resume_charges", resume_charges)
-	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
-	profile.set_value("progress", "resume_powers", resume_powers)
-	profile.set_value("progress", "resume_facing", resume_facing)
-	profile.set_value("progress", "resume_seed", resume_seed)
-	profile.set_value("progress", "resume_history", resume_history)
+	profile.set_value("progress", "best_score", campaign.best_score)
+	profile.set_value("progress", "rescues", campaign.rescues_completed)
+	profile.set_value("progress", "furthest_floor", campaign.furthest_floor)
+	profile.set_value("progress", "floor_stars", campaign.floor_stars)
+	profile.set_value("progress", "has_resume", campaign.has_resume)
+	profile.set_value("progress", "resume_floor", campaign.resume_floor)
+	profile.set_value("progress", "resume_coins", campaign.resume_coins)
+	profile.set_value("progress", "resume_charges", campaign.resume_charges)
+	profile.set_value("progress", "resume_breach_charges", campaign.resume_breach_charges)
+	profile.set_value("progress", "resume_powers", campaign.resume_powers)
+	profile.set_value("progress", "resume_facing", campaign.resume_facing)
+	profile.set_value("progress", "resume_seed", campaign.resume_seed)
+	profile.set_value("progress", "resume_history", campaign.resume_history)
+	profile.set_value("story", "captor_intro_seen", campaign.captor_intro_seen)
 	var error := profile.save(profile_path)
 	if error == OK:
 		best_score_dirty = false
@@ -2374,6 +2961,7 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	animation_clock += delta
+	captor_flyover_time = maxf(0.0, captor_flyover_time - delta)
 	landing_feedback_time = maxf(0.0, landing_feedback_time - delta)
 	near_miss_feedback_time = maxf(0.0, near_miss_feedback_time - delta)
 	if turn_pulse_time > -1.0:
@@ -2384,6 +2972,10 @@ func _process(delta: float) -> void:
 	player_anim = minf(1.0, player_anim + delta / 0.115)
 	if previous_player_anim < 1.0 and player_anim >= 1.0 and game_state != "captured":
 		landing_feedback_time = 0.12
+	for i in crates.size():
+		var crate: Dictionary = crates[i]
+		crate["t"] = minf(1.0, float(crate.get("t", 1.0)) + delta / 0.17)
+		crates[i] = crate
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.t = minf(1.0, enemy.t + delta / 0.14)
@@ -2488,6 +3080,12 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE]:
+				handle_hud_action("skip_captor_flyover")
+			get_viewport().set_input_as_handled()
+		return
 	# Also permits callers/tests that directly deliver an unhandled event.
 	# Normal engine events have already been consumed in _input above.
 	if controller != null and (event is InputEventJoypadButton or event is InputEventJoypadMotion):
@@ -2496,6 +3094,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_controller_action(action: String) -> void:
 	if game_state in ["captured", "controller_mapping"]:
+		return
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if action in ["confirm", "cancel", "pause"]:
+			handle_hud_action("skip_captor_flyover")
+			controller.feedback("menu_confirm")
 		return
 	var directions := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
 	if dev_menu_open and game_state == "playing":
@@ -2510,6 +3113,10 @@ func _on_controller_action(action: String) -> void:
 			hud.activate_focus()
 		return
 	if game_state == "playing":
+		if sokoban_mode and action == "cancel":
+			undo_sokoban_move()
+			controller.feedback("menu_move")
+			return
 		if directions.has(action):
 			facing = directions[action]
 			try_move(facing.x, facing.y)
@@ -2694,6 +3301,9 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_ESCAPE:
 			game_state = "title"
 		return
+	if sokoban_mode and event.keycode in [KEY_Z, KEY_BACKSPACE]:
+		undo_sokoban_move()
+		return
 	match event.keycode:
 		KEY_ESCAPE: game_state = "paused"
 		KEY_UP, KEY_W:
@@ -2787,8 +3397,15 @@ func _draw() -> void:
 	for item in powerups:
 		if item_view.has_point(_cell_center(item.pos)):
 			_draw_powerup(item)
+	if sokoban_mode:
+		for goal in sokoban_goals:
+			if item_view.has_point(_cell_center(goal)):
+				_draw_sokoban_goal(goal)
 	if view.grow(64.0).has_point(_cell_center(portal_position)):
 		_draw_portal()
+	for crate in crates:
+		if item_view.has_point(_crate_visual_position(crate)):
+			_draw_crate(crate)
 	for enemy in enemies:
 		if not _enemy_draw_visible(enemy, view):
 			continue
@@ -2800,6 +3417,41 @@ func _draw() -> void:
 			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
 	_draw_player()
 	_draw_particles()
+	if floor_number == 5 and captor_flyover_time > 0.0:
+		_draw_captor_flyover(view)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_captor_flyover(view: Rect2) -> void:
+	var progress := clampf(1.0 - captor_flyover_time / CAPTOR_FLYOVER_SECONDS, 0.0, 1.0)
+	var eased_progress := 1.0 - pow(1.0 - progress, 2.0)
+	var body_size := clampf(view.size.x * 0.25, 210.0, 330.0)
+	var drift_x := lerpf(view.position.x - body_size * 0.8, view.end.x + body_size * 0.8, eased_progress)
+	var body_center := Vector2(drift_x, view.position.y + view.size.y * 0.31 + sin(animation_clock * 2.0) * 9.0)
+	var body_rect := Rect2(body_center - Vector2.ONE * body_size * 0.5, Vector2.ONE * body_size)
+	var glow_pulse := 0.11 + sin(animation_clock * 4.0) * 0.025
+	draw_circle(body_center + Vector2(0.0, body_size * 0.35), body_size * 0.32, Color("a444ff", 0.11))
+	draw_circle(body_center, body_size * 0.27, Color("ef69ff", glow_pulse))
+	draw_texture_rect(DIVINE_CAPTOR_TEXTURE, body_rect, false)
+	var cage_size := Vector2(body_size * 0.32, body_size * 0.46)
+	var cage_center := body_center + Vector2(body_size * 0.35, body_size * 0.52 + sin(animation_clock * 3.2) * 7.0)
+	var cage_top := cage_center + Vector2(0.0, -cage_size.y * 0.45)
+	var tether := body_center + Vector2(body_size * 0.32, body_size * 0.14)
+	draw_line(tether, cage_top, Color("f054ff", 0.48), 8.0, true)
+	draw_line(tether, cage_top, Color("ffe8ff", 0.9), 2.0, true)
+	var cage_rotation := sin(animation_clock * 2.7) * 0.075
+	draw_set_transform(cage_center, cage_rotation, Vector2.ONE)
+	var lia_bob := sin(animation_clock * 3.2 + 0.7) * 1.2
+	var lia_center := Vector2.ZERO
+	var lia_sphere_center := lia_center + Vector2(0.0, lia_bob)
+	draw_circle(lia_sphere_center + Vector2(0.0, 10.0), 11.0, Color("080616", 0.48))
+	draw_circle(lia_sphere_center, 22.0, Color("e75ce4", 0.14 + sin(animation_clock * 4.0) * 0.035))
+	if lia_sphere_texture != null:
+		draw_texture_rect(lia_sphere_texture, Rect2(lia_sphere_center - Vector2(16.0, 16.0), Vector2(32.0, 32.0)), false)
+	else:
+		draw_circle(lia_sphere_center, 15.5, Color("e75ce4"))
+	_draw_orb_face(lia_center, 1.0, Vector2i.LEFT, true, 1.0, 0.0, lia_bob, true)
+	draw_texture_rect(CAPTIVE_CAGE_TEXTURE, Rect2(-cage_size * 0.5, cage_size), false)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -2811,10 +3463,18 @@ func _is_wall(pos: Vector2i) -> bool:
 
 
 func _is_floor(pos: Vector2i) -> bool:
+	return _terrain_is_floor(pos) and _crate_index_at(pos) < 0
+
+
+func _terrain_is_floor(pos: Vector2i) -> bool:
 	if not _inside(pos):
 		return false
 	var t: int = grid[pos.y][pos.x]
 	return t == TILE_FLOOR or t == TILE_WATER
+
+
+func _is_slippery_ice(pos: Vector2i) -> bool:
+	return get_biome_index(floor_number) == 3 and _terrain_is_floor(pos) and grid[pos.y][pos.x] == TILE_WATER and not broken_ice.has(pos)
 
 
 func _has_wall_front(pos: Vector2i) -> bool:
@@ -3300,6 +3960,20 @@ func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) ->
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
 		target.draw_line(start, finish, shore, 2.2, true)
+	if water_current_dirs.has(point) and freeze_turns <= 0:
+		var current_color := Color("b5fff2", 0.62 + sin(animation_clock * 4.0 + point.x) * 0.12)
+		var arrow_y := CELL * 0.5
+		target.draw_line(top_left + Vector2(18, arrow_y), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+		target.draw_line(top_left + Vector2(31, arrow_y - 5), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+		target.draw_line(top_left + Vector2(31, arrow_y + 5), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+	if electrified_water.has(point) and freeze_turns <= 0:
+		var spark := Color("e4ffff", 0.7 + absf(sin(animation_clock * 10.0 + point.y)) * 0.3)
+		var center := top_left + Vector2(CELL * 0.5, CELL * 0.5)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-4, -8), center + Vector2(1, -2), center + Vector2(-2, 1), center + Vector2(5, 8)]), Color("36dfff", 0.35), 5.0, true)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-4, -8), center + Vector2(1, -2), center + Vector2(-2, 1), center + Vector2(5, 8)]), spark, 1.8, true)
+	if freeze_turns > 0:
+		target.draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 9, CELL - 9)), Color("b6edff", 0.25), true)
+		target.draw_line(top_left + Vector2(8, 12), top_left + Vector2(CELL - 10, 12), Color("f1fdff", 0.34), 1.2, true)
 
 
 func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
@@ -3319,6 +3993,19 @@ func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> v
 
 func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var glow := Color("6ee3ff", 0.40)
+	if broken_ice.has(point):
+		var pool := Rect2(top_left + Vector2(6, 8), Vector2(CELL - 13, CELL - 17))
+		target.draw_rect(pool, Color("061b30", 0.62), true)
+		var ripple := 1.0 + sin(animation_clock * 3.5 + point.x) * 0.06
+		target.draw_arc(pool.get_center(), 9.0 * ripple, 0.2, TAU * 0.88, 20, Color("74d9f5", 0.46), 1.2, true)
+		return
+	var stress := int(ice_stress.get(point, 0))
+	if stress > 0:
+		var crack_color := Color("e5fbff", 0.42 + 0.16 * stress)
+		var center := top_left + Vector2(CELL * 0.51, CELL * 0.47)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-14, -18), center + Vector2(-4, -6), center + Vector2(-11, 0), center + Vector2(1, 7), center + Vector2(-2, 19)]), crack_color, 1.3 + float(stress) * 0.35, true)
+		target.draw_line(center + Vector2(-5, -5), center + Vector2(8, -11), crack_color, 1.0, true)
+		target.draw_line(center + Vector2(-9, 0), center + Vector2(5, 5), crack_color, 1.0, true)
 	# Brilho especular dinâmico que desliza sobre o gelo
 	var sweep := fposmod(animation_clock * 0.45 + point.x * 0.12 - point.y * 0.08, 1.8)
 	if sweep < 1.0:
@@ -3373,6 +4060,91 @@ func _draw_powerup(item: Dictionary) -> void:
 				var axis := Vector2.from_angle(float(i) * PI / 3.0) * 8.0
 				draw_line(center - axis, center + axis, bright, 1.7, true)
 			draw_circle(center, 2.2, tint)
+
+
+func _draw_crate(crate: Dictionary) -> void:
+	if sokoban_mode:
+		_draw_sokoban_crate(crate)
+		return
+	var center := _crate_visual_position(crate)
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var impact := 1.0 + sin((1.0 - t) * PI) * 0.08
+	var size := Vector2(31.0, 27.0) * impact
+	var floating: bool = crate.get("floating", false)
+	var bob := sin(animation_clock * 4.0 + center.x * 0.02) * 2.0 if floating else 0.0
+	center.y += bob
+	draw_colored_polygon(PackedVector2Array([
+		center + Vector2(-18, 9), center + Vector2(16, 8), center + Vector2(21, 13),
+		center + Vector2(16, 17), center + Vector2(-17, 17), center + Vector2(-22, 13)
+	]), Color("02070c", 0.52))
+	if floating:
+		draw_arc(center + Vector2(0, 14), 21.0 + sin(animation_clock * 4.0) * 1.5, 0.12, PI - 0.12, 24, Color("85f2df", 0.50), 1.4, true)
+	var left := center.x - size.x * 0.5
+	var right := center.x + size.x * 0.5
+	var top := center.y - size.y * 0.5
+	var bottom := center.y + size.y * 0.5
+	var depth := 6.0
+	var front := PackedVector2Array([Vector2(left, top + depth), Vector2(right, top + depth), Vector2(right, bottom), Vector2(left, bottom)])
+	var side := PackedVector2Array([Vector2(right, top + depth), Vector2(right + 3, top + depth + 2), Vector2(right + 3, bottom - 2), Vector2(right, bottom)])
+	var lid := PackedVector2Array([Vector2(left, top + depth), Vector2(left + 5, top), Vector2(right + 5, top), Vector2(right, top + depth)])
+	draw_colored_polygon(front, Color("79502d"))
+	draw_colored_polygon(side, Color("382d31"))
+	draw_colored_polygon(lid, Color("d3a45e"))
+	draw_polyline(PackedVector2Array([front[0], front[1], front[2], front[3], front[0]]), Color("f1c77d", 0.9), 1.6, true)
+	draw_polyline(PackedVector2Array([lid[0], lid[1], lid[2], lid[3], lid[0]]), Color("ffe2a4", 0.82), 1.2, true)
+	# Broad wood grain and two dark iron bands make the crate readable at tile scale.
+	draw_line(Vector2(left + 7, top + 14), Vector2(left + 10, bottom - 4), Color("3a2529", 0.76), 2.0, true)
+	draw_line(Vector2(right - 7, top + 14), Vector2(right - 10, bottom - 4), Color("3a2529", 0.76), 2.0, true)
+	draw_line(Vector2(left + 3, center.y + 3), Vector2(right - 2, center.y + 3), Color("e7ba70", 0.58), 1.4, true)
+	for nail in [Vector2(left + 4, top + 12), Vector2(right - 4, top + 12), Vector2(left + 4, bottom - 4), Vector2(right - 4, bottom - 4)]:
+		draw_circle(nail, 1.4, Color("f5d88e"))
+
+
+func _draw_sokoban_goal(point: Vector2i) -> void:
+	var center := _cell_center(point)
+	var pulse := 0.5 + 0.5 * sin(animation_clock * 3.1 + float(point.x + point.y))
+	var tint := Color("ffd56b") if portal_open else Color("7adce9")
+	draw_circle(center + Vector2(0, 8), 17.0 + pulse * 2.0, Color(tint, 0.08))
+	draw_arc(center + Vector2(0, 4), 12.0 + pulse, 0.0, TAU, 32, Color(tint, 0.45 + pulse * 0.28), 1.6, true)
+	var diamond := PackedVector2Array([
+		center + Vector2(0, -7), center + Vector2(7, 0),
+		center + Vector2(0, 7), center + Vector2(-7, 0),
+	])
+	draw_colored_polygon(diamond, Color(tint, 0.17 + pulse * 0.13))
+	draw_polyline(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3], diamond[0]]), Color(tint, 0.9), 1.5, true)
+	draw_circle(center, 2.2, Color("fff7d2", 0.9))
+
+
+func _draw_sokoban_crate(crate: Dictionary) -> void:
+	var center := _crate_visual_position(crate)
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var scale := 1.0 + sin((1.0 - t) * PI) * 0.08
+	var goal_lit := sokoban_goals.has(crate.pos)
+	var accent := Color("ffd778") if goal_lit else Color("9c7aff")
+	var pulse := 0.5 + sin(animation_clock * 4.0 + float(crate.pos.x)) * 0.5
+	var half := Vector2(15.0, 13.0) * scale
+	var depth := 7.0 * scale
+	var left := center.x - half.x
+	var right := center.x + half.x
+	var top := center.y - half.y
+	var bottom := center.y + half.y
+	draw_colored_polygon(PackedVector2Array([
+		center + Vector2(-18, 13), center + Vector2(18, 13),
+		center + Vector2(23, 17), center + Vector2(-22, 17),
+	]), Color("030713", 0.55))
+	var front := PackedVector2Array([Vector2(left, top + depth), Vector2(right, top + depth), Vector2(right, bottom), Vector2(left, bottom)])
+	var side := PackedVector2Array([Vector2(right, top + depth), Vector2(right + 4, top + depth - 2), Vector2(right + 4, bottom - 3), Vector2(right, bottom)])
+	var lid := PackedVector2Array([Vector2(left, top + depth), Vector2(left + 5, top), Vector2(right + 5, top), Vector2(right, top + depth)])
+	draw_colored_polygon(front, Color("27233f"))
+	draw_colored_polygon(side, Color("17172b"))
+	draw_colored_polygon(lid, Color("5d4d7e"))
+	draw_polyline(PackedVector2Array([front[0], front[1], front[2], front[3], front[0]]), Color("bf9d63", 0.94), 1.5, true)
+	draw_polyline(PackedVector2Array([lid[0], lid[1], lid[2], lid[3], lid[0]]), Color(accent, 0.95), 1.5, true)
+	draw_rect(Rect2(left + 5, top + 12, half.x * 2.0 - 10, 8), Color("161529", 0.95), true)
+	draw_rect(Rect2(left + 6, top + 13, half.x * 2.0 - 12, 1.4), Color(accent, 0.72 + pulse * 0.2), true)
+	draw_circle(center + Vector2(0, 1), 4.4, Color(accent, 0.17))
+	draw_arc(center + Vector2(0, 1), 4.8, 0.0, TAU, 18, Color(accent, 0.86), 1.2, true)
+	draw_colored_polygon(PackedVector2Array([center + Vector2(0, -4), center + Vector2(4, 0), center + Vector2(0, 4), center + Vector2(-4, 0)]), Color(accent, 0.9))
 
 
 func _draw_coin(point: Vector2i) -> void:
@@ -4131,59 +4903,55 @@ func _draw_player() -> void:
 	else:
 		draw_circle(Vector2.ZERO, 15.5, Color("e01b3c", visibility))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-	
-	# Olhos cibernéticos expressivos
-	var eye_offset := Vector2(facing) * (2.0 * size_scale)
+	_draw_orb_face(center, size_scale, facing, frightened, visibility, hop, bob)
+
+
+func _draw_orb_face(center: Vector2, size_scale: float, face_direction: Vector2i, frightened: bool, visibility: float, hop: float, bob: float, lia_palette: bool = false) -> void:
+	# Player and Lia share eye shape, highlights, fear animation and mouth placement.
+	var face_clock := animation_clock + (1.7 if lia_palette else 0.0)
+	var eye_offset := Vector2(face_direction) * (2.0 * size_scale)
 	var eye_y := -2.6 - hop + bob
 	var eye_radius := 4.0 if frightened else 3.3
 	var eye_left := center + Vector2(-5.1, eye_y) * size_scale + eye_offset
 	var eye_right := center + Vector2(5.1, eye_y) * size_scale + eye_offset
-	var face_visibility := visibility
-	var sclera := Color("fff5e6", face_visibility)
-	var pupil := Color("2a0814", face_visibility)
-	
-	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
+	var gaze := Vector2(face_direction) * (1.05 if frightened else 0.72) * size_scale
+	var brow_color := Color("381541" if lia_palette else "521426", visibility)
+	var mouth_color := Color("3b174b" if lia_palette else "4a0f1d", visibility)
+	var mouth_inner_color := Color("ffb0f4" if lia_palette else "ff8aa5", visibility * 0.8)
 	if frightened:
-		# Tremor de pânico nos olhos
-		var panic_jitter := Vector2(sin(animation_clock * 32.0), cos(animation_clock * 28.0)) * (0.6 * size_scale)
-		# Esclera branca bem nítida e ampla
-		draw_circle(eye_left + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
-		# Pupilas contraídas de medo que tremem
-		draw_circle(eye_left + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
-		draw_circle(eye_right + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
-		# Ponto de reflexo especular na pupila
-		draw_circle(eye_left + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
-		
-		# Sobrancelhas levantadas em ângulo de aflição ( \   / )
-		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
-		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
-		
-		# Boca aberta de espanto (elipse vertical com fundo escuro e dentes/grito)
+		var panic_jitter := Vector2(sin(face_clock * 32.0), cos(face_clock * 28.0)) * (0.6 * size_scale)
+		draw_circle(eye_left + panic_jitter, 4.3 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + panic_jitter, 4.3 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_left + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", visibility))
+		draw_circle(eye_right + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", visibility))
+		draw_circle(eye_left + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", visibility))
+		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, brow_color, 1.8 * size_scale, true)
+		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, brow_color, 1.8 * size_scale, true)
 		var mouth_pos := center + Vector2(0.0, 6.2 - hop + bob) * size_scale
-		draw_circle(mouth_pos, (2.6 + sin(animation_clock * 14.0) * 0.4) * size_scale, Color("4a0f1d", visibility))
-		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, Color("ff8aa5", visibility * 0.8))
-		
-		# Gota de suor ciano de pânico no lado da cabeça
-		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(animation_clock * 10.0) * 1.0) * size_scale)
-		var sweat_pts := PackedVector2Array([
+		draw_circle(mouth_pos, (2.6 + sin(face_clock * 14.0) * 0.4) * size_scale, mouth_color)
+		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, mouth_inner_color)
+		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(face_clock * 10.0)) * size_scale)
+		var sweat_color := Color("ff9cf0") if lia_palette else Color("7ae7ff")
+		var sweat_points := PackedVector2Array([
 			sweat_pos + Vector2(0, -3.2 * size_scale),
 			sweat_pos + Vector2(2.2 * size_scale, 1.8 * size_scale),
 			sweat_pos + Vector2(-2.2 * size_scale, 1.8 * size_scale)
 		])
-		draw_colored_polygon(sweat_pts, Color("7ae7ff", visibility * 0.95))
-		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("7ae7ff", visibility * 0.95))
+		draw_colored_polygon(sweat_points, Color(sweat_color, visibility * 0.95))
+		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color(sweat_color, visibility * 0.95))
 		draw_circle(sweat_pos + Vector2(-0.7, 0.8) * size_scale, 0.8 * size_scale, Color("ffffff", visibility))
 	else:
+		var sclera := Color("fff5e6", visibility)
+		var pupil := Color("2a0814", visibility)
 		draw_circle(eye_left, eye_radius * size_scale, sclera)
 		draw_circle(eye_right, eye_radius * size_scale, sclera)
 		draw_circle(eye_left + gaze, 1.45 * size_scale, pupil)
 		draw_circle(eye_right + gaze, 1.45 * size_scale, pupil)
-		# Ponto especular na pupila
-		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
+		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", visibility))
+		var smile_color := Color("61296d", visibility) if lia_palette else Color("78243e", visibility)
+		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, smile_color, 1.3 * size_scale, true)
 
 
 func _draw_blood_puddle(target: CanvasItem) -> void:
