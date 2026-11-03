@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<defs>
+ <radialGradient id="shadow" cx=".5" cy=".45" r=".6"><stop stop-color="#080616" stop-opacity=".62"/><stop offset="1" stop-color="#080616" stop-opacity="0"/></radialGradient>
+ <linearGradient id="gold" x1=".12" y1="0" x2=".88" y2="1"><stop stop-color="#fff4d1"/><stop offset=".2" stop-color="#d9b66c"/><stop offset=".48" stop-color="#806039"/><stop offset=".72" stop-color="#f6dfa0"/><stop offset="1" stop-color="#684b32"/></linearGradient>
+ <linearGradient id="ivory" x1=".15" y1="0" x2=".8" y2="1"><stop stop-color="#fffbea"/><stop offset=".35" stop-color="#cfc4d3"/><stop offset=".72" stop-color="#80728d"/><stop offset="1" stop-color="#382e4a"/></linearGradient>
+ <radialGradient id="core" cx=".34" cy=".25" r=".8"><stop stop-color="#fff6ff"/><stop offset=".22" stop-color="#ffb1ff"/><stop offset=".54" stop-color="#d640f5"/><stop offset="1" stop-color="#4c167e"/></radialGradient>
+ <radialGradient id="glass" cx=".32" cy=".25" r=".82"><stop stop-color="#fffaff"/><stop offset=".17" stop-color="#ffb7f7"/><stop offset=".43" stop-color="#e34eea"/><stop offset=".78" stop-color="#7433ba"/><stop offset="1" stop-color="#30234e"/></radialGradient>
+</defs>
+<!-- Overhead shadow separates the hovering relic from the checkerboard floor. -->
+<ellipse cx="256" cy="290" rx="224" ry="192" fill="url(#shadow)"/>
+<!-- Four swept blade-wings read as one radial flying silhouette from the game camera. -->
+<path d="M204 208 C162 157 100 121 36 104 C55 157 88 208 142 247 C90 235 52 237 18 254 C79 286 139 299 203 280Z" fill="url(#ivory)" stroke="#342842" stroke-width="13" stroke-linejoin="round"/>
+<path d="M308 208 C350 157 412 121 476 104 C457 157 424 208 370 247 C422 235 460 237 494 254 C433 286 373 299 309 280Z" fill="url(#ivory)" stroke="#342842" stroke-width="13" stroke-linejoin="round"/>
+<path d="M210 300 C164 327 119 377 93 439 C151 423 202 393 242 349 L244 308Z" fill="url(#ivory)" stroke="#342842" stroke-width="12" stroke-linejoin="round"/>
+<path d="M302 300 C348 327 393 377 419 439 C361 423 310 393 270 349 L268 308Z" fill="url(#ivory)" stroke="#342842" stroke-width="12" stroke-linejoin="round"/>
+<path d="M180 216 C135 178 98 154 61 141 M171 245 C126 239 92 244 56 256 M332 216 C377 178 414 154 451 141 M341 245 C386 239 420 244 456 256 M218 322 C181 359 153 389 126 416 M294 322 C331 359 359 389 386 416" fill="none" stroke="#fff3d7" stroke-opacity=".78" stroke-width="7" stroke-linecap="round"/>
+<!-- Broken orbital halo with four broad directional blades; no head or limbs. -->
+<path d="M144 178 A154 154 0 0 1 368 178 M144 334 A154 154 0 0 0 368 334" fill="none" stroke="url(#gold)" stroke-width="13"/>
+<path d="M239 111 L256 35 L273 111 M384 242 L465 256 L384 270 M239 401 L256 477 L273 401 M128 242 L47 256 L128 270" fill="url(#gold)" stroke="#57412f" stroke-width="8" stroke-linejoin="round"/>
+<path d="M247 91 L256 52 L265 91 M424 249 L455 256 L424 263 M247 421 L256 460 L265 421 M88 249 L57 256 L88 263" fill="none" stroke="#fff4d9" stroke-width="5" stroke-linecap="round"/>
+<!-- The single armored reliquary body is beveled, circular, and designed for top-down readability. -->
+<path d="M256 104 L342 135 L387 202 L387 310 L342 377 L256 408 L170 377 L125 310 L125 202 L170 135Z" fill="#21182e" stroke="#352945" stroke-width="16" stroke-linejoin="round"/>
+<path d="M256 117 L333 145 L373 207 L373 305 L333 367 L256 395 L179 367 L139 305 L139 207 L179 145Z" fill="url(#ivory)" stroke="url(#gold)" stroke-width="11" stroke-linejoin="round"/>
+<path d="M256 139 L316 161 L348 212 L348 300 L316 351 L256 373 L196 351 L164 300 L164 212 L196 161Z" fill="#42334f" stroke="#66506f" stroke-width="7" stroke-linejoin="round"/>
+<!-- Four inset plates and etched channels make the shell ornate without tiny noise. -->
+<path d="M188 162 L229 147 L237 173 L207 191 L177 209Z M324 162 L283 147 L275 173 L305 191 L335 209Z M177 303 L207 322 L237 340 L229 365 L188 350 L164 300Z M335 303 L305 322 L275 340 L283 365 L324 350 L348 300Z" fill="url(#gold)" stroke="#614a34" stroke-width="6" stroke-linejoin="round"/>
+<path d="M186 206 Q203 198 218 183 M326 206 Q309 198 294 183 M186 305 Q203 314 218 330 M326 305 Q309 314 294 330" fill="none" stroke="#fff2cc" stroke-width="5" stroke-linecap="round"/>
+<!-- Central capture crystal and one north-facing sensor mark orient the silhouette on the board. -->
+<circle cx="256" cy="256" r="79" fill="#241638" stroke="url(#gold)" stroke-width="13"/>
+<circle cx="256" cy="256" r="62" fill="url(#core)" stroke="#fff1d2" stroke-width="6"/>
+<path d="M256 209 C281 224 295 243 292 260 C288 282 271 299 256 310 C241 299 224 282 220 260 C217 243 231 224 256 209Z" fill="url(#glass)" stroke="#ffe9ff" stroke-width="5"/>
+<path d="M238 242 Q256 229 274 242 M238 257 Q256 244 274 257" fill="none" stroke="#fff8ff" stroke-opacity=".78" stroke-width="5" stroke-linecap="round"/>
+<path d="M256 137 L272 157 L256 177 L240 157Z" fill="url(#core)" stroke="#fff0cb" stroke-width="4"/>
+<circle cx="256" cy="155" r="6" fill="#fff6dc"/>
+<circle cx="256" cy="256" r="9" fill="#fffaff" opacity=".88"/>
+<!-- Tether eye on the lower rim is the attachment point for the separately swinging cage. -->
+<path d="M239 376 Q256 391 273 376 L268 397 L256 407 L244 397Z" fill="url(#core)" stroke="#fff0d1" stroke-width="5" stroke-linejoin="round"/>
+<circle cx="256" cy="391" r="5" fill="#fffaff"/>
+</svg>

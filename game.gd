@@ -8,6 +8,9 @@ const TILE_WATER := 3
 const FOUR_WAY := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
 const DIAGONALS := [Vector2i(1, 1), Vector2i(-1, 1), Vector2i(1, -1), Vector2i(-1, -1)]
 const KNIGHT_OFFSETS := [Vector2i(2, 1), Vector2i(2, -1), Vector2i(-2, 1), Vector2i(-2, -1), Vector2i(1, 2), Vector2i(-1, 2), Vector2i(1, -2), Vector2i(-1, -2)]
+const CAPTOR_FLYOVER_SECONDS := 5.2
+const DIVINE_CAPTOR_TEXTURE := preload("res://assets/story/divine_captor.svg")
+const CAPTIVE_CAGE_TEXTURE := preload("res://assets/story/captive_cage.svg")
 # Every fifth floor features the next piece in this cycle. The portal remains
 # an escape route: defeating the boss is optional, not a soft-lock condition.
 const BOSS_TYPES := [
@@ -73,6 +76,7 @@ var rooms: Array[Dictionary] = []
 var room_graph_edges: Array[Dictionary] = []
 var nav_chevrons: Array[Dictionary] = []
 var player_sphere_texture: ImageTexture = null
+var lia_sphere_texture: ImageTexture = null
 var radial_light_texture: ImageTexture = null
 var particles: Array[Dictionary] = []
 var camera: Camera2D
@@ -109,6 +113,8 @@ var floor_reward := 0
 var best_score := 0
 var rescues_completed := 0
 var floor_stars: Dictionary = {}
+var captor_intro_seen := false
+var captor_flyover_time := 0.0
 var furthest_floor := 1
 var has_resume := false
 var resume_floor := 1
@@ -269,6 +275,7 @@ func continue_game() -> void:
 	_reset_capture_state()
 	generate_floor(resume_floor)
 	game_state = "playing"
+	_begin_captor_flyover_if_needed()
 
 
 func start_level(number: int) -> void:
@@ -285,6 +292,20 @@ func start_level(number: int) -> void:
 	generate_floor(number)
 	game_state = "playing"
 	_save_resume(number, total_coins, charges, breach_charges, floor_history, facing)
+	_begin_captor_flyover_if_needed()
+
+
+func _begin_captor_flyover_if_needed() -> void:
+	captor_flyover_time = 0.0
+	if floor_number != 5 or captor_intro_seen:
+		return
+	captor_intro_seen = true
+	captor_flyover_time = CAPTOR_FLYOVER_SECONDS
+	last_notice = "LIA NA JAULA — O CAPTURADOR DIVINO ATRAVESSA AS RUINAS!"
+	notice_timer = CAPTOR_FLYOVER_SECONDS
+	if audio != null:
+		audio.play("captor_reveal")
+	_save_profile()
 
 
 func _reset_capture_state() -> void:
@@ -336,6 +357,8 @@ func restart_floor() -> void:
 
 
 func handle_hud_action(action: String) -> void:
+	if captor_flyover_time > 0.0 and action != "skip_captor_flyover":
+		return
 	if action == "new_run":
 		new_game()
 	elif action == "continue":
@@ -361,6 +384,9 @@ func handle_hud_action(action: String) -> void:
 		advance_floor()
 	elif action == "restart_floor":
 		restart_floor()
+	elif action == "skip_captor_flyover":
+		captor_flyover_time = 0.0
+		queue_redraw()
 	elif action == "wait":
 		wait_turn()
 	elif action == "blink":
@@ -1023,6 +1049,11 @@ func _init_radial_light_texture() -> void:
 
 
 func _init_player_sphere_texture() -> void:
+	player_sphere_texture = _make_sphere_texture(Color("380410"), Color("d81636"), Color("ff3b5c"), Color("ff8ca3"))
+	lia_sphere_texture = _make_sphere_texture(Color("210b35"), Color("8734ad"), Color("e75ce4"), Color("ffc4fb"))
+
+
+func _make_sphere_texture(col_deep: Color, col_mid: Color, col_bright: Color, col_rim: Color) -> ImageTexture:
 	var size := 96
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var center := Vector2(float(size) * 0.5, float(size) * 0.5)
@@ -1030,11 +1061,6 @@ func _init_player_sphere_texture() -> void:
 	var light_dir := Vector3(-0.55, -0.62, 0.56).normalized()
 	var view_dir := Vector3(0.0, 0.0, 1.0)
 	var half_vec := (light_dir + view_dir).normalized()
-	var col_deep := Color("380410")
-	var col_mid := Color("d81636")
-	var col_bright := Color("ff3b5c")
-	var col_rim := Color("ff8ca3")
-	
 	for y in size:
 		for x in size:
 			var diff_vec := Vector2(x, y) - center
@@ -1069,7 +1095,7 @@ func _init_player_sphere_texture() -> void:
 			if dist > radius - 1.0:
 				alpha = clampf((radius + 1.0 - dist) / 2.0, 0.0, 1.0)
 			img.set_pixel(x, y, Color(final_rgb.r, final_rgb.g, final_rgb.b, alpha))
-	player_sphere_texture = ImageTexture.create_from_image(img)
+	return ImageTexture.create_from_image(img)
 
 
 func _add_biome_landmarks(number: int) -> void:
@@ -2243,6 +2269,7 @@ func advance_floor() -> void:
 	if game_state == "floor_clear" or game_state == "rescued":
 		generate_floor(floor_number + 1)
 		game_state = "playing"
+		_begin_captor_flyover_if_needed()
 
 
 func _stars_for_floor() -> int:
@@ -2288,6 +2315,7 @@ func _load_profile() -> void:
 		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
 		best_score = int(profile.get_value("progress", "best_score", 0))
 		rescues_completed = int(profile.get_value("progress", "rescues", 0))
+		captor_intro_seen = bool(profile.get_value("story", "captor_intro_seen", false))
 		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
 		var stored_stars = profile.get_value("progress", "floor_stars", {})
 		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
@@ -2341,6 +2369,7 @@ func _save_profile() -> void:
 	profile.set_value("progress", "resume_facing", resume_facing)
 	profile.set_value("progress", "resume_seed", resume_seed)
 	profile.set_value("progress", "resume_history", resume_history)
+	profile.set_value("story", "captor_intro_seen", captor_intro_seen)
 	var error := profile.save(profile_path)
 	if error == OK:
 		best_score_dirty = false
@@ -2375,6 +2404,7 @@ func _exit_tree() -> void:
 
 func _process(delta: float) -> void:
 	animation_clock += delta
+	captor_flyover_time = maxf(0.0, captor_flyover_time - delta)
 	landing_feedback_time = maxf(0.0, landing_feedback_time - delta)
 	near_miss_feedback_time = maxf(0.0, near_miss_feedback_time - delta)
 	if turn_pulse_time > -1.0:
@@ -2489,6 +2519,12 @@ func _input(event: InputEvent) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_ESCAPE]:
+				handle_hud_action("skip_captor_flyover")
+			get_viewport().set_input_as_handled()
+		return
 	# Also permits callers/tests that directly deliver an unhandled event.
 	# Normal engine events have already been consumed in _input above.
 	if controller != null and (event is InputEventJoypadButton or event is InputEventJoypadMotion):
@@ -2497,6 +2533,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_controller_action(action: String) -> void:
 	if game_state in ["captured", "controller_mapping"]:
+		return
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if action in ["confirm", "cancel", "pause"]:
+			handle_hud_action("skip_captor_flyover")
+			controller.feedback("menu_confirm")
 		return
 	var directions := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
 	if dev_menu_open and game_state == "playing":
@@ -2801,6 +2842,41 @@ func _draw() -> void:
 			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
 	_draw_player()
 	_draw_particles()
+	if floor_number == 5 and captor_flyover_time > 0.0:
+		_draw_captor_flyover(view)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_captor_flyover(view: Rect2) -> void:
+	var progress := clampf(1.0 - captor_flyover_time / CAPTOR_FLYOVER_SECONDS, 0.0, 1.0)
+	var eased_progress := 1.0 - pow(1.0 - progress, 2.0)
+	var body_size := clampf(view.size.x * 0.25, 210.0, 330.0)
+	var drift_x := lerpf(view.position.x - body_size * 0.8, view.end.x + body_size * 0.8, eased_progress)
+	var body_center := Vector2(drift_x, view.position.y + view.size.y * 0.31 + sin(animation_clock * 2.0) * 9.0)
+	var body_rect := Rect2(body_center - Vector2.ONE * body_size * 0.5, Vector2.ONE * body_size)
+	var glow_pulse := 0.11 + sin(animation_clock * 4.0) * 0.025
+	draw_circle(body_center + Vector2(0.0, body_size * 0.35), body_size * 0.32, Color("a444ff", 0.11))
+	draw_circle(body_center, body_size * 0.27, Color("ef69ff", glow_pulse))
+	draw_texture_rect(DIVINE_CAPTOR_TEXTURE, body_rect, false)
+	var cage_size := Vector2(body_size * 0.32, body_size * 0.46)
+	var cage_center := body_center + Vector2(body_size * 0.35, body_size * 0.52 + sin(animation_clock * 3.2) * 7.0)
+	var cage_top := cage_center + Vector2(0.0, -cage_size.y * 0.45)
+	var tether := body_center + Vector2(body_size * 0.32, body_size * 0.14)
+	draw_line(tether, cage_top, Color("f054ff", 0.48), 8.0, true)
+	draw_line(tether, cage_top, Color("ffe8ff", 0.9), 2.0, true)
+	var cage_rotation := sin(animation_clock * 2.7) * 0.075
+	draw_set_transform(cage_center, cage_rotation, Vector2.ONE)
+	var lia_bob := sin(animation_clock * 3.2 + 0.7) * 1.2
+	var lia_center := Vector2.ZERO
+	var lia_sphere_center := lia_center + Vector2(0.0, lia_bob)
+	draw_circle(lia_sphere_center + Vector2(0.0, 10.0), 11.0, Color("080616", 0.48))
+	draw_circle(lia_sphere_center, 22.0, Color("e75ce4", 0.14 + sin(animation_clock * 4.0) * 0.035))
+	if lia_sphere_texture != null:
+		draw_texture_rect(lia_sphere_texture, Rect2(lia_sphere_center - Vector2(16.0, 16.0), Vector2(32.0, 32.0)), false)
+	else:
+		draw_circle(lia_sphere_center, 15.5, Color("e75ce4"))
+	_draw_orb_face(lia_center, 1.0, Vector2i.LEFT, true, 1.0, 0.0, lia_bob, true)
+	draw_texture_rect(CAPTIVE_CAGE_TEXTURE, Rect2(-cage_size * 0.5, cage_size), false)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -4132,59 +4208,55 @@ func _draw_player() -> void:
 	else:
 		draw_circle(Vector2.ZERO, 15.5, Color("e01b3c", visibility))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-	
-	# Olhos cibernéticos expressivos
-	var eye_offset := Vector2(facing) * (2.0 * size_scale)
+	_draw_orb_face(center, size_scale, facing, frightened, visibility, hop, bob)
+
+
+func _draw_orb_face(center: Vector2, size_scale: float, face_direction: Vector2i, frightened: bool, visibility: float, hop: float, bob: float, lia_palette: bool = false) -> void:
+	# Player and Lia share eye shape, highlights, fear animation and mouth placement.
+	var face_clock := animation_clock + (1.7 if lia_palette else 0.0)
+	var eye_offset := Vector2(face_direction) * (2.0 * size_scale)
 	var eye_y := -2.6 - hop + bob
 	var eye_radius := 4.0 if frightened else 3.3
 	var eye_left := center + Vector2(-5.1, eye_y) * size_scale + eye_offset
 	var eye_right := center + Vector2(5.1, eye_y) * size_scale + eye_offset
-	var face_visibility := visibility
-	var sclera := Color("fff5e6", face_visibility)
-	var pupil := Color("2a0814", face_visibility)
-	
-	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
+	var gaze := Vector2(face_direction) * (1.05 if frightened else 0.72) * size_scale
+	var brow_color := Color("381541" if lia_palette else "521426", visibility)
+	var mouth_color := Color("3b174b" if lia_palette else "4a0f1d", visibility)
+	var mouth_inner_color := Color("ffb0f4" if lia_palette else "ff8aa5", visibility * 0.8)
 	if frightened:
-		# Tremor de pânico nos olhos
-		var panic_jitter := Vector2(sin(animation_clock * 32.0), cos(animation_clock * 28.0)) * (0.6 * size_scale)
-		# Esclera branca bem nítida e ampla
-		draw_circle(eye_left + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + panic_jitter, 4.3 * size_scale, Color("ffffff", face_visibility))
-		# Pupilas contraídas de medo que tremem
-		draw_circle(eye_left + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
-		draw_circle(eye_right + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", face_visibility))
-		# Ponto de reflexo especular na pupila
-		draw_circle(eye_left + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
-		
-		# Sobrancelhas levantadas em ângulo de aflição ( \   / )
-		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
-		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
-		
-		# Boca aberta de espanto (elipse vertical com fundo escuro e dentes/grito)
+		var panic_jitter := Vector2(sin(face_clock * 32.0), cos(face_clock * 28.0)) * (0.6 * size_scale)
+		draw_circle(eye_left + panic_jitter, 4.3 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + panic_jitter, 4.3 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_left + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", visibility))
+		draw_circle(eye_right + gaze * 0.4 + panic_jitter, 1.4 * size_scale, Color("140208", visibility))
+		draw_circle(eye_left + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", visibility))
+		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, brow_color, 1.8 * size_scale, true)
+		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, brow_color, 1.8 * size_scale, true)
 		var mouth_pos := center + Vector2(0.0, 6.2 - hop + bob) * size_scale
-		draw_circle(mouth_pos, (2.6 + sin(animation_clock * 14.0) * 0.4) * size_scale, Color("4a0f1d", visibility))
-		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, Color("ff8aa5", visibility * 0.8))
-		
-		# Gota de suor ciano de pânico no lado da cabeça
-		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(animation_clock * 10.0) * 1.0) * size_scale)
-		var sweat_pts := PackedVector2Array([
+		draw_circle(mouth_pos, (2.6 + sin(face_clock * 14.0) * 0.4) * size_scale, mouth_color)
+		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, mouth_inner_color)
+		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(face_clock * 10.0)) * size_scale)
+		var sweat_color := Color("ff9cf0") if lia_palette else Color("7ae7ff")
+		var sweat_points := PackedVector2Array([
 			sweat_pos + Vector2(0, -3.2 * size_scale),
 			sweat_pos + Vector2(2.2 * size_scale, 1.8 * size_scale),
 			sweat_pos + Vector2(-2.2 * size_scale, 1.8 * size_scale)
 		])
-		draw_colored_polygon(sweat_pts, Color("7ae7ff", visibility * 0.95))
-		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("7ae7ff", visibility * 0.95))
+		draw_colored_polygon(sweat_points, Color(sweat_color, visibility * 0.95))
+		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color(sweat_color, visibility * 0.95))
 		draw_circle(sweat_pos + Vector2(-0.7, 0.8) * size_scale, 0.8 * size_scale, Color("ffffff", visibility))
 	else:
+		var sclera := Color("fff5e6", visibility)
+		var pupil := Color("2a0814", visibility)
 		draw_circle(eye_left, eye_radius * size_scale, sclera)
 		draw_circle(eye_right, eye_radius * size_scale, sclera)
 		draw_circle(eye_left + gaze, 1.45 * size_scale, pupil)
 		draw_circle(eye_right + gaze, 1.45 * size_scale, pupil)
-		# Ponto especular na pupila
-		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
+		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", visibility))
+		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", visibility))
+		var smile_color := Color("61296d", visibility) if lia_palette else Color("78243e", visibility)
+		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, smile_color, 1.3 * size_scale, true)
 
 
 func _draw_blood_puddle(target: CanvasItem) -> void:

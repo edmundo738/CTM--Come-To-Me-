@@ -31,10 +31,17 @@ func _run_tests() -> void:
 	_expect(game.grid[0].all(func(tile): return tile == game.TILE_BORDER), "north world boundary is closed and indestructible")
 	var game_source := FileAccess.get_file_as_string("res://game.gd")
 	_expect(not game_source.contains("_draw_enemy_intent") and not game_source.contains("_draw_enemy_forecast"), "enemy forecast renderers are absent from game rendering")
+	_expect(game.player_sphere_texture != null and game.lia_sphere_texture != null, "player and Lia both use shaded sphere textures")
+	if game.player_sphere_texture != null and game.lia_sphere_texture != null:
+		var player_sphere_image: Image = game.player_sphere_texture.get_image()
+		var lia_sphere_image: Image = game.lia_sphere_texture.get_image()
+		_expect(player_sphere_image.get_size() == lia_sphere_image.get_size(), "Lia's sphere uses the player's sphere detail resolution")
+		_expect(player_sphere_image.get_data() != lia_sphere_image.get_data(), "Lia's sphere keeps the shared shading with her own palette")
+	_expect(game_source.count("_draw_orb_face(") >= 3, "player and captive Lia share the same expressive orb face renderer")
 	_expect(game.audio.effects.has("coin") and game.audio.effects.has("shield"), "action sound effects are synthesized")
 	_expect(game.audio.effects.has("inflate") and game.audio.effects.has("balloon_pop"), "capture has its own rising squeak and pop cues")
 	_expect(game.audio.effects.has("break_wall") and game.audio.effects.has("breaker"), "wall breaking and its power-up have separate sound cues")
-	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
+	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "captor_reveal"]:
 		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "new action has synthesized audio: " + cue)
 	_expect(game.capture_overlay != null and game.capture_material != null, "capture has a camera-darkening overlay")
 	_expect(game.audio.music_player.stream.get_length() >= 38.0 and game.audio.music_player.stream.stereo, "music is an arranged 40-second stereo track with bass, melody and percussion")
@@ -1069,6 +1076,17 @@ func _test_progression(game: Node) -> void:
 	_expect(game.floor_history == [2, 4], "continue carries the completed star record through the run")
 	game.floor_stars["4"] = 3
 	_expect(game.floor_stars.get("4", 0) == 3 and game.furthest_floor >= 4, "level journal stores stars and unlock progress")
+	var saved_floor: int = game.floor_number
+	game.floor_number = 5
+	game.captor_intro_seen = false
+	var saved_turn: int = game.turn_number
+	game._begin_captor_flyover_if_needed()
+	_expect(game.captor_flyover_time > 0.0 and game.captor_intro_seen, "floor five starts the one-time Captor flyover")
+	game.handle_hud_action("skip_captor_flyover")
+	_expect(is_zero_approx(game.captor_flyover_time) and game.turn_number == saved_turn, "the flyover can be skipped without spending a turn")
+	game.floor_number = saved_floor
+	game.captor_intro_seen = true
+	game.captor_flyover_time = 0.0
 	if saved_state == "paused":
 		game.game_state = "paused"
 

@@ -74,6 +74,8 @@ O diário guarda até cinco estrelas por andar e desbloqueia o próximo quando o
 
 A campanha não termina no andar 5: aí a bola avista Lia presa e recebe o objetivo de libertá-la no andar 100. Depois do resgate, a história principal continua até ao andar 200; a geração WFC, os chefes recorrentes, o diário paginado e a progressão continuam também depois do 200. O primeiro boss aparece no andar 5; outras famílias de inimigos são introduzidas gradualmente.
 
+Na primeira entrada no andar 5, o **Capturador Divino (Warden-Prime)** atravessa o mapa planando com Lia presa numa jaula. A cena é uma apresentação narrativa: dura alguns segundos, não avança turnos nem altera inimigos e pode ser saltada com **Enter**, **Esc**, confirmação do comando ou o botão **Avançar**. A jaula ainda mostra apenas uma silhueta; a arte final de Lia será feita depois de fechar o modelo do Capturador.
+
 Uma mesma seed continua reproduzível, inclusive ao repetir ou continuar. As otimizações atuais preservam a sequência aleatória e os mapas, itens e desafios da versão imediatamente anterior; há testes de comparação até ao andar 1000. Seeds de versões mais antigas, anteriores à geração atual, ainda podem produzir layouts diferentes; o progresso e os recursos do perfil não são apagados.
 
 ## Geração e biomas

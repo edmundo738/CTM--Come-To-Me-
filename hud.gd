@@ -150,6 +150,8 @@ func _draw() -> void:
 		if game.objective_type == "puzzle":
 			_draw_puzzle_guide()
 		_draw_effect_strip(screen)
+		if game.captor_flyover_time > 0.0:
+			_draw_captor_flyover_hint(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
 	elif game.game_state == "rescued":
@@ -312,6 +314,15 @@ func _draw_header(screen: Vector2) -> void:
 		var map_x := screen.x - map_size - 10.0
 		var map_y := 8.0
 		_draw_minimap(Rect2(map_x, map_y, map_size, map_size))
+
+
+func _draw_captor_flyover_hint(screen: Vector2) -> void:
+	var panel_width := minf(560.0, screen.x - 28.0)
+	var panel := Rect2(Vector2((screen.x - panel_width) * 0.5, maxf(82.0, screen.y - 154.0)), Vector2(panel_width, 70.0))
+	_draw_panel(panel, Color("dc83ff", 0.52))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 22), "PRIMEIRO SINAL  /  CAPTURADOR DIVINO", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 10, Color("f6e5ff"))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 43), "Lia esta na jaula. Segue o rastro ate ao portal.", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 9, Color("c9b8df"))
+	_draw_button(Rect2(panel.end.x - 126, panel.position.y + 19, 112, 32), "AVANCAR", "skip_captor_flyover", "secondary")
 
 
 func _draw_boss_bar(screen: Vector2) -> void:
@@ -660,7 +671,7 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	if rescued:
 		if game.floor_number == 5:
 			title = "LIA FOI AVISTADA!"
-			subtitle = "Presa numa capsula pelo Warden-Prime! Ele foge: 'Ela pertence ao abismo... so no Andar 100 a salvaras!'."
+			subtitle = "O Capturador Divino leva Lia na jaula. Segue o rastro dele ate ao Andar 100."
 		elif game.floor_number == 100:
 			title = "LIA FOI LIBERTADA!"
 			subtitle = "A capsula quebrou-se! Lia esta a salvo e junta-se a ti! A jornada continua ate ao Andar 200!"

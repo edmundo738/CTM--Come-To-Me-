@@ -23,7 +23,7 @@ var capture_duck := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
+	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "captor_reveal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
 		var effect := _make_effect(cue)
 		effects[cue] = effect
 		haptic_envelopes[cue] = _analyze_haptic_envelope(effect)
@@ -178,6 +178,9 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"portal":
 			duration = 0.9
 			notes = [{"at": 0.0, "length": 0.8, "from": 480.0, "to": 55.0, "gain": 0.19, "shape": "sine"}, {"at": 0.05, "length": 0.52, "from": 950.0, "to": 130.0, "gain": 0.06, "shape": "triangle"}]
+		"captor_reveal":
+			duration = 1.55
+			notes = [{"at": 0.0, "length": 1.35, "from": 74.0, "to": 42.0, "gain": 0.24, "shape": "sine"}, {"at": 0.0, "length": 1.1, "from": 148.0, "to": 96.0, "gain": 0.16, "shape": "triangle"}, {"at": 0.12, "length": 0.95, "from": 390.0, "to": 1120.0, "gain": 0.095, "shape": "sine"}, {"at": 0.42, "length": 0.72, "from": 1180.0, "to": 310.0, "gain": 0.06, "shape": "noise"}]
 		"switch":
 			duration = 0.48
 			notes = [{"at": 0.0, "length": 0.12, "from": 530.0, "to": 530.0, "gain": 0.14, "shape": "sine"}, {"at": 0.11, "length": 0.14, "from": 790.0, "to": 790.0, "gain": 0.15, "shape": "sine"}, {"at": 0.23, "length": 0.2, "from": 1060.0, "to": 1320.0, "gain": 0.18, "shape": "sine"}]
