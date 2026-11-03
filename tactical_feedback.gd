@@ -12,6 +12,8 @@ const EVENTS := {
 	"SHIELD_PICKUP": {"audio": "shield", "haptic": "shield"},
 	"BREAKER_PICKUP": {"audio": "breaker", "haptic": "breaker"},
 	"SHIELD_IMPACT": {"audio": "hit", "haptic": "shield_impact"},
+	"HEART_LOST": {"audio": "heart_lost", "haptic": "hit"},
+	"HEART_RECOVERED": {"audio": "heart_recovered", "haptic": "shield"},
 	"ELITE_COUNTER": {"audio": "hit", "haptic": "elite_stagger"},
 	"HIT": {"audio": "hit", "haptic": "hit"},
 	"EXPLOSION": {"audio": "explosion", "haptic": "explosion"},

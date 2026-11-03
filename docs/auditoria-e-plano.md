@@ -1,5 +1,7 @@
 # Come To Me: Neon Ruins — auditoria e plano de evolução
 
+> **Nota posterior:** esta auditoria e as hipóteses abaixo são históricas. A árvore, corações e três campanhas foram implementados depois da referência: ver [estado atual](ARVORE_E_CAMPANHAS.md) e [comparação de versões](AUDITORIA_REPOSITORIO_2026-11-04.md). A direção atual não permite revelar antecipadamente a trajetória ou próxima casa dos inimigos, exceto necessidade de justiça comprovada; propostas antigas de zonas e percursos anunciados não são autorização para os implementar. Ver [guia atual](GAME_FEEL_GAMEPLAY_GUIDE.md) e [relatório V1](RELATORIO_EXPRESSIVE_MOVEMENT_V1.md).
+
 **Referência auditada:** `8c0841bfd3dffbb3d708bdec7e60febf40a071af` (Godot 4.7.2). A auditoria abaixo descreve essa referência; as alterações posteriores são registadas no checkpoint no fim. O objetivo é melhorar as interações sem deitar fora sistemas funcionais nem lançar todas as funcionalidades de uma vez.
 
 ## Como ler as evidências

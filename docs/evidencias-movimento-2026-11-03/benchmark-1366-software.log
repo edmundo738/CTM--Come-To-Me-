@@ -1,0 +1,7 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+WARNING: Could not set V-Sync mode, as changing V-Sync mode is not supported by the graphics driver.
+     at: set_use_vsync (platform/linuxbsd/x11/gl_manager_x11.cpp:372)
+libdbus-1.so.3: cannot open shared object file: No such file or directory
+OpenGL API 4.5 (Core Profile) Mesa 23.2.1-1ubuntu3.1~22.04.2 - Compatibility - Using Device: Mesa - llvmpipe (LLVM 15.0.7, 256 bits)
+
+MOVEMENT_RENDER_BASELINE viewport=(1366, 768) display=X11 warmup_frames=20 measured_frames=80 commands=10 turns=10 median_ms=76.185 p95_ms=84.462 min_ms=73.615 max_ms=87.734

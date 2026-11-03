@@ -2,17 +2,21 @@
 
 Jogo tático 2D por turnos feito em Godot 4.7.2. A protagonista é uma bola vermelha que atravessa ruínas para encontrar Lia. Cada ação válida faz avançar o turno; salas, rotas alternativas, objetivos e inimigos exigem decisões diferentes em cada andar.
 
-A [auditoria e o plano de evolução](docs/auditoria-e-plano.md) distinguem o que existe do que ainda precisa de design, implementação e validação visual. A [proposta de corações e habilidades](docs/design-coracoes-e-habilidades.md) documenta as regras pretendidas; estes sistemas ainda não estão implementados.
+A [auditoria histórica](docs/auditoria-e-plano.md) e a [comparação atual entre versões](docs/AUDITORIA_REPOSITORIO_2026-11-04.md) distinguem o que existe do que ainda precisa de trabalho. A primeira versão da [árvore de habilidades, corações e três campanhas](docs/ARVORE_E_CAMPANHAS.md) está implementada; os valores ainda precisam de testes de equilíbrio. As propostas antigas não autorizam revelar antecipadamente o próximo movimento ou trajetória dos inimigos, exceto necessidade de justiça comprovada.
+
+A V1 de movimento e combate expressivo mantém a resolução imediata por turnos e apresenta os movimentos já resolvidos com continuidade, reações corporais e respostas discretas dos materiais. Ver [relatório de alterações, testes e limites](docs/RELATORIO_EXPRESSIVE_MOVEMENT_V1.md). A qualidade estética e o desempenho no hardware alvo ainda requerem avaliação.
 
 ## Jogar
 
-- Abra `project.godot` no Godot 4.7.2 e pressione **F6/F5**. O menu permite continuar, iniciar uma campanha ou consultar o diário de andares.
+- No Windows, `Jogar-Windows.cmd` prepara o projeto com o editor oficial Godot 4.7.2 (descarregando-o e verificando o ZIP se necessário). É um launcher do **projeto-fonte**, não um jogo exportado; ainda não foi testado em Windows. No Linux, `Jogar-Linux.sh` oferece a mesma alternativa, com binário indicado ou download verificado.
+
+- Abra `project.godot` no Godot 4.7.2 e pressione **F6/F5**. O menu permite continuar, selecionar uma de três campanhas, abrir a árvore de habilidades ou consultar o diário de andares.
 - Mova com **WASD** ou as **setas**. Tocar numa parede dá feedback, mas não gasta turno. **X** espera um turno sem mudar de direção; também há um botão no ecrã e o botão superior esquerdo do comando.
 - Recolha escudos ciano: cada carga absorve um impacto ou permite saltar duas casas com **Espaço**. Ao bloquear um inimigo comum, o escudo projeta-o até duas casas livres, sem o destruir; paredes, fronteiras e outros inimigos limitam o recuo. Se a direção principal estiver bloqueada, o inimigo recua por outra direção livre; sem espaço, permanece onde está. Os chefes conservam o seu contra-ataque próprio. Uma ação só pode gastar um escudo, mesmo que várias ameaças atinjam o jogador no mesmo turno.
 - Recolha cargas de demolição e use **B** para abrir uma parede adjacente ou atingir um inimigo à frente; a ação gasta um turno e uma carga. A fronteira do mundo não pode ser destruída.
 - Ative os interruptores necessários para abrir o portal. Recolha moedas, evite armadilhas e encontre o caminho até ele.
 - O desafio opcional aparece no cabeçalho: não saltar, não sofrer danos, escapar dentro do limite de ações ou recolher todas as moedas. O limite tem em conta uma rota real pelos interruptores e pelo portal, incluindo a ordem das runas nos puzzles. Concluir o desafio rende **5 moedas**, incluídas uma única vez na recompensa apresentada no resultado.
-- **Enter** continua depois de concluir um andar; **R** repete o andar com a mesma seed e os recursos do início desse andar; **N** começa uma campanha nova; **L** abre o diário; **Esc** pausa; **M** alterna a música. O menu de pausa também permite repetir o andar.
+- **Enter** continua depois de concluir um andar; **R** repete o andar com a mesma seed e os recursos do início desse andar; **N** abre a seleção de nova campanha a partir do menu; **L** abre o diário; **Esc** pausa; **M** alterna a música. O menu de pausa também permite repetir o andar.
 - Se for capturado, o jogo apresenta a sequência de inflação e explosão antes do ecrã de derrota. Continuar restaura o início do andar perdido sem apagar os andares já desbloqueados nem as estrelas anteriores.
 
 ## Ambiente, caixas e câmaras
@@ -24,7 +28,7 @@ No menu, escolhe **CÂMARAS EXPERIMENTAIS [C]** para praticar quatro puzzles con
 - Empurra uma caixa ortogonalmente para uma casa livre; não é possível empurrar várias de uma vez nem atravessar uma caixa com o salto. As placas **L** e **M** exigem, respetivamente, madeira e metal. São mantidas enquanto a caixa correta estiver em cima. Um portão aberto não fecha sobre um ocupante.
 - Em cada ação válida, a corrente desloca madeira até uma casa na direção da seta; metal não flutua. Uma corrente também arrasta o jogador uma casa, mesmo ao esperar, se a casa seguinte estiver livre. Uma tentativa bloqueada não gasta turno.
 - Água marcada com um raio está eletrificada. A eletricidade propaga-se ortogonalmente pela água e por caixas de metal adjacentes; mover o metal pode ligar ou interromper a condução. Inimigos comuns na água eletrificada são derrotados; elites perdem uma vida por turno. O jogador usa as regras habituais de escudo e recebe no máximo um impacto por ação.
-- Ao entrar em gelo **explicitamente marcado**, o jogador desliza uma casa adicional na direção do movimento, se puder; esperar não produz deslizamento. Inimigos sobre esse gelo ficam parados nas ações pares, com a intenção parada anunciada antecipadamente. Uma armadilha de ritmo no gelo conserva o seu ciclo.
+- Ao entrar em gelo **explicitamente marcado**, o jogador desliza uma casa adicional na direção do movimento, se puder; esperar não produz deslizamento. Inimigos sobre esse gelo ficam parados nas ações pares; a próxima posição não é anunciada graficamente. Uma armadilha de ritmo no gelo conserva o seu ciclo.
 - Itens, armadilhas e contactos são resolvidos tanto na casa de entrada como na casa adicional; uma captura na primeira casa interrompe o deslocamento. A lógica não espera pelas animações.
 
 Esta é uma integração inicial, não um sistema físico contínuo: a corrente e o gelo deslocam no máximo uma casa adicional por ação; o gelo não se parte e as caixas não são destruídas pela eletricidade. Os antigos lagos/gelo decorativos gerados pelo bioma continuam sem novas regras, salvo nas casas ambientais explicitamente marcadas. O comportamento dos puzzles de runas e do portal existente é preservado.
@@ -61,12 +65,12 @@ Os padrões usam segmentos com prioridade: uma colisão importante não é subst
 
 Surge um power-up alcançável por andar; os quatro tipos repetem-se pela ordem abaixo. As durações contam **ações válidas**, incluindo a ação que recolhe o poder. Recolher novamente um efeito temporário renova a sua duração.
 
-- **Velocidade** (`speed`): durante 6 ações, os inimigos só se movem em ações alternadas; a ação de recolha é a primeira em que ficam parados.
-- **Íman** (`magnet`): durante 8 ações, recolhe moedas até dois passos de distância por caminhos livres, sem as atrair através de paredes.
+- **Velocidade** (`speed`): durante 6 ações na base, os inimigos só se movem em ações alternadas; a ação de recolha é a primeira em que ficam parados.
+- **Íman** (`magnet`): durante 8 ações na base, recolhe moedas até dois passos de distância por caminhos livres, sem as atrair através de paredes.
 - **Blink**: ganha uma carga. **Q**, o botão no ecrã ou o botão superior direito do comando teleporta até três casas na direção atual, para a casa de chão mais distante. Pode atravessar paredes interiores e ignora ameaças e itens pelo caminho, mas não atravessa a fronteira; só a casa de chegada é ativada. Um Blink bem-sucedido gasta uma carga e um turno; uma tentativa sem destino válido não gasta nenhum dos dois. Blink não conta como salto para o desafio de não saltar.
-- **Congelar tempo** (`time_freeze`): imobiliza todos os inimigos durante 4 ações, incluindo a de recolha. O contacto direto ainda causa dano e **as armadilhas continuam a funcionar**.
+- **Congelar tempo** (`time_freeze`): imobiliza todos os inimigos durante 4 ações na base, incluindo a de recolha. O contacto direto ainda causa dano e **as armadilhas continuam a funcionar**.
 
-O HUD indica as cargas de Blink e os turnos restantes dos efeitos. Velocidade e congelamento podem coexistir: o congelamento impede todos os movimentos, enquanto ambos os temporizadores continuam a contar.
+As habilidades ativas podem aumentar estas durações, o alcance ou as cargas de pickups. O HUD indica as cargas de Blink e os turnos restantes dos efeitos. Velocidade e congelamento podem coexistir: o congelamento impede todos os movimentos, enquanto ambos os temporizadores continuam a contar.
 
 ## Puzzles, inimigos e armadilhas
 
@@ -82,11 +86,16 @@ A cada cinco andares surge uma peça diferente, com silhueta e vida próprias: *
 
 O **Guardião original** permanece como mini-chefe nos andares 4, 9, 14… e não usa a barra nem a identidade dos chefes de xadrez. Ambos os tipos resistem a mais de uma demolição: cada carga retira apenas uma vida, e um escudo que absorva o contacto também causa uma vida de dano e afasta o inimigo. Derrotá-los é opcional: o portal continua a ser uma rota de fuga quando o objetivo estiver cumprido.
 
-## Progresso e compatibilidade
+## Árvore, corações e campanhas
 
-O diário guarda até cinco estrelas por andar e desbloqueia o próximo quando o portal é alcançado. O checkpoint guarda a seed, moedas, escudos, cargas de demolição, direção, histórico, efeitos temporários (incluindo a fase da velocidade) e cargas de Blink do início do andar. **R**, derrota e continuação restauram esses valores; ao concluir um andar, os efeitos restantes seguem para o checkpoint do andar seguinte. Perfis antigos continuam a carregar, com os poderes novos inicialmente a zero. O perfil local fica em `user://come_to_me_profile.cfg`.
+- Existem **36 habilidades funcionais em seis ramos**: sobrevivência, escudos, movimento, controlo, exploração e engenharia. Cada conclusão de andar pela primeira vez dá um ponto de habilidade, separado das moedas. Desbloquear gasta pontos; ativar é uma ação separada. Os nós dependem do anterior e há um limite provisório de oito ativos. Consulta os efeitos, requisitos e regras em [Árvore e campanhas](docs/ARVORE_E_CAMPANHAS.md).
+- Abre **HABILIDADES** no menu, no resultado de um andar ou na pausa antes da primeira ação do andar. Os parâmetros são provisórios e precisam de avaliação em jogo. Corações extras são automáticos: o dano elegível usa **escudo → coração → captura**. Um coração inicial só é concedido na primeira ativação do respetivo nó; reativar não o repõe.
+- Há **três campanhas independentes**. Criar uma nova num slot ocupado exige confirmação; uma nova começa sem habilidades ou recursos de outras. O diário permite revisitar pisos mantendo os recursos, poderes e progressão da campanha atual. O mapa é regenerado com a seed, sem guardar alterações de visitas anteriores.
+- **R**, derrota e continuação restauram o checkpoint do início do piso, sem cura gratuita. Ao passar um portal, os recursos restantes seguem para o checkpoint seguinte. O perfil antigo é preservado e migrado para a campanha 1 na primeira gravação; não há pontos retroativos para pisos com estrelas já concluídos.
+- Existem backups de checkpoint, perfil antigo e campanha substituída, com restauro explícito e confirmação. Um ficheiro corrompido ou de versão futura não é substituído silenciosamente. Um aviso aparece se a gravação falhar. Os detalhes e limitações estão em [Campanhas e recuperação](docs/ARVORE_E_CAMPANHAS.md#campanhas-checkpoints-e-recuperação).
+- As definições e campos globais são preservados; **cosméticos jogáveis ainda não existem**.
 
-Uma mesma seed continua reproduzível, inclusive ao repetir ou continuar. O gerador mantém a sequência aleatória e os itens e tipos de desafio existentes; o limite de ações pode ser ajustado à rota com a caixa. Nos andares elegíveis, a integração ambiental pode acrescentar uma caixa, uma corrente e uma placa e alterar a aparência de duas casas de chão. As impressões digitais dos andares de regressão sem este desafio são comparadas até ao andar 1000. Seeds de versões mais antigas, anteriores à geração atual, ainda podem produzir layouts diferentes; o progresso e os recursos do perfil não são apagados.
+Uma mesma seed continua reproduzível. Os novos pickups de coração usam um gerador separado, sem consumir o RNG dos mapas/inimigos. Nos andares elegíveis, a integração ambiental pode acrescentar uma caixa, uma corrente e uma placa e alterar duas casas de chão. Seeds de versões anteriores à geração atual ainda podem produzir layouts diferentes.
 
 ## Geração e biomas
 
@@ -96,7 +105,7 @@ O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacênci
 
 - Nos mapas maiores, o WFC atualiza uma fila de entropia em vez de voltar a percorrer todas as células a cada escolha. A colocação das moedas reutiliza a lista ordenada de casas livres, mantendo as mesmas escolhas e o mesmo estado aleatório.
 - O chão, as sombras e as paredes são desenhados em blocos de 6×6 casas e mantidos em cache; apenas os blocos perto da câmara são criados inicialmente. Demolir uma parede atualiza os blocos afetados, incluindo sombras e junções nas bordas. Setas, reflexos, halos e personagens continuam animados nas suas camadas.
-- Objetos e luzes fora da câmara deixam de ser desenhados, com margem para o movimento, zoom e tremor. Isto não remove itens nem altera colisões ou objetivos. A mira do Guardião e o feixe da sentinela são preservados mesmo quando os respetivos corpos estão fora do ecrã.
+- Objetos e luzes fora da câmara deixam de ser desenhados, com margem para o movimento, zoom e tremor. Isto não remove itens nem altera colisões ou objetivos. A linha e retícula remotas do Guardião e o feixe da sentinela foram removidos; o alerta permanece na própria entidade. A perceção de ameaças fora do ecrã ainda precisa de testes com jogadores.
 - Os shaders de ecrã inteiro não são processados quando estão totalmente invisíveis: a sobreposição de captura é reativada para a sequência, e o fundo reaparece nas margens do mapa ou em mapas pequenos.
 
 Estas escolhas seguem as recomendações do Godot sobre [desenho 2D em cache](https://docs.godotengine.org/en/stable/tutorials/2d/custom_drawing_in_2d.html) e [medição de desempenho](https://docs.godotengine.org/en/stable/tutorials/performance/general_optimization.html). Para comparar antes/depois na mesma máquina e com o mesmo executável Godot:
@@ -122,14 +131,19 @@ godot --headless --path . --script res://tests/environment_test.gd
 godot --headless --path . --script res://tests/controller_test.gd
 godot --headless --path . --script res://tests/tactical_feedback_test.gd
 godot --headless --path . --script res://tests/performance_regression_test.gd
+godot --headless --path . --script res://tests/expressive_movement_test.gd
+godot --headless --path . --script res://tests/skill_tree_test.gd
+godot --headless --path . --script res://tests/campaign_storage_test.gd
 godot --headless --path . --script res://tests/sweep.gd -- floors=1-40 seeds=3 bots=1
 ```
 
-No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. `ENVIRONMENT_TEST_PASS` cobre as soluções das quatro câmaras, isolamento do perfil, colisões, corrente, gelo, condução, perigos, reinício e o desafio de campanha em várias seeds. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. `PERFORMANCE_REGRESSION_PASS` compara o gerador e o estado aleatório com a versão anterior e verifica cache, demolição, limites da câmara, biomas e captura; em headless não substitui a inspeção visual. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
+No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. `ENVIRONMENT_TEST_PASS` cobre as soluções das quatro câmaras, isolamento do perfil, colisões, corrente, gelo, condução, perigos, reinício e o desafio de campanha em várias seeds. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. `PERFORMANCE_REGRESSION_PASS` compara o gerador e o estado aleatório com a versão anterior e verifica cache, demolição, limites da câmara, biomas e captura; em headless não substitui a inspeção visual. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. As suites `EXPRESSIVE_MOVEMENT_TEST_PASS`, `SKILL_TREE_TEST_PASS` e `CAMPAIGN_STORAGE_TEST_PASS` cobrem movimento expressivo, efeitos dos nós, corações, checkpoints, campanhas, migração e recuperação. Duas mensagens de aviso na suite de armazenamento são intencionais: testam a proteção de versão futura e de conflito de migração.
+
+No Linux, `GODOT=/caminho/do/Godot tools/test-godot.sh` executa importação e regressões, verificando também erros nos logs mesmo se o Godot devolver código zero. Para as duas suites que precisam de renderização real: `GODOT=/caminho/do/Godot xvfb-run -a -s '-screen 0 1280x720x24' tools/test-godot.sh --graphics`. `ENEMY_INTENTION_RENDER_PASS` verifica que os pixels não revelam trajetórias, e `SKILL_TREE_RENDER_PASS` cobre interface, confirmações e aviso de save. Xvfb por software não substitui testar a GPU, áudio, vibração ou jogadores reais. As mesmas suites estão configuradas no GitHub Actions com Godot 4.7.2.
 
 ## Referências analisadas
 
 - `Neon Ruins.html` e `Neon Ruins (1).html` são cópias do protótipo tático de grade por turnos.
 - `Neon Ruins (Copy).html` mantém o jogo, com título diferente.
-- `where.html` mantém o mesmo jogo com pequenas mudanças no texto e na trilha gerada.
+- `where.html` mantém a base do protótipo com ajustes adicionais de toque, direção e interface; não é uma versão equivalente do projeto Godot.
 - A direção atual usa a silhueta de bola do jogador, sem copiar arte ou código dos jogos de referência.

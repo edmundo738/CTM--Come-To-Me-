@@ -131,6 +131,18 @@ func _draw() -> void:
 		"level_select":
 			_draw_level_select(screen)
 			return
+		"campaign_select":
+			_draw_campaign_select(screen)
+			return
+		"campaign_confirm":
+			_draw_campaign_confirm(screen)
+			return
+		"skill_tree":
+			_draw_skill_tree(screen)
+			return
+		"skill_confirm":
+			_draw_skill_confirm(screen)
+			return
 		"controller_settings":
 			_draw_controller_settings(screen)
 			return
@@ -141,6 +153,7 @@ func _draw() -> void:
 			_draw_header(screen)
 			_draw_footer(screen)
 			_draw_pause(screen)
+			_draw_save_warning(screen)
 			return
 		"playing", "floor_clear", "rescued", "captured", "game_over":
 			_draw_header(screen)
@@ -167,6 +180,16 @@ func _draw() -> void:
 		# Behind the developer modal, gameplay buttons are not focusable/clickable.
 		buttons.clear()
 		_draw_dev_menu(screen)
+	_draw_save_warning(screen)
+
+
+func _draw_save_warning(screen: Vector2) -> void:
+	if game.profile_message.is_empty():
+		return
+	# Never conceal a failed checkpoint behind a result or pause modal.
+	var warning := Rect2(8, 6, screen.x - 16, 28)
+	draw_rect(warning, Color("471726", 0.98))
+	draw_string(font, warning.position + Vector2(8, 19), "AVISO DE SAVE: " + game.profile_message, HORIZONTAL_ALIGNMENT_LEFT, warning.size.x - 16, 10, Color("ffe7eb"))
 
 
 func _focus_context() -> String:
@@ -185,6 +208,10 @@ func _default_focus_action() -> String:
 		"floor_clear", "rescued": return "next_floor"
 		"game_over": return "continue"
 		"controller_settings": return "controller_device"
+		"campaign_select": return "campaign:%d" % game.active_slot
+		"campaign_confirm": return "campaign_cancel"
+		"skill_tree": return "skill_node:" + game.skill_selected
+		"skill_confirm": return "skill_remove_cancel"
 	return ""
 
 
@@ -292,7 +319,7 @@ func _draw_header(screen: Vector2) -> void:
 	var chip_w := 70.0
 	var chip_h := 40.0
 	var chip_gap := 4.0
-	var chip_start_x := screen.x - (chip_w + chip_gap) * 4 - (120.0 if show_minimap else 10.0)
+	var chip_start_x := screen.x - (chip_w + chip_gap) * 5 - (120.0 if show_minimap else 10.0)
 	var obj_x := 300.0 if show_minimap else 210.0
 	var obj_w := maxf(150.0, chip_start_x - obj_x - 20.0)
 	# Caixa de objetivo chanfrada
@@ -300,19 +327,40 @@ func _draw_header(screen: Vector2) -> void:
 	draw_rect(obj_rect, Color("08061a", 0.85), true)
 	draw_rect(Rect2(obj_x - 8, 8, obj_w + 16, 2), Color("5030a0", 0.8), true)
 	draw_string(font, Vector2(obj_x, 23), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
-	draw_string(font, Vector2(obj_x, 40), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 10, Color("d0b0ff"))
-	var challenge_color := Color("ff8b90") if game.is_challenge_failed() else Color("f0cf7a")
+	var objective: String = game.get_objective_text()
 	var objective_detail: String = "LABORATORIO / SEM RECOMPENSAS" if game.lab_active else "DESAFIO +5 / " + game.get_challenge_text()
+	if screen.x < 1100.0:
+		# Preserve the essential objective and the complete challenge at the
+		# minimum width rather than clipping either behind the stat chips.
+		if game.lab_active:
+			objective = "PLACAS %d/%d / PORTAL %s" % [game.environment.active_plate_count(), game.environment.plates.size(), "ABERTO" if game.portal_open else "FECHADO"]
+			objective_detail = "LABORATORIO / SEM RECOMPENSAS"
+		elif game.objective_type == "puzzle":
+			objective = "RUNAS %d/3 / %s" % [game._active_switches(), "PORTAL ABERTO" if game.portal_open else "SEGUIR ORDEM"]
+		elif game.objective_type == "switches":
+			objective = "INTERRUPT. %d/%d / PORTAL %s" % [game._active_switches(), game.switches.size(), "ABERTO" if game.portal_open else "FECHADO"]
+		else:
+			objective = "ALCANCA O PORTAL / ENCONTRA LIA"
+		if not game.lab_active:
+			match game.challenge_kind:
+				"no_jump": objective_detail = "DESAFIO +5 / SEM SALTAR"
+				"no_hit": objective_detail = "DESAFIO +5 / SEM SOFRER DANO"
+				"moves": objective_detail = "DESAFIO +5 / ATE %d ACOES (%d)" % [game.challenge_par, game.moves_this_floor]
+				"all_coins": objective_detail = "DESAFIO +5 / MOEDAS: %d RESTANTES" % game.coins.size()
+	draw_string(font, Vector2(obj_x, 40), objective, HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9 if screen.x < 1100.0 else 10, Color("d0b0ff"))
+	var challenge_color := Color("ff8b90") if game.is_challenge_failed() else Color("f0cf7a")
 	draw_string(font, Vector2(obj_x, 57), objective_detail, HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, challenge_color)
 	
 	# ── STATS top-right: Shield | Coin | Switch | Key ─────────────────────────────
-	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "shield", "%d" % game.charges, Color("8cf4ff"))
-	_draw_stat_chip(Rect2(chip_start_x + chip_w + chip_gap, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
+	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "heart", "%d/%d" % [game.hearts_current if not game.lab_active else 0, game.heart_capacity()], Color("ff96ab"))
+	draw_string(font, Vector2(chip_start_x, 67), "EXTRAS", HORIZONTAL_ALIGNMENT_CENTER, chip_w, 8, Color("e6aabb"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap), 16, chip_w, chip_h), "shield", "%d/%d" % [game.charges, game.shield_capacity()], Color("8cf4ff"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 2.0, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
 	var sw_val := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
 	if game.lab_active:
 		sw_val = "%d/%d" % [game.environment.active_plate_count(), game.environment.plates.size()]
-	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 2.0, 16, chip_w, chip_h), "switch", sw_val, Color("b9f39c"))
-	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "switch", sw_val, Color("b9f39c"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 4.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
 	
 	# ── MINI-MAP top-right corner ──────────────────────────────────────────────────
 	if show_minimap:
@@ -418,6 +466,7 @@ func _draw_stat_chip(rect: Rect2, icon: String, value: String, tint: Color) -> v
 	draw_rect(rect, Color(tint, 0.08), false, 1.0)
 	var icon_center := Vector2(rect.position.x + 15, rect.position.y + rect.size.y * 0.5)
 	match icon:
+		"heart": _draw_heart(icon_center, game.hearts_current > 0 and not game.lab_active)
 		"shield": _draw_shield_icon(icon_center.x, icon_center.y, 0.68)
 		"coin": _draw_coin_icon(icon_center.x, icon_center.y, 0.68)
 		"switch": _draw_switch_icon(icon_center.x, icon_center.y, 0.68)
@@ -479,18 +528,23 @@ func _draw_title(screen: Vector2) -> void:
 	_draw_cinematic_backdrop(screen, 0.12)
 	var menu_x := maxf(112.0, screen.x * 0.10)
 	var menu_width := minf(340.0, screen.x * 0.33)
-	var menu_top := screen.y * 0.315
+	var menu_top := screen.y * 0.275
 	draw_string(font, Vector2(menu_x, menu_top), "/// SINAL DE RESGATE  /  SETOR 01", HORIZONTAL_ALIGNMENT_LEFT, menu_width, 9, Color("77e8f1", 0.86))
 	draw_rect(Rect2(menu_x, menu_top + 12, 56, 2), Color("ffe600", 0.86))
 	var button_y := menu_top + 28.0
-	var button_height := 38.0
-	var gap := 7.0
+	var button_height := 31.0 if screen.y < 620.0 else 35.0
+	var gap := 3.0 if screen.y < 620.0 else 5.0
 	if game.has_resume:
 		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CONTINUAR JORNADA   [ANDAR %02d]" % game.resume_floor, "continue", "menu_primary")
 		button_y += button_height + gap
 		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "INICIAR NOVA EXPEDICAO", "new_run", "menu")
 	else:
 		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "INICIAR EXPEDICAO", "new_run", "menu_primary")
+	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CAMPANHAS  /  ATUAL %d" % (game.active_slot + 1), "campaigns", "menu")
+	if game.has_resume:
+		button_y += button_height + gap
+		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "HABILIDADES  /  PONTOS %d" % game.skills.points, "skills", "menu")
 	button_y += button_height + gap
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "MATRIZ DE ANDARES", "levels", "menu")
 	button_y += button_height + gap
@@ -501,12 +555,181 @@ func _draw_title(screen: Vector2) -> void:
 	button_y += button_height + gap
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "COMANDOS / VIBRACAO", "controller_settings", "menu")
 	var controller_status: String = "COMANDO: %s" % game.controller.device_name() if game.controller.active_device >= 0 else "COMANDO: NAO LIGADO"
+	if not game.profile_message.is_empty():
+		draw_string(font, Vector2(22, screen.y - 22), game.profile_message, HORIZONTAL_ALIGNMENT_LEFT, screen.x - 44, 10, Color("ff889e"))
 	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 78), controller_status, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.65, 9, Color("77e8f1", 0.9))
 	var menu_hint := "CLIQUE  SELECIONAR     ENTER  JOGAR     C  CAMARAS     N  NOVO JOGO     M  SOM"
 	if game.controller.using_gamepad:
 		menu_hint = "DIRECIONAL / ANALOGICO  NAVEGAR     %s  CONFIRMAR     %s  VOLTAR" % [game.controller.button_label("confirm"), game.controller.button_label("cancel")]
 	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), menu_hint, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
 	draw_string(font, Vector2(screen.x - 22, 30), "%d ANDARES DESBLOQUEADOS" % game.furthest_floor, HORIZONTAL_ALIGNMENT_RIGHT, 280, 9, Color("d7e5ef", 0.78))
+
+
+func _draw_campaign_select(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.82)
+	var panel := Rect2(Vector2(24, 24), screen - Vector2(48, 48))
+	_draw_panel(panel, Color("70e5f0", 0.65))
+	draw_string(font, panel.position + Vector2(25, 42), "CAMPANHAS", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 50, 25, Color("f2f8ff"))
+	draw_string(font, panel.position + Vector2(26, 65), "ESCOLHER NOVA EXPEDICAO" if game.slot_select_mode == "new" else "ESCOLHER OU CONTINUAR", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 52, 11, Color("8be8f1"))
+	var card_gap := 14.0
+	var card_width := (panel.size.x - 60.0 - card_gap * 2.0) / 3.0
+	var card_y := panel.position.y + 100.0
+	var card_height := minf(225.0, panel.size.y - 220.0)
+	for index in 3:
+		var x := panel.position.x + 30.0 + index * (card_width + card_gap)
+		var rect := Rect2(x, card_y, card_width, card_height)
+		var info: Dictionary = game.campaign_status(index)
+		var status: String = info.status
+		var active: bool = index == game.active_slot
+		var accent := Color("70e5f0") if status in ["ok", "empty"] else Color("ff708c")
+		draw_rect(rect, Color("101c30", 0.98))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 3)), accent)
+		draw_string(font, rect.position + Vector2(14, 30), "CAMPANHA %d%s" % [index + 1, " / ATUAL" if active else ""], HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 13, Color("eef8ff"))
+		var line := "VAZIA / PRONTA PARA INICIAR"
+		var detail := "SEM PONTOS OU HABILIDADES"
+		if status == "ok":
+			var data: Dictionary = info.data
+			line = "CHECKPOINT: ANDAR %d" % int(data.resume_floor) if data.has_resume else "SEM CHECKPOINT"
+			detail = "MAXIMO %d  /  MOEDAS %d" % [int(data.furthest_floor), int(data.resume_coins)]
+		elif status == "corrupt":
+			line = "DADOS DANIFICADOS"
+			detail = "ORIGINAL PRESERVADO"
+		elif status == "future":
+			line = "VERSAO MAIS RECENTE"
+			detail = "ORIGINAL PRESERVADO"
+		draw_string(font, rect.position + Vector2(14, 65), line, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 10, accent)
+		draw_string(font, rect.position + Vector2(14, 86), detail, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 9, Color("b3c3d8"))
+		if status in ["ok", "empty"]:
+			var label := "NOVA CAMPANHA" if game.slot_select_mode == "new" else "INICIAR" if status == "empty" else "CONTINUAR"
+			_draw_button(Rect2(x + 12, rect.end.y - 120, card_width - 24, 32), label, "campaign:%d" % index, "primary")
+		if bool(info.get("backup", false)):
+			_draw_button(Rect2(x + 12, rect.end.y - 80, card_width - 24, 30), "REST. CHECKPOINT", "campaign_restore:%d" % index, "secondary")
+		if bool(info.get("replaced_backup", false)):
+			_draw_button(Rect2(x + 12, rect.end.y - 42, card_width - 24, 30), "REST. SUBSTITUIDA", "campaign_restore_replaced:%d" % index, "secondary")
+		elif not bool(info.get("backup", false)):
+			draw_string(font, Vector2(x + 12, rect.end.y - 22), "SEM BACKUP ANTERIOR", HORIZONTAL_ALIGNMENT_CENTER, card_width - 24, 9, Color("71829e"))
+	var message: String = game.slot_message if not game.slot_message.is_empty() else game.profile_message
+	draw_string(font, panel.position + Vector2(30, panel.size.y - 91), message, HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 60, 10, Color("ffd28a"))
+	_draw_button(Rect2(panel.position.x + 30, panel.end.y - 55, 150, 35), "VOLTAR", "menu", "secondary")
+	game.campaign_storage.profile_path = game.profile_path
+	if game.profile_blocked and game.campaign_storage.global_backup_available():
+		_draw_button(Rect2(panel.position.x + 195, panel.end.y - 55, 225, 35), "RESTAURAR PERFIL GLOBAL", "profile_restore", "secondary")
+
+
+func _draw_campaign_confirm(screen: Vector2) -> void:
+	_draw_campaign_select(screen)
+	buttons.clear()
+	_draw_modal_backdrop(screen, Color("070916", 0.85))
+	var panel_size := Vector2(minf(590.0, screen.x - 48.0), 230.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ffb36c", 0.8))
+	var title := "CONFIRMAR NOVA CAMPANHA"
+	var line := "CAMPANHA %d SERA SUBSTITUIDA. O BACKUP FICA DISPONIVEL." % (game.slot_pending + 1)
+	if game.slot_pending_action in ["restore", "restore_replaced"]:
+		title = "RESTAURAR BACKUP?"
+		line = "CAMPANHA %d SERA RESTAURADA. O FICHEIRO ATUAL SERA ARQUIVADO." % (game.slot_pending + 1)
+	elif game.slot_pending_action == "profile_restore":
+		title = "RESTAURAR PERFIL GLOBAL?"
+		line = "DEFINICOES GLOBAIS SERAO RESTAURADAS; CAMPANHAS NAO MUDAM."
+	draw_string(font, panel.position + Vector2(24, 47), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 19, Color("fff1db"))
+	draw_string(font, panel.position + Vector2(24, 86), line, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 10, Color("e7ccae"))
+	draw_string(font, panel.position + Vector2(24, 111), "CANCELAR NAO ALTERA NENHUM FICHEIRO.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 10, Color("a8bbcb"))
+	var width := (panel.size.x - 72) * 0.5
+	_draw_button(Rect2(panel.position.x + 24, panel.end.y - 62, width, 38), "CANCELAR", "campaign_cancel", "secondary")
+	_draw_button(Rect2(panel.position.x + 48 + width, panel.end.y - 62, width, 38), "CONFIRMAR", "campaign_confirm", "primary")
+
+
+func _draw_skill_tree(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.85)
+	var panel := Rect2(Vector2(16, 16), screen - Vector2(32, 32))
+	_draw_panel(panel, Color("be7bff", 0.65))
+	var inner_x := panel.position.x + 24.0
+	var inner_w := panel.size.x - 48.0
+	draw_string(font, Vector2(inner_x, panel.position.y + 32), "ARVORE DE HABILIDADES", HORIZONTAL_ALIGNMENT_LEFT, inner_w * 0.58, 21, Color("f6edff"))
+	draw_string(font, Vector2(inner_x + inner_w * 0.50, panel.position.y + 31), "CAMPANHA %d  /  PONTOS %d  /  ATIVAS %d/%d" % [game.active_slot + 1, game.skills.points, game.skills.active.size(), game.skills.EQUIP_LIMIT], HORIZONTAL_ALIGNMENT_RIGHT, inner_w * 0.5, 11, Color("8fe9ef"))
+	draw_string(font, Vector2(inner_x, panel.position.y + 54), "1 PONTO POR PRIMEIRA CONCLUSAO  /  CUSTOS E LIMITE EM TESTE", HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("a9b7d2"))
+	var tab_y := panel.position.y + 68.0
+	var gap := 5.0
+	var tab_width := (inner_w - gap * 5.0) / 6.0
+	for index in game.skills.BRANCHES.size():
+		var branch: Dictionary = game.skills.BRANCHES[index]
+		var rect := Rect2(inner_x + index * (tab_width + gap), tab_y, tab_width, 32)
+		var action: String = "skill_branch:" + str(branch.id)
+		var selected: bool = branch.id == game.skill_branch
+		var tint := Color(branch.color)
+		draw_rect(rect, Color(tint, 0.22 if selected else 0.07))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(tint, 0.9 if selected else 0.4))
+		if _is_focused(action):
+			draw_rect(rect.grow(2), Color("b5faff"), false, 2.0)
+		draw_string(font, rect.position + Vector2(3, 21), branch.name, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 6, 10, Color("ffffff") if selected else Color("b6c7dc"))
+		buttons.append({"rect": rect, "action": action})
+	var nodes: Array[Dictionary] = game.skills.branch_nodes(game.skill_branch)
+	var node_rects := {}
+	var graph_top := panel.position.y + 120.0
+	var available_height := maxf(180.0, panel.end.y - 185.0 - graph_top)
+	var node_h := minf(50.0, maxf(38.0, available_height / 5.0))
+	var row_step := minf(76.0, (available_height - node_h) / 3.0)
+	graph_top += maxf(0.0, (available_height - node_h - row_step * 3.0) * 0.5)
+	var node_w := minf(220.0, (inner_w - 40.0) / 3.0)
+	var graph_w := minf(880.0, inner_w)
+	var graph_x := panel.get_center().x - graph_w * 0.5
+	for node in nodes:
+		var center_x := graph_x + graph_w * (float(node.col) + 0.5) / 3.0
+		var rect := Rect2(center_x - node_w * 0.5, graph_top + float(node.row) * row_step, node_w, node_h)
+		node_rects[node.id] = rect
+	for node in nodes:
+		if not str(node.parent).is_empty() and node_rects.has(node.parent):
+			var from: Rect2 = node_rects[node.parent]
+			var to: Rect2 = node_rects[node.id]
+			draw_line(Vector2(from.get_center().x, from.end.y), Vector2(to.get_center().x, to.position.y), Color("966add", 0.65), 2.0, true)
+	for node in nodes:
+		var rect: Rect2 = node_rects[node.id]
+		var action: String = "skill_node:" + str(node.id)
+		var selected: bool = node.id == game.skill_selected
+		var active: bool = game.skills.active.has(node.id)
+		var unlocked: bool = game.skills.unlocked.has(node.id)
+		var fill := Color("224356") if active else Color("26203d") if unlocked else Color("15192b")
+		var edge := Color("78e9e2") if active else Color("d3a3ff") if unlocked else Color("59637e")
+		draw_rect(rect, fill)
+		draw_rect(rect, Color(edge, 0.95 if selected else 0.5), false, 2.0 if selected else 1.0)
+		if _is_focused(action):
+			draw_rect(rect.grow(3), Color("b5faff"), false, 2.0)
+		draw_string(font, rect.position + Vector2(7, rect.size.y * 0.5 - 3), node.name, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 11, Color("f7f2ff") if unlocked else Color("b5bdd0"))
+		var state := "ATIVA" if active else "DESBLOQUEADA" if unlocked else "%d PONTO%s" % [node.cost, "S" if int(node.cost) != 1 else ""]
+		draw_string(font, rect.position + Vector2(7, rect.size.y * 0.5 + 12), state, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 9, edge)
+		buttons.append({"rect": rect, "action": action})
+	var selected: Dictionary = game.skills.node(game.skill_selected)
+	if not selected.is_empty():
+		var detail_y := panel.end.y - 150.0
+		draw_rect(Rect2(inner_x, detail_y - 21, inner_w, 1), Color("9775c5", 0.4))
+		draw_string(font, Vector2(inner_x, detail_y), selected.name + "  /  " + selected.desc, HORIZONTAL_ALIGNMENT_LEFT, inner_w, 12, Color("f0e9ff"))
+		var parent: Dictionary = game.skills.node(selected.parent)
+		var dependency := "SEM REQUISITO" if parent.is_empty() else "REQUER: " + str(parent.name) + " DESBLOQUEADO E ATIVO"
+		draw_string(font, Vector2(inner_x, detail_y + 23), "%s  /  CUSTO %d PONTO(S)" % [dependency, selected.cost], HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("a9bdd2"))
+		draw_string(font, Vector2(inner_x, detail_y + 44), game.skill_message, HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("ffdc91"))
+	var button_gap := 8.0
+	var button_width := (inner_w - button_gap * 2.0) / 3.0
+	var button_y := panel.end.y - 52.0
+	var unlock_label := "JA DESBLOQUEADA" if game.skills.unlocked.has(game.skill_selected) else "DESBLOQUEAR"
+	var toggle_label := "DESATIVAR" if game.skills.active.has(game.skill_selected) else "ATIVAR"
+	_draw_button(Rect2(inner_x, button_y, button_width, 34), unlock_label, "skill_unlock", "primary")
+	_draw_button(Rect2(inner_x + button_width + button_gap, button_y, button_width, 34), toggle_label, "skill_toggle", "secondary")
+	_draw_button(Rect2(inner_x + (button_width + button_gap) * 2.0, button_y, button_width, 34), "VOLTAR", "skill_back", "secondary")
+
+
+func _draw_skill_confirm(screen: Vector2) -> void:
+	_draw_skill_tree(screen)
+	buttons.clear()
+	_draw_modal_backdrop(screen, Color("080714", 0.86))
+	var panel_size := Vector2(minf(570.0, screen.x - 48.0), 210.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ff8da8", 0.8))
+	draw_string(font, panel.position + Vector2(20, 45), "DESATIVAR CORACAO?", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 21, Color("ffeaf0"))
+	draw_string(font, panel.position + Vector2(20, 78), "O SALDO ACIMA DA NOVA CAPACIDADE SERA PERDIDO.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 11, Color("f0c1ce"))
+	draw_string(font, panel.position + Vector2(20, 102), "REATIVAR NAO CONCEDE OUTRO CORACAO GRATIS.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 10, Color("b5c4d9"))
+	var width := (panel.size.x - 72) * 0.5
+	_draw_button(Rect2(panel.position.x + 24, panel.end.y - 60, width, 36), "CANCELAR", "skill_remove_cancel", "secondary")
+	_draw_button(Rect2(panel.position.x + 48 + width, panel.end.y - 60, width, 36), "DESATIVAR", "skill_remove_confirm", "primary")
 
 
 func _draw_level_select(screen: Vector2) -> void:
@@ -566,7 +789,12 @@ func _draw_pause(screen: Vector2) -> void:
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 104, panel.size.x - 96, 39), "VOLTAR AO JOGO", "resume", "primary")
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 149, panel.size.x - 96, 39), "REINICIAR ANDAR", "restart_floor", "secondary")
 	if not game.lab_active:
-		_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, panel.size.x - 96, 39), "DIARIO DE ANDARES", "levels", "secondary")
+		var half := (panel.size.x - 104.0) * 0.5
+		_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, half, 39), "DIARIO", "levels", "secondary")
+		if game.turn_number == 0 and game.has_resume:
+			_draw_button(Rect2(panel.position.x + 56 + half, panel.position.y + 194, half, 39), "HABILIDADES", "skills", "secondary")
+		else:
+			draw_string(font, Vector2(panel.position.x + 56 + half, panel.position.y + 216), "ARVORE ENTRE ANDARES", HORIZONTAL_ALIGNMENT_CENTER, half, 9, Color("8c99af"))
 	else:
 		draw_string(font, Vector2(panel.position.x + 48, panel.position.y + 218), "A CAMPANHA NAO E ALTERADA NESTAS CAMARAS", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 96, 9, Color("9caecc"))
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 239, panel.size.x - 96, 39), "COMANDOS / VIBRACAO", "controller_settings", "secondary")
@@ -694,13 +922,15 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 		_draw_star(Vector2(x, star_y), 19.0 if index < game.stars_last_floor else 16.0, Color("ffd35e") if index < game.stars_last_floor else Color("303a54"))
 	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 184), "+%d RECOMPENSA     MOEDAS %02d     TOTAL %03d" % [game.floor_reward, game.coins_this_floor, game.total_coins], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 12, Color("f3df9c"))
 	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 211), "RECORDE %03d     RESGATES %d" % [game.best_score, game.rescues_completed], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 10, Color("b3c0d8"))
+	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 239), "%s  /  %d PONTOS DISPONIVEIS" % ["+1 PONTO DE HABILIDADE" if game.last_skill_point_awarded else "SEM NOVO PONTO (ANDAR JA CONCLUIDO)", game.skills.points], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 10, Color("bfa1ff"))
 	var button_y := panel.position.y + panel.size.y - 70
-	var button_width := minf(170.0, (panel.size.x - 58.0) / 3.0)
-	var gap := 10.0
-	var row_x := screen.x * 0.5 - (button_width * 3.0 + gap * 2.0) * 0.5
-	_draw_button(Rect2(row_x, button_y, button_width, 42), "PROXIMO SETOR" if rescued else "PROXIMO ANDAR", "next_floor", "primary")
-	_draw_button(Rect2(row_x + button_width + gap, button_y, button_width, 42), "DIARIO", "levels", "secondary")
-	_draw_button(Rect2(row_x + (button_width + gap) * 2.0, button_y, button_width, 42), "MENU", "menu", "secondary")
+	var button_width := minf(140.0, (panel.size.x - 66.0) / 4.0)
+	var gap := 8.0
+	var row_x := screen.x * 0.5 - (button_width * 4.0 + gap * 3.0) * 0.5
+	_draw_button(Rect2(row_x, button_y, button_width, 42), "PROXIMO", "next_floor", "primary")
+	_draw_button(Rect2(row_x + button_width + gap, button_y, button_width, 42), "HABILIDADES", "skills", "secondary")
+	_draw_button(Rect2(row_x + (button_width + gap) * 2.0, button_y, button_width, 42), "DIARIO", "levels", "secondary")
+	_draw_button(Rect2(row_x + (button_width + gap) * 3.0, button_y, button_width, 42), "MENU", "menu", "secondary")
 
 
 func _draw_game_over(screen: Vector2) -> void:

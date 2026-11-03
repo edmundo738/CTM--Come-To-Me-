@@ -372,8 +372,14 @@ func _test_game_integration(fake: FakeInput) -> void:
 	game.queue_free()
 
 
+func _cleanup_profile_test(path: String) -> void:
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak", ".campaign-2.cfg", ".campaign-2.cfg.bak", ".campaign-3.cfg", ".campaign-3.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
+
+
 func _test_profile_settings() -> void:
 	var path := "user://controller_test_profile.cfg"
+	_cleanup_profile_test(path)
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.controller_vibration_enabled = false
@@ -396,6 +402,8 @@ func _test_profile_settings() -> void:
 	_expect(bool(changed.get_value("controller", "vibration", false)) and is_equal_approx(float(changed.get_value("controller", "vibration_intensity", -1.0)), 0.6) and int(changed.get_value("progress", "furthest_floor", 0)) == 8, "changing vibration saves preferences without losing progress")
 	live.audio.stop_all()
 	live.queue_free()
+	# Exercise legacy migration independently from the slot created above.
+	_cleanup_profile_test(path)
 	var old := ConfigFile.new()
 	old.set_value("progress", "furthest_floor", 3)
 	old.save(path)
@@ -453,7 +461,7 @@ func _test_profile_settings() -> void:
 	chosen.free()
 	legacy_reduced.free()
 	legacy_off.free()
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	_cleanup_profile_test(path)
 
 
 func _test_rendered_menus(fake: FakeInput) -> void:
@@ -499,7 +507,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	game.hud.queue_redraw()
 	await process_frame
 	await process_frame
-	for _step in 2:
+	for _step in 3:
 		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_expect(game.hud.focus_action == "experimental", "experimental chambers are reachable with the D-pad")
 	for _step in 2:
@@ -596,7 +604,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	_expect(game.game_state == "title", "cancel returns from the rendered settings screen to title")
 	await process_frame
 	await process_frame
-	for _step in 2:
+	for _step in 3:
 		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_dispatch_tap(2, JOY_BUTTON_A)
 	_expect(game.game_state == "playing" and game.lab_active and game.lab_index == 0, "controller confirm opens the environmental chamber")

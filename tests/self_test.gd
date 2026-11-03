@@ -116,6 +116,8 @@ func _test_wfc() -> void:
 
 func _test_profile_roundtrip() -> void:
 	var path := "res://.godot/self_test_progress.cfg"
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.furthest_floor = 4
@@ -150,7 +152,8 @@ func _test_profile_roundtrip() -> void:
 	old_reader.free()
 	writer.free()
 	reader.free()
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 func _test_turn_loop(game: Node) -> void:

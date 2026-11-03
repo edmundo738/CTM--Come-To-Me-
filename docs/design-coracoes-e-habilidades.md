@@ -1,6 +1,10 @@
 # Neon Ruins — proposta de corações e progressão
 
-**Estado:** documento de design e auditoria, não implementação. Referência examinada: `92f6126abb2463aee787237d665c337482e08ed0`, depois do PR #7. Complementa [a auditoria geral e o plano de prioridades](auditoria-e-plano.md). As regras de corações descritas pelo jogador são requisitos; as escolhas técnicas e os números explicitamente marcados como propostas ainda precisam de aprovação e testes.
+> **Nota posterior:** os exemplos de ataques e sinais neste documento são propostas históricas, não implementação aprovada. A regra atual é não revelar antecipadamente trajetórias ou próximas casas de inimigos; qualquer indicador explícito exige necessidade real de compreensão ou justiça. Ver [guia atual](GAME_FEEL_GAMEPLAY_GUIDE.md).
+
+> **Atualização de implementação:** a primeira árvore, os corações e três campanhas estão agora funcionais. [Árvore e campanhas](ARVORE_E_CAMPANHAS.md) descreve o comportamento atual; valores são provisórios e as propostas futuras abaixo não estão automaticamente implementadas.
+
+**Estado histórico:** documento de design e auditoria na referência examinada: `92f6126abb2463aee787237d665c337482e08ed0`, depois do PR #7. Complementa [a auditoria geral e o plano de prioridades](auditoria-e-plano.md). As regras de corações descritas pelo jogador são requisitos; as escolhas técnicas e os números explicitamente marcados como propostas ainda precisam de aprovação e testes.
 
 ## 1. Objetivo e decisões já esclarecidas
 

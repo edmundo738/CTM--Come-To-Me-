@@ -54,6 +54,12 @@ const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 const TerrainRenderer = preload("res://terrain_renderer.gd")
 const EnvironmentSystem = preload("res://environment_system.gd")
 const EnvironmentChambers = preload("res://environment_chambers.gd")
+const VisualMotion = preload("res://visual_motion.gd")
+const SkillTree = preload("res://skill_tree.gd")
+const CampaignStorage = preload("res://campaign_storage.gd")
+const WALK_VISUAL_TIME := 0.14
+const SLIDE_VISUAL_TIME := 0.16
+const JUMP_VISUAL_TIME := 0.21
 
 var environment = EnvironmentSystem.new()
 var lab_active := false
@@ -69,6 +75,19 @@ var player_position := Vector2i.ZERO
 var player_from := Vector2.ZERO
 var player_to := Vector2.ZERO
 var player_anim := 1.0
+# Presentation only. The grid position, turn and collision resolve immediately.
+var player_motion = VisualMotion.new()
+var player_visual_direction := Vector2.RIGHT
+var player_roll_angle := 0.0
+var blocked_feedback_time := 0.0
+var blocked_feedback_pending := false
+var blocked_feedback_direction := Vector2.RIGHT
+var attack_feedback_time := 0.0
+var impact_feedback_time := 0.0
+var turn_pulse_pending := false
+var crate_visual_tracks: Dictionary = {}
+var surface_reactions: Array[Dictionary] = []
+var enemy_defeat_visuals: Array[Dictionary] = []
 var facing := Vector2i.RIGHT
 var portal_position := Vector2i.ZERO
 var portal_open := true
@@ -129,6 +148,31 @@ var resume_facing := Vector2i.RIGHT
 var resume_seed := 0
 var resume_history: Array[int] = []
 var resume_powers: Dictionary = {}
+var resume_hearts := 0
+var hearts_current := 0
+var heart_pickups: Array[Vector2i] = []
+var shield_full_notice_turn := -1
+var skills = SkillTree.new()
+var campaign_storage = CampaignStorage.new()
+var transient_campaigns: Array[Dictionary] = [{}, {}, {}]
+var active_slot := 0 # 0-based, displayed as campaigns 1–3
+var profile_blocked := false
+var profile_message := ""
+var legacy_profile_pending := false
+var legacy_profile_hash := ""
+var slot_select_mode := "select"
+var slot_message := ""
+var slot_pending := -1
+var slot_pending_action := ""
+var skill_return_state := "floor_clear"
+var skill_branch := "vida"
+var skill_selected := "heart_1"
+var skill_message := ""
+var skill_pending_remove := ""
+var last_skill_point_awarded := false
+var level_select_source := "title"
+# Dictionary identity is stable within a floor without changing enemy data or RNG.
+var unresolved_contacts: Array[Dictionary] = []
 var dev_menu_open: bool = false
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
@@ -236,6 +280,11 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	if persistence_enabled:
+		campaign_storage.profile_path = profile_path
+		if profile_blocked or campaign_storage.read_slot(active_slot).status not in ["empty", "ok"]:
+			profile_message = "NAO E POSSIVEL SUBSTITUIR UM PERFIL DANIFICADO OU MAIS RECENTE."
+			return
 	lab_active = false
 	if camera != null:
 		camera.enabled = true
@@ -246,6 +295,16 @@ func new_game(seed_value: int = -1) -> void:
 	rng.seed = active_seed
 	floor_history.clear()
 	floor_number = 1
+	# A confirmed new campaign starts a genuinely independent progression.
+	best_score = 0
+	best_score_dirty = false
+	rescues_completed = 0
+	furthest_floor = 1
+	floor_stars.clear()
+	skills.load_state({})
+	hearts_current = 0
+	resume_hearts = 0
+	last_skill_point_awarded = false
 	charges = 0
 	breach_charges = 0
 	_restore_power_state({})
@@ -279,6 +338,7 @@ func continue_game() -> void:
 	charges = resume_charges
 	breach_charges = resume_breach_charges
 	_restore_power_state(resume_powers)
+	hearts_current = resume_hearts
 	facing = resume_facing
 	_reset_capture_state()
 	generate_floor(resume_floor)
@@ -288,13 +348,21 @@ func continue_game() -> void:
 func start_level(number: int) -> void:
 	if number < 1 or number > furthest_floor:
 		return
-	active_seed = int(Time.get_ticks_usec()) ^ randi()
-	rng.seed = active_seed
-	floor_history.clear()
-	total_coins = 0
-	charges = 0
-	breach_charges = 0
-	_restore_power_state({})
+	if not has_resume and number == 1 and furthest_floor == 1 and floor_stars.is_empty():
+		new_game()
+		return
+	if has_resume and level_select_source in ["title", "game_over"]:
+		# The running world at the title/defeat screen is not the checkpoint.
+		active_seed = resume_seed
+		total_coins = resume_coins
+		charges = resume_charges
+		breach_charges = resume_breach_charges
+		_restore_power_state(resume_powers)
+		hearts_current = resume_hearts
+		floor_history.assign(resume_history)
+		facing = resume_facing
+	# From pause or a completed floor use the actual current inventory. Revisits
+	# preserve the seed, skills, hearts, powers, resources and campaign journal.
 	_reset_capture_state()
 	generate_floor(number)
 	game_state = "playing"
@@ -313,11 +381,21 @@ func _reset_capture_state() -> void:
 	capture_chromatic = 0.0
 	capture_noise = 0.0
 	damage_this_turn = false
+	unresolved_contacts.clear()
 	particles.clear()
 	flash_time = 0.0
 	shake_time = 0.0
 	turn_pulse_time = -1.0
+	turn_pulse_pending = false
 	landing_feedback_time = 0.0
+	blocked_feedback_time = 0.0
+	blocked_feedback_pending = false
+	attack_feedback_time = 0.0
+	impact_feedback_time = 0.0
+	crate_visual_tracks.clear()
+	surface_reactions.clear()
+	enemy_defeat_visuals.clear()
+	player_motion.reset(_cell_center(player_position))
 	near_miss_feedback_time = 0.0
 	threat_aura = 0.0
 	if camera != null:
@@ -342,6 +420,8 @@ func restart_floor() -> void:
 	charges = int(snapshot.charges)
 	breach_charges = int(snapshot.breach_charges)
 	_restore_power_state(snapshot.get("powers", {}))
+	skills.load_state(snapshot.get("skills", skills.serialize()))
+	hearts_current = clampi(int(snapshot.get("hearts", 0)), 0, skills.effect("heart_capacity"))
 	floor_history.assign(snapshot.history)
 	facing = snapshot.facing
 	_reset_capture_state()
@@ -356,7 +436,59 @@ func handle_hud_action(action: String) -> void:
 	if action == "experimental":
 		start_environment_lab()
 	elif action == "new_run":
-		new_game()
+		slot_select_mode = "new"
+		slot_message = "ESCOLHE UMA CAMPANHA. UMA OCUPADA EXIGE CONFIRMACAO."
+		game_state = "campaign_select"
+	elif action == "campaigns":
+		slot_select_mode = "select"
+		slot_message = "CADA CAMPANHA TEM PROGRESSO E BACKUP PROPRIOS."
+		game_state = "campaign_select"
+	elif action.begins_with("campaign:"):
+		_request_campaign(int(action.trim_prefix("campaign:")))
+	elif action.begins_with("campaign_restore:"):
+		slot_pending = int(action.trim_prefix("campaign_restore:"))
+		slot_pending_action = "restore"
+		game_state = "campaign_confirm"
+	elif action.begins_with("campaign_restore_replaced:"):
+		slot_pending = int(action.trim_prefix("campaign_restore_replaced:"))
+		slot_pending_action = "restore_replaced"
+		game_state = "campaign_confirm"
+	elif action == "profile_restore":
+		slot_pending = -1
+		slot_pending_action = "profile_restore"
+		game_state = "campaign_confirm"
+	elif action == "campaign_confirm":
+		_confirm_campaign_action()
+	elif action == "campaign_cancel":
+		game_state = "campaign_select"
+	elif action == "skills":
+		_open_skills()
+	elif action.begins_with("skill_branch:") and game_state == "skill_tree":
+		var branch := action.trim_prefix("skill_branch:")
+		var nodes: Array[Dictionary] = skills.branch_nodes(branch)
+		if not nodes.is_empty():
+			skill_branch = branch
+			skill_selected = nodes[0].id
+			skill_message = ""
+	elif action.begins_with("skill_node:") and game_state == "skill_tree":
+		var id := action.trim_prefix("skill_node:")
+		var definition: Dictionary = skills.node(id)
+		if not definition.is_empty() and definition.branch == skill_branch:
+			skill_selected = id
+			skill_message = ""
+	elif action == "skill_unlock" and game_state == "skill_tree":
+		_unlock_selected_skill()
+	elif action == "skill_toggle" and game_state == "skill_tree":
+		_request_skill_toggle()
+	elif action == "skill_remove_confirm" and game_state == "skill_confirm":
+		game_state = "skill_tree"
+		_apply_skill_toggle(skill_pending_remove)
+		skill_pending_remove = ""
+	elif action == "skill_remove_cancel" and game_state == "skill_confirm":
+		skill_pending_remove = ""
+		game_state = "skill_tree"
+	elif action == "skill_back" and game_state == "skill_tree":
+		game_state = skill_return_state
 	elif action == "continue":
 		continue_game()
 	elif action == "levels":
@@ -453,6 +585,134 @@ func handle_hud_action(action: String) -> void:
 	queue_redraw()
 
 
+func _request_campaign(slot: int) -> void:
+	if slot < 0 or slot > 2:
+		return
+	if profile_blocked:
+		slot_message = profile_message
+		return
+	var info := campaign_status(slot)
+	if info.status not in ["ok", "empty"]:
+		slot_message = "CAMPANHA %d INDISPONIVEL. O ORIGINAL NAO SERA SUBSTITUIDO." % (slot + 1)
+		return
+	if slot_select_mode == "new" and info.status == "ok":
+		slot_pending = slot
+		slot_pending_action = "new"
+		game_state = "campaign_confirm"
+		return
+	if not select_campaign(slot):
+		return
+	if info.status == "empty":
+		if profile_blocked:
+			slot_message = profile_message
+			return
+		new_game()
+	elif has_resume:
+		continue_game()
+	else:
+		game_state = "title"
+
+
+func _confirm_campaign_action() -> void:
+	var action := slot_pending_action
+	var slot := slot_pending
+	game_state = "campaign_select"
+	if action == "new":
+		if not select_campaign(slot) or profile_blocked:
+			slot_message = profile_message if profile_blocked else slot_message
+			return
+		# Save/migrate the old checkpoint before the confirmed replacement so the
+		# per-campaign backup can recover it. Never replace on a failed write.
+		if not _save_profile():
+			slot_message = "NAO FOI POSSIVEL GUARDAR BACKUP; CAMPANHA INTACTA."
+			return
+		if persistence_enabled:
+			campaign_storage.profile_path = profile_path
+			var archive := campaign_storage.archive_before_new(slot)
+			if not archive.ok:
+				slot_message = str(archive.error)
+				return
+		new_game()
+	elif action == "restore" or action == "restore_replaced":
+		restore_campaign(slot, "replaced" if action == "restore_replaced" else "checkpoint")
+	elif action == "profile_restore":
+		campaign_storage.profile_path = profile_path
+		var result := campaign_storage.restore_global()
+		if result.ok:
+			profile_blocked = false
+			profile_message = ""
+			legacy_profile_pending = false
+			_load_profile()
+			slot_message = "BACKUP GLOBAL RESTAURADO; FICHEIRO ANTERIOR ARQUIVADO."
+		else:
+			slot_message = str(result.error)
+	slot_pending = -1
+	slot_pending_action = ""
+
+
+func _open_skills() -> void:
+	if lab_active or not has_resume:
+		return
+	if game_state not in ["title", "floor_clear", "rescued", "paused"]:
+		return
+	if game_state == "paused" and turn_number != 0:
+		last_notice = "ALTERA HABILIDADES ENTRE ANDARES, OU NO INICIO DO ANDAR."
+		notice_timer = 2.5
+		return
+	if game_state == "title":
+		hearts_current = resume_hearts
+	skill_return_state = game_state
+	skill_message = "ESCOLHE UM NO; DESBLOQUEAR E ATIVAR SAO ACOES SEPARADAS."
+	game_state = "skill_tree"
+
+
+func _save_skill_choice() -> void:
+	resume_hearts = clampi(hearts_current, 0, skills.effect("heart_capacity"))
+	if skill_return_state == "paused" and turn_number == 0 and not floor_start_snapshot.is_empty():
+		floor_start_snapshot["skills"] = skills.serialize()
+		floor_start_snapshot["hearts"] = resume_hearts
+	if not _save_profile():
+		skill_message = "NAO FOI POSSIVEL GUARDAR: " + profile_message
+
+
+func _unlock_selected_skill() -> void:
+	if profile_blocked:
+		skill_message = profile_message
+		return
+	var result: Dictionary = skills.unlock(skill_selected)
+	skill_message = str(result.message)
+	if result.ok:
+		_save_skill_choice()
+
+
+func _request_skill_toggle() -> void:
+	if profile_blocked:
+		skill_message = profile_message
+		return
+	var definition: Dictionary = skills.node(skill_selected)
+	if definition.is_empty():
+		return
+	if skills.active.has(skill_selected) and definition.effect == "heart_capacity" and hearts_current > skills.effect("heart_capacity") - 1:
+		# A full heart would be discarded; require an explicit confirmation.
+		for other in skills.NODES:
+			if other.parent == skill_selected and skills.active.has(other.id):
+				skill_message = "DESATIVA PRIMEIRO O NO DEPENDENTE"
+				return
+		skill_pending_remove = skill_selected
+		game_state = "skill_confirm"
+		return
+	_apply_skill_toggle(skill_selected)
+
+
+func _apply_skill_toggle(id: String) -> void:
+	var result: Dictionary = skills.toggle(id)
+	skill_message = str(result.message)
+	if not result.ok:
+		return
+	hearts_current = mini(skills.effect("heart_capacity"), hearts_current + int(result.get("heart_credit", 0)))
+	_save_skill_choice()
+
+
 func dev_toggle_menu() -> void:
 	dev_menu_open = not dev_menu_open
 	last_notice = "MENU DEV: %s [F1]" % ("ABERTO" if dev_menu_open else "FECHADO")
@@ -522,8 +782,8 @@ func dev_clear_enemies() -> void:
 
 func dev_give_resources() -> void:
 	total_coins += 10
-	charges = mini(charges + 1, 3)
-	breach_charges = mini(breach_charges + 1, 3)
+	charges = maxi(charges, mini(charges + 1, shield_capacity()))
+	breach_charges = maxi(breach_charges, mini(breach_charges + 1, 3))
 	blink_charges += 1
 	last_notice = "RECURSOS CONCEDIDOS (+10 MOEDAS, ESCUDO, DEMOLICAO E BLINK)"
 	notice_timer = 2.5
@@ -541,6 +801,7 @@ func dev_open_portal() -> void:
 
 func dev_load_sandbox_arena() -> void:
 	lab_active = false
+	_clear_transient_motion_effects()
 	environment.reset()
 	world_size = Vector2i(18, 14)
 	grid.clear()
@@ -553,9 +814,7 @@ func dev_load_sandbox_arena() -> void:
 				row.append(TILE_FLOOR)
 		grid.append(row)
 	player_position = Vector2i(9, 7)
-	player_from = _cell_center(player_position)
-	player_to = player_from
-	player_anim = 1.0
+	_reset_player_visual(_cell_center(player_position))
 	portal_position = Vector2i(15, 7)
 	portal_open = true
 	enemies.clear()
@@ -565,6 +824,7 @@ func dev_load_sandbox_arena() -> void:
 	enemies.append({"pos": Vector2i(13, 9), "from": _cell_center(Vector2i(13, 9)), "to": _cell_center(Vector2i(13, 9)), "next": Vector2i(13, 9), "t": 1.0, "role": "rusher", "phase": 0})
 	coins.clear()
 	shields.clear()
+	heart_pickups.clear()
 	breakers.clear()
 	powerups.clear()
 	switches.clear()
@@ -619,6 +879,7 @@ func _handle_swipe(start_pos: Vector2, end_pos: Vector2) -> void:
 
 
 func open_level_select() -> void:
+	level_select_source = game_state
 	capture_darkness = 0.0
 	capture_flash = 0.0
 	level_page_start = maxi(1, furthest_floor - LEVELS_PER_PAGE + 1)
@@ -655,6 +916,7 @@ func _save_resume(number: int, coins: int, shield_charges: int = 0, demolition_c
 	resume_coins = maxi(0, coins)
 	resume_charges = maxi(0, shield_charges)
 	resume_breach_charges = maxi(0, demolition_charges)
+	resume_hearts = clampi(hearts_current, 0, skills.effect("heart_capacity"))
 	resume_powers = _normalized_power_state(_capture_power_state() if powers == null else powers)
 	resume_facing = start_facing if start_facing in FOUR_WAY else Vector2i.RIGHT
 	resume_seed = active_seed
@@ -717,13 +979,12 @@ func _load_lab_chamber(index: int) -> void:
 		grid[point.y][point.x] = TILE_WATER
 	environment.reset(spec)
 	player_position = spec.start
-	player_from = _cell_center(player_position)
-	player_to = player_from
-	player_anim = 1.0
+	_reset_player_visual(_cell_center(player_position))
 	facing = Vector2i.RIGHT
 	portal_position = spec.portal
 	enemies.clear()
 	shields.clear()
+	heart_pickups.clear()
 	breakers.clear()
 	powerups.clear()
 	coins.clear()
@@ -767,7 +1028,7 @@ func _sync_environment_mechanisms() -> void:
 	for enemy in enemies:
 		enemy_positions.append(enemy.pos)
 	var active: bool = environment.update_mechanisms(player_position, enemy_positions)
-	if environment_bonus_available and not environment_bonus_claimed and active:
+	if environment_bonus_available and not environment_bonus_claimed and active and charges < shield_capacity():
 		environment_bonus_claimed = true
 		charges += 1
 		last_notice = "PLACA DA CORRENTE ATIVADA — ESCUDO +1"
@@ -786,19 +1047,28 @@ func _sync_environment_mechanisms() -> void:
 # Resolve a single environmental displacement after the entry cell. Hazards,
 # pickups and contacts are resolved on both cells before enemy movement.
 func _resolve_environment_displacement(action_direction: Vector2i) -> void:
+	var surface: String = environment.kind_at(player_position)
+	if (surface == "ice" and _skill_effect("ice_grip") > 0) or (surface == "current" and _skill_effect("current_anchor") > 0):
+		return
 	var direction: Vector2i = environment.forced_direction(player_position, action_direction)
 	if direction == Vector2i.ZERO or _enemy_at(player_position):
 		return
 	var destination := player_position + direction
 	if not _is_floor(destination) or _enemy_at(destination):
 		return
-	_begin_player_move(destination)
+	var movement_surface: String = environment.kind_at(player_position)
+	_begin_player_move(destination, movement_surface)
+	# The semantic event was already emitted; align only its visual ring with
+	# the actual final cell, including a current that moves a waiting player.
+	turn_pulse_position = _cell_center(player_position)
+	turn_pulse_time = -0.001
+	turn_pulse_pending = true
 	last_notice = "CORRENTE: +1 CASA" if environment.kind_at(player_position - direction) == "current" else "GELO: +1 CASA"
 	notice_timer = 1.2
 	_collect_pickups()
-	_trigger_traps()
+	_trigger_traps(direction)
 	if game_state == "playing" and environment.is_electrified(player_position):
-		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"))
+		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"), -direction)
 	if game_state != "playing":
 		return
 	_activate_switches()
@@ -816,8 +1086,11 @@ func _resolve_electrified_enemies() -> void:
 		if _is_elite(enemy):
 			enemy["hp"] = maxi(0, int(enemy.get("hp", 1)) - 1)
 			if enemy.hp > 0:
+				enemy["_visual_reaction"] = 0.22
+				enemy["_visual_reaction_direction"] = Vector2.UP
 				enemies[index] = enemy
 				continue
+		_record_enemy_defeat(enemy, "electricity")
 		_spawn_burst(_cell_center(enemy.pos), Color("ffe46a"), 12, 100.0)
 		enemies.remove_at(index)
 
@@ -876,6 +1149,7 @@ func _place_environment_bonus(walkable: Array[Vector2i], occupied: Dictionary) -
 
 func generate_floor(number: int) -> void:
 	lab_active = false
+	_clear_transient_motion_effects()
 	environment.reset()
 	environment_bonus_available = false
 	environment_bonus_claimed = false
@@ -886,6 +1160,7 @@ func generate_floor(number: int) -> void:
 	floor_start_snapshot = {
 		"floor": floor_number, "seed": active_seed, "coins": total_coins,
 		"charges": charges, "breach_charges": breach_charges, "powers": _capture_power_state(),
+		"hearts": hearts_current, "skills": skills.serialize(),
 		"history": floor_history.duplicate(), "facing": facing,
 	}
 	var result: Dictionary = generator.generate(world_size.x, world_size.y, level_seed, get_biome_index(floor_number))
@@ -914,11 +1189,10 @@ func generate_floor(number: int) -> void:
 	if not result.ok:
 		_carve_route(player_position, portal_position)
 	_add_biome_landmarks(number)
-	player_from = _cell_center(player_position)
-	player_to = player_from
-	player_anim = 1.0
+	_reset_player_visual(_cell_center(player_position))
 	enemies.clear()
 	shields.clear()
+	heart_pickups.clear()
 	breakers.clear()
 	powerups.clear()
 	coins.clear()
@@ -1002,6 +1276,7 @@ func generate_floor(number: int) -> void:
 	# Existing enemies, switches, routes and the main portal are not replaced.
 	if number >= 6 and number % 20 == 6:
 		_place_environment_bonus(walkable, occupied)
+	_place_heart_pickup(number, occupied)
 	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
@@ -1470,6 +1745,34 @@ func _enemy_at(point: Vector2i, except_enemy: Dictionary = {}) -> bool:
 	return false
 
 
+func _queue_enemy_visual(enemy: Dictionary, origin: Vector2i, destination: Vector2i) -> void:
+	if origin == destination:
+		return
+	var track = enemy.get("_visual_motion")
+	if track == null:
+		var current := _enemy_visual_position(enemy)
+		track = VisualMotion.new()
+		track.reset(current)
+		var center := _cell_center(origin)
+		if not current.is_equal_approx(center):
+			track.enqueue(current, center, "enemy", 0.08)
+		enemy["_visual_motion"] = track
+	var jumping: bool = enemy.get("role", "") == "chess_boss" and enemy.get("boss_kind", "") == "knight"
+	track.enqueue(_cell_center(origin), _cell_center(destination), "enemy_jump" if jumping else "enemy", 0.18 if jumping else 0.14)
+
+
+func _record_enemy_defeat(enemy: Dictionary, material: String) -> void:
+	# Keep a short, non-interactive silhouette after the rule removes the enemy.
+	# It cannot collide, attack, move on the board or award anything.
+	if enemy_defeat_visuals.size() >= 8:
+		enemy_defeat_visuals.pop_front()
+	enemy_defeat_visuals.append({
+		"role": enemy.get("role", "hunter"), "boss_kind": enemy.get("boss_kind", "pawn"),
+		"from": _enemy_visual_position(enemy), "to": _cell_center(enemy.pos),
+		"material": material, "age": 0.0, "duration": 0.30,
+	})
+
+
 func _make_enemy(position: Vector2i, role: String) -> Dictionary:
 	return {"pos": position, "next": position, "from": _cell_center(position), "to": _cell_center(position),
 		"t": 1.0, "role": role, "phase": rng.randi_range(0, 1),
@@ -1569,8 +1872,8 @@ func _update_enemy_intents() -> void:
 			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
 		enemy.alert = _enemy_sees_player(origin)
 		enemy["path"] = []
-		# Ice delays enemies on even-numbered actions. Announce the stationary
-		# intent before that action; no animation decides the rule.
+		# Ice delays enemies on even-numbered actions. Plan the stationary
+		# result internally; no animation decides or displays the next step.
 		if environment.kind_at(origin) == "ice" and posmod(turn_number + 1, 2) == 0:
 			enemy.next = origin
 			continue
@@ -1727,6 +2030,7 @@ func try_move(dx: int, dy: int) -> void:
 			queue_redraw()
 			return
 		crate_pushed = true
+		_queue_crate_visual(crate_index, next, environment.crates[crate_index].pos, "push")
 	else:
 		var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next) and not environment.is_blocked(next))
 		if not can_walk:
@@ -1752,11 +2056,147 @@ func wait_turn() -> void:
 	_take_turn()
 
 
-func _begin_player_move(next: Vector2i) -> void:
-	player_from = _player_visual_position()
+func _clear_transient_motion_effects() -> void:
+	crate_visual_tracks.clear()
+	surface_reactions.clear()
+	enemy_defeat_visuals.clear()
+	turn_pulse_pending = false
+	turn_pulse_time = -1.0
+	landing_feedback_time = 0.0
+	blocked_feedback_time = 0.0
+	blocked_feedback_pending = false
+	attack_feedback_time = 0.0
+	impact_feedback_time = 0.0
+
+
+func _reset_player_visual(position: Vector2) -> void:
+	player_motion.reset(position)
+	player_from = position
+	player_to = position
+	player_anim = 1.0
+	player_visual_direction = Vector2(facing) if facing != Vector2i.ZERO else Vector2.RIGHT
+	player_roll_angle = 0.0
+	blocked_feedback_time = 0.0
+	blocked_feedback_pending = false
+	attack_feedback_time = 0.0
+	impact_feedback_time = 0.0
+
+
+func _sync_player_motion_fields() -> void:
+	# Keep these established fields available to the camera and existing tools.
+	player_from = player_motion.from
+	player_to = player_motion.to
+	player_anim = player_motion.progress
+
+
+func _player_motion_fields_match() -> bool:
+	return player_from.is_equal_approx(player_motion.from) and player_to.is_equal_approx(player_motion.to) and is_equal_approx(player_anim, player_motion.progress)
+
+
+func _visual_surface_at(point: Vector2i) -> String:
+	if not _inside(point) or grid[point.y][point.x] != TILE_WATER:
+		return ""
+	return _surface_kind(point)
+
+
+func _begin_player_move(next: Vector2i, motion_kind: String = "walk") -> void:
+	var origin := _cell_center(player_position)
+	# Tests/dev tools may reposition the established public fields directly.
+	# Never replay a stale route across a reset, room change or teleport.
+	if not _player_motion_fields_match() or not player_motion.final_target().is_equal_approx(origin):
+		_reset_player_visual(origin)
 	player_position = next
-	player_to = _cell_center(next)
-	player_anim = 0.0
+	_prune_unresolved_contacts()
+	var destination := _cell_center(next)
+	if motion_kind == "blink":
+		_reset_player_visual(destination)
+		return
+	var surface := _visual_surface_at(next)
+	var duration := JUMP_VISUAL_TIME if motion_kind == "jump" else SLIDE_VISUAL_TIME if motion_kind in ["ice", "current"] else WALK_VISUAL_TIME
+	if surface in ["water", "current"] and motion_kind == "walk":
+		duration = 0.15
+	player_motion.enqueue(origin, destination, motion_kind, duration, surface)
+	_sync_player_motion_fields()
+	if player_motion.is_active():
+		player_visual_direction = (player_motion.to - player_motion.from).normalized()
+	blocked_feedback_time = 0.0
+	blocked_feedback_pending = false
+
+
+func _advance_player_motion(delta: float) -> void:
+	if not _player_motion_fields_match():
+		# Legacy callers may set the fields to a settled position directly.
+		player_motion.reset(_player_visual_position())
+		_sync_player_motion_fields()
+	if not player_motion.is_active():
+		return
+	var result: Dictionary = player_motion.advance(delta)
+	for step in result.steps:
+		var displacement: Vector2 = step.delta
+		if displacement.length_squared() > 0.0001:
+			player_visual_direction = displacement.normalized()
+			# Opposite directions roll with opposite signs; the face stays upright.
+			player_roll_angle = fposmod(player_roll_angle + (displacement.x + displacement.y) / 17.0, TAU)
+	for arrival in result.arrivals:
+		if str(arrival.surface) in ["water", "current"]:
+			_add_surface_reaction(arrival.position, "water")
+		elif str(arrival.surface) == "ice":
+			_add_surface_reaction(arrival.position, "ice")
+	_sync_player_motion_fields()
+	if not player_motion.is_active() and game_state != "captured":
+		landing_feedback_time = 0.12
+		if blocked_feedback_pending:
+			blocked_feedback_pending = false
+			blocked_feedback_time = 0.16
+
+
+func _add_surface_reaction(position: Vector2, material: String) -> void:
+	# Bounded, deterministic and drawn underneath actors; no gameplay RNG.
+	if surface_reactions.size() >= 8:
+		surface_reactions.pop_front()
+	surface_reactions.append({"position": position, "material": material, "age": 0.0, "duration": 0.38 if material == "water" else 0.24})
+
+
+func _queue_crate_visual(index: int, origin: Vector2i, destination: Vector2i, motion_kind: String) -> void:
+	var track = crate_visual_tracks.get(index)
+	if track == null:
+		track = VisualMotion.new()
+		track.reset(_cell_center(origin))
+		crate_visual_tracks[index] = track
+	track.enqueue(_cell_center(origin), _cell_center(destination), motion_kind, SLIDE_VISUAL_TIME if motion_kind == "current" else WALK_VISUAL_TIME, _visual_surface_at(destination))
+
+
+func _crate_visual_position(index: int, crate: Dictionary) -> Vector2:
+	var target := _cell_center(crate.pos)
+	var track = crate_visual_tracks.get(index)
+	if track == null or not track.final_target().is_equal_approx(target):
+		return target
+	return track.position()
+
+
+func _advance_crate_visuals(delta: float) -> void:
+	for index in crate_visual_tracks.keys():
+		var track = crate_visual_tracks[index]
+		if index < 0 or index >= environment.crates.size() or not track.final_target().is_equal_approx(_cell_center(environment.crates[index].pos)):
+			crate_visual_tracks.erase(index)
+			continue
+		var result: Dictionary = track.advance(delta)
+		for arrival in result.arrivals:
+			if str(arrival.surface) in ["water", "current"]:
+				_add_surface_reaction(arrival.position, "water")
+		if not track.is_active():
+			crate_visual_tracks.erase(index)
+
+
+func _advance_transient_motion_effects(delta: float) -> void:
+	for index in range(surface_reactions.size() - 1, -1, -1):
+		surface_reactions[index].age += maxf(0.0, delta)
+		if surface_reactions[index].age >= surface_reactions[index].duration:
+			surface_reactions.remove_at(index)
+	for index in range(enemy_defeat_visuals.size() - 1, -1, -1):
+		enemy_defeat_visuals[index].age += maxf(0.0, delta)
+		if enemy_defeat_visuals[index].age >= enemy_defeat_visuals[index].duration:
+			enemy_defeat_visuals.remove_at(index)
 
 
 func try_jump() -> void:
@@ -1782,7 +2222,7 @@ func try_jump() -> void:
 	charges -= 1
 	jumps_this_floor += 1
 	moves_this_floor += 1
-	_begin_player_move(landing)
+	_begin_player_move(landing, "jump")
 	_spawn_burst(_cell_center(player_position), Color("6bf4ff"), 14, 115.0)
 	_emit_feedback("JUMP")
 	_take_turn(facing)
@@ -1800,24 +2240,23 @@ func try_blink() -> void:
 		return
 	var origin := player_position
 	var landing := origin
-	for step in range(1, 4):
+	var reach := 3 + _skill_effect("blink_range")
+	for step in range(1, reach + 1):
 		var point: Vector2i = origin + facing * step
 		if not _inside(point) or grid[point.y][point.x] == TILE_BORDER:
 			break
 		if _is_floor(point):
 			landing = point
 	if landing == origin:
-		last_notice = "BLINK PRECISA DE UMA CASA LIVRE ATE 3 PASSOS"
+		last_notice = "BLINK PRECISA DE UMA CASA LIVRE ATE %d PASSOS" % reach
 		notice_timer = 1.6
 		_emit_feedback("BLOCKED")
 		return
 	blink_charges -= 1
 	moves_this_floor += 1
 	_spawn_burst(_cell_center(origin), Color("91faff"), 18, 140.0)
-	_begin_player_move(landing)
 	# Blink is an instantaneous teleport, not a slide through intervening tiles.
-	player_from = player_to
-	player_anim = 1.0
+	_begin_player_move(landing, "blink")
 	_spawn_burst(_cell_center(landing), Color("c2b6ff"), 24, 160.0)
 	_emit_feedback("BLINK")
 	_take_turn(facing)
@@ -1846,17 +2285,27 @@ func try_break_wall() -> void:
 		breach_charges -= 1
 		var enemy: Dictionary = enemies[enemy_idx]
 		var dead_role: String = enemy.get("role", "hunter")
+		var defeated := false
 		if _is_elite(enemy):
-			enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+			enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1 - _skill_effect("breach_damage"))
 			if enemy.hp > 0:
+				enemy["_visual_reaction"] = 0.22
+				enemy["_visual_reaction_direction"] = Vector2(facing)
 				enemies[enemy_idx] = enemy
 				last_notice = "%s ATINGIDO: %d/%d" % [enemy.get("boss_name", "GUARDIAO"), enemy.hp, enemy.get("max_hp", 2)]
 			else:
+				_record_enemy_defeat(enemy, "impact")
 				enemies.remove_at(enemy_idx)
+				defeated = true
 				last_notice = "%s DERROTADO!" % enemy.get("boss_name", "GUARDIAO")
 		else:
+			_record_enemy_defeat(enemy, "impact")
 			enemies.remove_at(enemy_idx)
+			defeated = true
 			last_notice = "INIMIGO %s DEMOLIDO!" % dead_role.to_upper()
+		if defeated and _skill_effect("breach_salvage") > 0:
+			breach_charges += 1
+			last_notice += " / CARGA RECUPERADA"
 		moves_this_floor += 1
 		_trigger_shake(0.28, 14.0)
 		flash_time = 0.12
@@ -1902,6 +2351,7 @@ func try_break_wall() -> void:
 
 
 func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool = false) -> void:
+	_prune_unresolved_contacts()
 	damage_this_turn = false
 	turn_number += 1
 	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
@@ -1909,12 +2359,14 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool =
 	var update_navigation := false
 	if environmental_turn:
 		var floated: Array[Dictionary] = environment.advance_currents(Callable(self, "_crate_destination_free"))
+		for movement in floated:
+			_queue_crate_visual(int(movement.index), movement.from, movement.to, "current")
 		_sync_environment_mechanisms()
 		update_navigation = not lab_active and (crate_pushed or not floated.is_empty())
 	_collect_pickups()
-	_trigger_traps()
+	_trigger_traps(action_direction)
 	if game_state == "playing" and environmental_turn and environment.is_electrified(player_position):
-		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"))
+		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"), -action_direction)
 	if game_state != "playing":
 		_tick_power_effects()
 		queue_redraw()
@@ -1944,8 +2396,8 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool =
 		for i in enemies.size():
 			var enemy: Dictionary = enemies[i]
 			var planned: Vector2i = enemy.next
-			# A crate/gate may invalidate the previously announced path. Cancel it
-			# rather than inventing an untelegraphed alternate move this turn.
+			# A crate/gate may invalidate the internally planned path. Cancel it
+			# rather than inventing an alternate move this turn.
 			if environmental_turn:
 				if not _is_floor(planned):
 					planned = enemy.pos
@@ -1963,6 +2415,7 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool =
 			if int(enemy.get("shield_repel_turn", -1)) == turn_number:
 				continue
 			var previous_position: Vector2i = enemy.pos
+			_queue_enemy_visual(enemy, previous_position, positions[i])
 			enemy.from = _cell_center(enemy.pos)
 			enemy.pos = positions[i]
 			enemy.to = _cell_center(enemy.pos)
@@ -2008,7 +2461,7 @@ func _collect_coin(point: Vector2i) -> bool:
 		return false
 	coins.erase(point)
 	coins_this_floor += 1
-	total_coins += 1
+	total_coins += 1 + _skill_effect("coin_bonus")
 	if total_coins > best_score:
 		best_score = total_coins
 		best_score_dirty = true
@@ -2034,19 +2487,74 @@ func _nearby_floor_cells(start: Vector2i, reach: int) -> Dictionary:
 	return distances
 
 
+func _skill_effect(effect_name: String) -> int:
+	# The experimental chambers are an isolated rules laboratory.
+	return 0 if lab_active else skills.effect(effect_name)
+
+
+func shield_capacity() -> int:
+	return 3 + _skill_effect("shield_capacity")
+
+
+func heart_capacity() -> int:
+	return _skill_effect("heart_capacity")
+
+
+func _place_heart_pickup(number: int, occupied: Dictionary) -> void:
+	var chance := _skill_effect("heart_spawn")
+	if chance <= 0 or heart_capacity() <= 0:
+		return
+	# Separate RNG: enabling a skill cannot reshuffle maps, enemies or pickups.
+	var loot_rng := RandomNumberGenerator.new()
+	loot_rng.seed = active_seed ^ (number * 104729) ^ 0x41c64e6d
+	if loot_rng.randi_range(1, 100) > chance:
+		return
+	var candidates: Array[Vector2i] = []
+	for point in _reachable_cells(player_position):
+		if occupied.has(point) or not _is_floor(point) or environment.kind_at(point) != "":
+			continue
+		var unsafe := false
+		for trap in traps:
+			if trap.pos == point:
+				unsafe = true
+				break
+		for plate in environment.plates:
+			if plate.pos == point:
+				unsafe = true
+				break
+		if not unsafe:
+			candidates.append(point)
+	if not candidates.is_empty():
+		heart_pickups.append(candidates[loot_rng.randi_range(0, candidates.size() - 1)])
+
+
 func _collect_pickups() -> void:
 	var collected_coins := 1 if _collect_coin(player_position) else 0
 	if shields.has(player_position):
-		shields.erase(player_position)
-		charges += 1
-		last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
+		if charges < shield_capacity():
+			shields.erase(player_position)
+			var gained := mini(1 + _skill_effect("shield_pickup"), shield_capacity() - charges)
+			charges += gained
+			last_notice = "ESCUDO +%d / SALTAR GASTA 1" % gained
+			notice_timer = 2.2
+			_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
+			_emit_feedback("SHIELD_PICKUP")
+		elif shield_full_notice_turn != turn_number:
+			shield_full_notice_turn = turn_number
+			last_notice = "ESCUDOS CHEIOS (%d/%d) — PICKUP FICA NO CHAO" % [charges, shield_capacity()]
+			notice_timer = 2.2
+	if heart_pickups.has(player_position) and hearts_current < heart_capacity():
+		heart_pickups.erase(player_position)
+		hearts_current += 1
+		last_notice = "CORACAO RECUPERADO (%d/%d)" % [hearts_current, heart_capacity()]
 		notice_timer = 2.2
-		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
-		_emit_feedback("SHIELD_PICKUP")
+		_spawn_burst(_cell_center(player_position), Color("ff83a1"), 18, 120.0)
+		_emit_feedback("HEART_RECOVERED")
 	if breakers.has(player_position):
 		breakers.erase(player_position)
-		breach_charges += 1
-		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
+		var gained := 1 + _skill_effect("breach_pickup")
+		breach_charges += gained
+		last_notice = "CARGA DE DEMOLICAO +%d — B PARA USAR" % gained
 		notice_timer = 2.6
 		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
 		_emit_feedback("BREAKER_PICKUP")
@@ -2056,12 +2564,13 @@ func _collect_pickups() -> void:
 			powerups.remove_at(i)
 			_activate_powerup(item.kind)
 	if magnet_turns > 0 and not coins.is_empty():
-		var nearby := _nearby_floor_cells(player_position, 2)
+		var nearby := _nearby_floor_cells(player_position, 2 + _skill_effect("magnet_range"))
 		for point in coins.duplicate():
 			if nearby.has(point) and _collect_coin(point):
 				collected_coins += 1
 	if collected_coins > 0:
-		last_notice = "+%d MOEDA%s%s" % [collected_coins, "S" if collected_coins != 1 else "", " / IMA" if collected_coins > 1 else ""]
+		var value := collected_coins * (1 + _skill_effect("coin_bonus"))
+		last_notice = "+%d MOEDA%s%s" % [value, "S" if value != 1 else "", " / IMA" if collected_coins > 1 else ""]
 		notice_timer = 1.0
 		_audio_coin()
 
@@ -2069,17 +2578,18 @@ func _collect_pickups() -> void:
 func _activate_powerup(kind: String) -> void:
 	match kind:
 		"speed":
-			speed_turns = SPEED_DURATION
+			speed_turns = SPEED_DURATION + _skill_effect("speed_duration")
 			speed_phase = 0
 			last_notice = "VELOCIDADE / INIMIGOS AVANCAM EM ACOES ALTERNADAS"
 		"magnet":
-			magnet_turns = MAGNET_DURATION
-			last_notice = "IMA / RECOLHE MOEDAS ATE 2 PASSOS"
+			magnet_turns = MAGNET_DURATION + _skill_effect("magnet_duration")
+			last_notice = "IMA / RECOLHE MOEDAS ATE %d PASSOS" % (2 + _skill_effect("magnet_range"))
 		"blink":
-			blink_charges += 1
-			last_notice = "BLINK +1 / Q TELEPORTA ATE 3 CASAS"
+			var gained := 1 + _skill_effect("blink_pickup")
+			blink_charges += gained
+			last_notice = "BLINK +%d / Q TELEPORTA ATE %d CASAS" % [gained, 3 + _skill_effect("blink_range")]
 		"time_freeze":
-			freeze_turns = FREEZE_DURATION
+			freeze_turns = FREEZE_DURATION + _skill_effect("freeze_duration")
 			last_notice = "TEMPO CONGELADO / ARMADILHAS CONTINUAM ATIVAS"
 		_:
 			return
@@ -2138,30 +2648,60 @@ func _rhythm_is_hot(trap: Dictionary, action_turn: int) -> bool:
 	return posmod(action_turn + int(trap.get("phase", 0)), 3) == 0
 
 
-func _trigger_traps() -> void:
+func _trigger_traps(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	for i in traps.size():
 		var trap: Dictionary = traps[i]
 		if not trap.get("armed", true) or trap.pos != player_position:
 			continue
 		if trap.get("type", "one_shot") == "rhythm":
 			if _rhythm_is_hot(trap, turn_number):
-				_apply_damage("ARMADILHA DE RITMO!", Color("ff7456"))
+				_apply_damage("ARMADILHA DE RITMO!", Color("ff7456"), -action_direction)
 				_emit_feedback("RHYTHM_TRAP")
 		else:
 			trap.armed = false
 			trap.revealed = true
 			traps[i] = trap
-			_apply_damage("ARMADILHA!", Color("ff7456"))
+			_apply_damage("ARMADILHA!", Color("ff7456"), -action_direction)
+
+
+func _contact_is_guarded(enemy: Dictionary) -> bool:
+	for guarded in unresolved_contacts:
+		if is_same(guarded, enemy):
+			return true
+	return false
+
+
+func _prune_unresolved_contacts() -> void:
+	for index in range(unresolved_contacts.size() - 1, -1, -1):
+		var guarded: Dictionary = unresolved_contacts[index]
+		var present := false
+		for enemy in enemies:
+			if is_same(guarded, enemy):
+				present = true
+				break
+		if not present or guarded.get("pos", Vector2i(-999, -999)) != player_position:
+			unresolved_contacts.remove_at(index)
+
+
+func _mark_unresolved_overlaps() -> void:
+	# Even contacts suppressed by the per-action guard must not become a second
+	# hit merely because the same bodies are still overlapped on the next action.
+	for enemy in enemies:
+		if enemy.pos == player_position and not _contact_is_guarded(enemy):
+			unresolved_contacts.append(enemy)
 
 
 func _check_enemy_collision(action_direction: Vector2i = Vector2i.ZERO, enemy_moved: bool = false) -> void:
 	if dev_god_mode:
 		return
+	_prune_unresolved_contacts()
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
-		if enemy.pos != player_position:
+		if enemy.pos != player_position or _contact_is_guarded(enemy):
 			continue
 		_resolve_enemy_contact(i, _shield_recoil_direction(enemy, action_direction, enemy_moved))
+		if damage_this_turn:
+			_mark_unresolved_overlaps()
 		return
 
 
@@ -2189,8 +2729,8 @@ func _resolve_enemy_contact(index: int, recoil_direction: Vector2i) -> void:
 		_stagger_elite(index)
 		return
 	var shielded := charges > 0 and not damage_this_turn and not dev_god_mode
-	_apply_damage("FOSTE ALCANCADO", Color("6ceeff") if shielded else Color("ff4e70"))
-	if shielded and not _is_elite(enemy):
+	var result := _apply_damage("FOSTE ALCANCADO", Color("6ceeff") if shielded else Color("ff4e70"), -recoil_direction)
+	if result == "shield" and not _is_elite(enemy):
 		_repel_common_enemy(index, recoil_direction)
 
 
@@ -2225,6 +2765,8 @@ func _repel_common_enemy(index: int, direction: Vector2i) -> void:
 			destination = candidate
 			break
 	if destination != player_position:
+		# The resolved shield contact takes priority over any older pursuit pose.
+		enemy.erase("_visual_motion")
 		enemy.from = _cell_center(player_position)
 		enemy.pos = destination
 		enemy.to = _cell_center(destination)
@@ -2249,9 +2791,10 @@ func _stagger_elite(index: int) -> void:
 	charges -= 1
 	hits_this_floor += 1
 	damage_this_turn = true
-	# A shield counter deals one point of boss damage as well as pushing it away.
-	enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1)
+	# Shield counter and its explicit tree upgrade damage the elite.
+	enemy["hp"] = maxi(0, int(enemy.get("hp", 2)) - 1 - _skill_effect("shield_counter"))
 	if enemy.hp <= 0:
+		_record_enemy_defeat(enemy, "impact")
 		enemies.remove_at(index)
 		_trigger_shake(0.28, 10.0)
 		last_notice = "%s DERROTADO PELO CONTRA-ATAQUE" % enemy.get("boss_name", "GUARDIAO")
@@ -2273,6 +2816,9 @@ func _stagger_elite(index: int) -> void:
 		if distance > best_distance:
 			best_distance = distance
 			best_position = candidate
+	enemy.erase("_visual_motion")
+	enemy["_visual_reaction"] = 0.22
+	enemy["_visual_reaction_direction"] = Vector2(best_position - player_position).normalized()
 	enemy.from = _cell_center(enemy.pos)
 	enemy.pos = best_position
 	enemy.to = _cell_center(best_position)
@@ -2290,9 +2836,41 @@ func _stagger_elite(index: int) -> void:
 	_emit_feedback("ELITE_COUNTER")
 
 
-func _apply_damage(message: String, color: Color) -> void:
+func _heart_recoil_cell_free(point: Vector2i) -> bool:
+	if not _is_floor(point) or environment.is_electrified(point):
+		return false
+	for enemy in enemies:
+		if enemy.pos == point or enemy.get("next", enemy.pos) == point or enemy.get("path", []).has(point):
+			return false
+	for trap in traps:
+		if trap.pos == point and trap.get("armed", true):
+			if trap.get("type", "one_shot") != "rhythm" or _rhythm_is_hot(trap, turn_number):
+				return false
+	return true
+
+
+func _heart_knockback(preferred: Vector2i) -> bool:
+	# One cardinal step, no extra turn. Never land in a reserved path or hazard.
+	var primary := preferred if preferred in FOUR_WAY else (-facing if facing in FOUR_WAY else Vector2i.LEFT)
+	var directions: Array[Vector2i] = [primary, Vector2i(-primary.y, primary.x), Vector2i(primary.y, -primary.x), -primary]
+	for direction in directions:
+		var destination := player_position + direction
+		if not _heart_recoil_cell_free(destination):
+			continue
+		_begin_player_move(destination, "heart_recoil")
+		_collect_pickups()
+		_activate_switches()
+		if environment.is_active():
+			_sync_environment_mechanisms()
+		return true
+	return false
+
+
+# All existing enemy, trap and electrical damage is protectable; no hidden
+# bypass. One consequence per committed action, then shield -> heart -> capture.
+func _apply_damage(message: String, color: Color, recoil_direction: Vector2i = Vector2i.ZERO) -> String:
 	if damage_this_turn or dev_god_mode:
-		return
+		return "ignored"
 	damage_this_turn = true
 	shake_time = 0.25
 	shake_strength = 9.0
@@ -2305,8 +2883,20 @@ func _apply_damage(message: String, color: Color) -> void:
 		last_notice = message + " — O ESCUDO ABSORVEU O IMPACTO"
 		notice_timer = 2.0
 		_emit_feedback("SHIELD_IMPACT")
-	else:
-		_begin_capture(message, color)
+		return "shield"
+	if not lab_active and hearts_current > 0:
+		hearts_current -= 1
+		hits_this_floor += 1
+		var after_loss := hearts_current
+		_emit_feedback("HEART_LOST")
+		var moved := _heart_knockback(recoil_direction)
+		last_notice = message + (" — CORACAO PERDIDO; RECUASTE" if moved else " — CORACAO PERDIDO; SEM ESPACO PARA RECUAR")
+		if hearts_current > after_loss:
+			last_notice += " / CORACAO RECUPERADO"
+		notice_timer = 2.4
+		return "heart"
+	_begin_capture(message, color)
+	return "capture"
 
 
 func _begin_capture(message: String, color: Color) -> void:
@@ -2314,7 +2904,7 @@ func _begin_capture(message: String, color: Color) -> void:
 	capture_time = 0.0
 	capture_darkness = 0.0
 	capture_flash = 0.0
-	capture_origin = _player_visual_position()
+	capture_origin = _cell_center(player_position)
 	capture_popped = false
 	capture_puddle_active = false
 	capture_puddle_points.clear()
@@ -2322,9 +2912,16 @@ func _begin_capture(message: String, color: Color) -> void:
 	capture_shockwave_radius = 0.0
 	capture_chromatic = 0.0
 	capture_noise = 0.0
-	player_from = capture_origin
-	player_to = capture_origin
-	player_anim = 1.0
+	# Capture is logically immediate, but the already-resolved path may finish
+	# visually at the actual contact cell before the pop. Never replay input.
+	if not _player_motion_fields_match() or not player_motion.final_target().is_equal_approx(capture_origin):
+		_reset_player_visual(capture_origin)
+	turn_pulse_pending = false
+	turn_pulse_time = -1.0
+	blocked_feedback_time = 0.0
+	blocked_feedback_pending = false
+	attack_feedback_time = 0.0
+	impact_feedback_time = 0.0
 	last_notice = message
 	shake_time = 0.18
 	shake_strength = 5.0
@@ -2449,6 +3046,8 @@ func _update_capture_sequence(delta: float) -> void:
 			capture_noise = 0.25
 			last_notice = "FOSTE CAPTURADO — R REINICIA A CAMARA" if lab_active else "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
 			if not lab_active:
+				skills.load_state(floor_start_snapshot.get("skills", skills.serialize()))
+				hearts_current = clampi(int(floor_start_snapshot.get("hearts", 0)), 0, skills.effect("heart_capacity"))
 				_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
 					int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
 					floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT),
@@ -2506,6 +3105,7 @@ func _check_portal() -> void:
 		_spawn_burst(_cell_center(portal_position), Color("ffd15d"), 26, 170.0)
 		_emit_feedback("SWITCH_ON")
 	stars_last_floor = _stars_for_floor()
+	last_skill_point_awarded = skills.award_floor(floor_number)
 	floor_history.append(stars_last_floor)
 	floor_reward = stars_last_floor * 2 + (5 if challenge_complete else 0)
 	total_coins += floor_reward
@@ -2572,84 +3172,251 @@ func get_objective_text() -> String:
 	return "OBJETIVO: ALCANCA O PORTAL E ENCONTRA LIA"
 
 
+func _campaign_payload() -> Dictionary:
+	return {
+		"best_score": best_score, "rescues": rescues_completed, "furthest_floor": furthest_floor,
+		"floor_stars": floor_stars.duplicate(true), "has_resume": has_resume,
+		"resume_floor": resume_floor, "resume_coins": resume_coins, "resume_charges": resume_charges,
+		"resume_breach_charges": resume_breach_charges, "resume_powers": _normalized_power_state(resume_powers),
+		"resume_facing": resume_facing, "resume_seed": resume_seed, "resume_history": Array(resume_history),
+		"resume_hearts": resume_hearts, "skills": skills.serialize(),
+	}
+
+
+func _apply_campaign_payload(data: Dictionary) -> void:
+	best_score = int(data.get("best_score", 0))
+	rescues_completed = int(data.get("rescues", 0))
+	furthest_floor = maxi(1, int(data.get("furthest_floor", 1)))
+	var stars: Variant = data.get("floor_stars", {})
+	floor_stars = stars.duplicate(true) if stars is Dictionary else {}
+	has_resume = bool(data.get("has_resume", false))
+	resume_floor = maxi(1, int(data.get("resume_floor", 1)))
+	resume_coins = maxi(0, int(data.get("resume_coins", 0)))
+	resume_charges = maxi(0, int(data.get("resume_charges", 0)))
+	resume_breach_charges = maxi(0, int(data.get("resume_breach_charges", 0)))
+	resume_powers = _normalized_power_state(data.get("resume_powers", {}))
+	var saved_facing: Variant = data.get("resume_facing", Vector2i.RIGHT)
+	resume_facing = saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT
+	resume_seed = int(data.get("resume_seed", 0))
+	resume_history.clear()
+	var history: Variant = data.get("resume_history", [])
+	if history is Array or history is PackedInt32Array or history is PackedInt64Array:
+		for value in history:
+			resume_history.append(int(value))
+	if not skills.load_state(data.get("skills", {})):
+		push_warning("Estado de habilidades invalido; campanha nao deve ser substituida")
+	resume_hearts = clampi(int(data.get("resume_hearts", 0)), 0, skills.effect("heart_capacity"))
+	hearts_current = resume_hearts
+	floor_start_snapshot.clear()
+	unresolved_contacts.clear()
+
+
+func _legacy_campaign(profile: ConfigFile) -> Dictionary:
+	var saved_history: Variant = profile.get_value("progress", "resume_history", [])
+	var history: Array[int] = []
+	if saved_history is Array or saved_history is PackedInt32Array or saved_history is PackedInt64Array:
+		for value in saved_history:
+			history.append(clampi(int(value), 0, 5))
+	var raw_stars: Variant = profile.get_value("progress", "floor_stars", {})
+	var stars: Dictionary = raw_stars.duplicate(true) if raw_stars is Dictionary else {}
+	var old_skills = SkillTree.new()
+	old_skills.mark_legacy_floors(stars)
+	var saved_facing: Variant = profile.get_value("progress", "resume_facing", Vector2i.RIGHT)
+	return {
+		"best_score": maxi(0, int(profile.get_value("progress", "best_score", 0))),
+		"rescues": maxi(0, int(profile.get_value("progress", "rescues", 0))),
+		"furthest_floor": maxi(1, int(profile.get_value("progress", "furthest_floor", 1))),
+		"floor_stars": stars,
+		"has_resume": bool(profile.get_value("progress", "has_resume", false)),
+		"resume_floor": maxi(1, int(profile.get_value("progress", "resume_floor", 1))),
+		"resume_coins": maxi(0, int(profile.get_value("progress", "resume_coins", 0))),
+		"resume_charges": maxi(0, int(profile.get_value("progress", "resume_charges", 0))),
+		"resume_breach_charges": maxi(0, int(profile.get_value("progress", "resume_breach_charges", 0))),
+		"resume_powers": _normalized_power_state(profile.get_value("progress", "resume_powers", {})),
+		"resume_facing": saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT,
+		"resume_seed": int(profile.get_value("progress", "resume_seed", 0)), "resume_history": Array(history),
+		"resume_hearts": 0, "skills": old_skills.serialize(),
+	}
+
+
 func _load_profile() -> void:
 	if not persistence_enabled:
 		return
+	campaign_storage.profile_path = profile_path
 	var profile := ConfigFile.new()
-	if profile.load(profile_path) == OK:
+	var exists := FileAccess.file_exists(profile_path)
+	var error := profile.load(profile_path) if exists else OK
+	if error != OK:
+		profile_blocked = true
+		profile_message = "PERFIL GLOBAL DANIFICADO; ORIGINAL PRESERVADO. RESTAURA O BACKUP NO MENU."
+	elif int(profile.get_value("meta", "version", 0)) > 2:
+		profile_blocked = true
+		profile_message = "PERFIL GLOBAL DE VERSAO MAIS RECENTE; ORIGINAL PRESERVADO."
+	else:
 		controller_vibration_enabled = bool(profile.get_value("controller", "vibration", true))
 		var has_intensity := profile.has_section_key("controller", "vibration_intensity")
 		var intensity_version := int(profile.get_value("controller", "vibration_intensity_version", 1))
 		var saved_intensity := float(profile.get_value("controller", "vibration_intensity", ControllerScript.MAX_VIBRATION_INTENSITY))
 		if not is_finite(saved_intensity):
 			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
-		# The old maximum becomes the new maximum automatically. A deliberately
-		# reduced/off setting remains reduced, and v2 values are never migrated twice.
 		elif has_intensity and intensity_version < VIBRATION_PROFILE_VERSION and is_equal_approx(saved_intensity, 1.0):
 			saved_intensity = ControllerScript.MAX_VIBRATION_INTENSITY
 		controller_vibration_intensity = clampf(saved_intensity, 0.0, ControllerScript.MAX_VIBRATION_INTENSITY)
 		var saved_mappings: Variant = profile.get_value("controller", "mappings", {})
 		controller_mappings = saved_mappings.duplicate(true) if saved_mappings is Dictionary else {}
-		best_score = int(profile.get_value("progress", "best_score", 0))
-		rescues_completed = int(profile.get_value("progress", "rescues", 0))
-		furthest_floor = maxi(1, int(profile.get_value("progress", "furthest_floor", 1)))
-		var stored_stars = profile.get_value("progress", "floor_stars", {})
-		floor_stars = stored_stars.duplicate(true) if stored_stars is Dictionary else {}
-		has_resume = bool(profile.get_value("progress", "has_resume", false))
-		resume_floor = maxi(1, int(profile.get_value("progress", "resume_floor", 1)))
-		resume_coins = maxi(0, int(profile.get_value("progress", "resume_coins", 0)))
-		# Older profiles did not store the inventory; zero is their safe default.
-		resume_charges = maxi(0, int(profile.get_value("progress", "resume_charges", 0)))
-		resume_breach_charges = maxi(0, int(profile.get_value("progress", "resume_breach_charges", 0)))
-		resume_powers = _normalized_power_state(profile.get_value("progress", "resume_powers", {}))
-		var saved_facing: Variant = profile.get_value("progress", "resume_facing", Vector2i.RIGHT)
-		resume_facing = saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT
-		resume_seed = int(profile.get_value("progress", "resume_seed", 0))
-		var stored_history = profile.get_value("progress", "resume_history", [])
-		resume_history.clear()
-		if stored_history is Array or stored_history is PackedInt32Array or stored_history is PackedInt64Array:
-			for value in stored_history:
-				resume_history.append(int(value))
-		# Old saves treated floor five as the campaign ending. Open the next procedural floor for those players.
-		if rescues_completed > 0 and furthest_floor <= 5:
-			furthest_floor = 6
-			if not has_resume:
-				has_resume = true
-				resume_floor = 6
-				resume_coins = 0
-				resume_seed = int(Time.get_ticks_usec()) ^ randi()
-				resume_history.clear()
-			_save_profile()
+		if int(profile.get_value("meta", "version", 0)) >= 2:
+			active_slot = clampi(int(profile.get_value("meta", "active_campaign", 0)), 0, 2)
+			_load_campaign_slot(active_slot)
+		elif profile.has_section("progress"):
+			var legacy := _legacy_campaign(profile)
+			if int(legacy.rescues) > 0 and int(legacy.furthest_floor) <= 5:
+				legacy.furthest_floor = 6
+				if not legacy.has_resume:
+					legacy.has_resume = true
+					legacy.resume_floor = 6
+					legacy.resume_seed = int(Time.get_ticks_usec())
+			_apply_campaign_payload(legacy)
+			legacy_profile_pending = true
+			legacy_profile_hash = FileAccess.get_sha256(profile_path)
+			var existing := campaign_storage.read_slot(0)
+			if existing.status == "ok" and existing.legacy_sha256 == legacy_profile_hash:
+				# Interrupted migration: the already-verified campaign belongs to
+				# this exact original profile. Keep the newer checkpoint.
+				_apply_campaign_payload(existing.data)
+			elif existing.status != "empty":
+				profile_blocked = true
+				profile_message = "MIGRACAO EM CONFLITO: PERFIL ANTIGO E CAMPANHA 1 PRESERVADOS."
+		else:
+			_load_campaign_slot(0)
 	if controller != null:
 		controller.set_settings(controller_vibration_enabled, controller_mappings, controller_vibration_intensity)
 
 
-func _save_profile() -> void:
+func _load_campaign_slot(slot: int) -> bool:
 	if not persistence_enabled:
-		return
+		_apply_campaign_payload(transient_campaigns[slot])
+		return true
+	campaign_storage.profile_path = profile_path
+	var result := campaign_storage.read_slot(slot)
+	if result.status == "empty":
+		_apply_campaign_payload({})
+		return true
+	if result.status != "ok":
+		_apply_campaign_payload({})
+		profile_message = "CAMPANHA %d DANIFICADA OU MAIS RECENTE; ORIGINAL PRESERVADO." % (slot + 1)
+		return false
+	_apply_campaign_payload(result.data)
+	return true
+
+
+func _save_profile() -> bool:
+	if not persistence_enabled:
+		transient_campaigns[active_slot] = _campaign_payload() if has_resume or furthest_floor > 1 or not floor_stars.is_empty() else {}
+		return true
+	campaign_storage.profile_path = profile_path
+	if profile_blocked:
+		push_warning(profile_message)
+		return false
 	var profile := ConfigFile.new()
+	if FileAccess.file_exists(profile_path):
+		if profile.load(profile_path) != OK or int(profile.get_value("meta", "version", 0)) > 2:
+			profile_blocked = true
+			profile_message = "PERFIL GLOBAL INVALIDO OU MAIS RECENTE; ORIGINAL PRESERVADO."
+			push_warning(profile_message)
+			return false
+		if profile.has_section("progress") and int(profile.get_value("meta", "version", 0)) < 2 and not legacy_profile_pending:
+			profile_blocked = true
+			profile_message = "PERFIL ANTIGO ALTERADO EXTERNAMENTE; ORIGINAL PRESERVADO."
+			return false
+		# Do not silently migrate a profile which was changed externally.
+		if legacy_profile_pending and FileAccess.get_sha256(profile_path) != legacy_profile_hash:
+			profile_blocked = true
+			profile_message = "O PERFIL ANTIGO FOI ALTERADO; MIGRACAO INTERROMPIDA SEM APAGAR DADOS."
+			return false
+	var migration_hash := ""
+	if legacy_profile_pending:
+		var backup := campaign_storage.backup_legacy()
+		if not backup.ok:
+			profile_message = str(backup.get("error", "BACKUP DO PERFIL ANTIGO FALHOU"))
+			push_warning(profile_message)
+			return false
+		migration_hash = str(backup.sha256)
+		var old_slot := campaign_storage.read_slot(0)
+		if old_slot.status != "empty" and (old_slot.status != "ok" or old_slot.legacy_sha256 != migration_hash):
+			profile_message = "CAMPANHA 1 JA OCUPADA; PERFIL ANTIGO E CAMPANHA PRESERVADOS."
+			push_warning(profile_message)
+			return false
+	var payload := _campaign_payload()
+	var needs_slot: bool = has_resume or furthest_floor > 1 or not floor_stars.is_empty() or not skills.unlocked.is_empty() or skills.points > 0 or legacy_profile_pending
+	if needs_slot:
+		var saved := campaign_storage.save_slot(active_slot, payload, migration_hash)
+		if not saved.ok:
+			profile_message = str(saved.error)
+			push_warning(profile_message)
+			return false
+	profile.set_value("meta", "version", 2)
+	profile.set_value("meta", "active_campaign", active_slot)
 	profile.set_value("controller", "vibration", controller_vibration_enabled)
 	profile.set_value("controller", "vibration_intensity", controller_vibration_intensity)
 	profile.set_value("controller", "vibration_intensity_version", VIBRATION_PROFILE_VERSION)
 	profile.set_value("controller", "mappings", controller_mappings)
-	profile.set_value("progress", "best_score", best_score)
-	profile.set_value("progress", "rescues", rescues_completed)
-	profile.set_value("progress", "furthest_floor", furthest_floor)
-	profile.set_value("progress", "floor_stars", floor_stars)
-	profile.set_value("progress", "has_resume", has_resume)
-	profile.set_value("progress", "resume_floor", resume_floor)
-	profile.set_value("progress", "resume_coins", resume_coins)
-	profile.set_value("progress", "resume_charges", resume_charges)
-	profile.set_value("progress", "resume_breach_charges", resume_breach_charges)
-	profile.set_value("progress", "resume_powers", resume_powers)
-	profile.set_value("progress", "resume_facing", resume_facing)
-	profile.set_value("progress", "resume_seed", resume_seed)
-	profile.set_value("progress", "resume_history", resume_history)
-	var error := profile.save(profile_path)
-	if error == OK:
-		best_score_dirty = false
-	else:
-		push_warning("Nao foi possivel guardar o perfil (erro %d)" % error)
+	# Mirror old progress fields for tools/older readers. The authoritative saves
+	# are the three independently backed-up campaign files.
+	for key in ["best_score", "rescues", "furthest_floor", "floor_stars", "has_resume", "resume_floor", "resume_coins", "resume_charges", "resume_breach_charges", "resume_powers", "resume_facing", "resume_seed", "resume_history"]:
+		profile.set_value("progress", key, payload[key])
+	var saved_global := campaign_storage.save_global(profile)
+	if not saved_global.ok:
+		profile_message = str(saved_global.error)
+		push_warning(profile_message)
+		return false
+	legacy_profile_pending = false
+	legacy_profile_hash = ""
+	profile_message = ""
+	best_score_dirty = false
+	return true
+
+
+func campaign_status(slot: int) -> Dictionary:
+	if not persistence_enabled:
+		return {"status": "empty"} if transient_campaigns[slot].is_empty() else {"status": "ok", "data": transient_campaigns[slot].duplicate(true)}
+	campaign_storage.profile_path = profile_path
+	if slot == active_slot and legacy_profile_pending:
+		return {"status": "ok", "data": _campaign_payload(), "backup": false}
+	var result := campaign_storage.read_slot(slot)
+	result["backup"] = campaign_storage.read_slot(slot, true).status == "ok"
+	result["replaced_backup"] = campaign_storage.read_replaced(slot).status == "ok"
+	return result
+
+
+func select_campaign(slot: int) -> bool:
+	if slot < 0 or slot > 2:
+		return false
+	var target := campaign_status(slot)
+	if target.status not in ["empty", "ok"]:
+		slot_message = "CAMPANHA INVALIDA: RESTAURA BACKUP OU ESCOLHE OUTRA."
+		return false
+	if slot != active_slot:
+		if not profile_blocked and not _save_profile():
+			slot_message = "NAO FOI POSSIVEL GUARDAR A CAMPANHA ATUAL."
+			return false
+		active_slot = slot
+		if not _load_campaign_slot(slot):
+			return false
+		if not profile_blocked:
+			_save_profile()
+	return true
+
+
+func restore_campaign(slot: int, kind: String = "checkpoint") -> bool:
+	campaign_storage.profile_path = profile_path
+	var result := campaign_storage.restore_slot(slot, kind)
+	if not result.ok:
+		slot_message = str(result.error)
+		return false
+	if slot == active_slot:
+		_load_campaign_slot(slot)
+	slot_message = "BACKUP DA CAMPANHA %d RESTAURADO; VERSAO ANTERIOR ARQUIVADA." % (slot + 1)
+	return true
 
 
 func set_controller_vibration_intensity(value: float) -> void:
@@ -2680,18 +3447,31 @@ func _exit_tree() -> void:
 func _process(delta: float) -> void:
 	animation_clock += delta
 	landing_feedback_time = maxf(0.0, landing_feedback_time - delta)
+	blocked_feedback_time = maxf(0.0, blocked_feedback_time - delta)
+	attack_feedback_time = maxf(0.0, attack_feedback_time - delta)
+	impact_feedback_time = maxf(0.0, impact_feedback_time - delta)
 	near_miss_feedback_time = maxf(0.0, near_miss_feedback_time - delta)
-	if turn_pulse_time > -1.0:
+	# Age old effects before adding arrivals in this frame; a long frame must not
+	# instantly consume a freshly generated water or ice response.
+	_advance_transient_motion_effects(delta)
+	_advance_player_motion(delta)
+	_advance_crate_visuals(delta)
+	if turn_pulse_pending:
+		if not player_motion.is_active():
+			turn_pulse_pending = false
+			turn_pulse_time = 0.0
+	elif turn_pulse_time > -1.0:
 		turn_pulse_time += delta
 		if turn_pulse_time > 0.28:
 			turn_pulse_time = -1.0
-	var previous_player_anim := player_anim
-	player_anim = minf(1.0, player_anim + delta / 0.115)
-	if previous_player_anim < 1.0 and player_anim >= 1.0 and game_state != "captured":
-		landing_feedback_time = 0.12
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.t = minf(1.0, enemy.t + delta / 0.14)
+		var track = enemy.get("_visual_motion")
+		if track != null and track.is_active():
+			track.advance(delta)
+		if enemy.has("_visual_reaction"):
+			enemy["_visual_reaction"] = maxf(0.0, float(enemy._visual_reaction) - delta)
 		enemies[i] = enemy
 	for i in range(particles.size() - 1, -1, -1):
 		var particle: Dictionary = particles[i]
@@ -2847,7 +3627,10 @@ func _on_controller_action(action: String) -> void:
 		match game_state:
 			"paused": handle_hud_action("resume")
 			"controller_settings": handle_hud_action("controller_back")
-			"level_select", "game_over", "floor_clear", "rescued": handle_hud_action("menu")
+			"level_select", "game_over", "floor_clear", "rescued", "campaign_select": handle_hud_action("menu")
+			"campaign_confirm": handle_hud_action("campaign_cancel")
+			"skill_tree": handle_hud_action("skill_back")
+			"skill_confirm": handle_hud_action("skill_remove_cancel")
 
 
 func _emit_feedback(event: String, context: Dictionary = {}) -> void:
@@ -2859,12 +3642,19 @@ func _on_tactical_feedback(event: String, context: Dictionary) -> void:
 	match event:
 		"TURN_COMMITTED":
 			turn_pulse_position = _cell_center(context.get("cell", player_position))
-			# The board is already resolved; only the visual ring waits for landing.
-			turn_pulse_time = -0.115 if player_anim < 1.0 else 0.0
+			# The board is already resolved; only the ring waits for the visual path.
+			turn_pulse_pending = player_anim < 1.0
+			turn_pulse_time = -0.001 if turn_pulse_pending else 0.0
 		"NEAR_MISS":
 			near_miss_feedback_time = 0.16
 		"BLOCKED":
-			landing_feedback_time = 0.10
+			blocked_feedback_direction = Vector2(facing)
+			blocked_feedback_pending = player_motion.is_active() and _player_motion_fields_match()
+			blocked_feedback_time = 0.0 if blocked_feedback_pending else 0.16
+		"DEMOLITION":
+			attack_feedback_time = 0.22
+		"SHIELD_IMPACT", "ELITE_COUNTER", "HIT":
+			impact_feedback_time = 0.20
 
 
 func _current_haptic_material() -> String:
@@ -2906,9 +3696,8 @@ func _on_controller_device_changed(device: int, connected: bool) -> void:
 
 
 func _player_visual_position() -> Vector2:
-	var t := clampf(player_anim, 0.0, 1.0)
-	t = t * t * (3.0 - 2.0 * t)
-	return player_from.lerp(player_to, t)
+	var motion_kind: String = player_motion.kind if _player_motion_fields_match() else "walk"
+	return player_from.lerp(player_to, VisualMotion.eased_progress(player_anim, motion_kind))
 
 
 func _cell_center(point: Vector2i) -> Vector2:
@@ -2933,6 +3722,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_S:
 			controller.skip_calibration_step()
 		return
+	if game_state in ["campaign_select", "campaign_confirm", "skill_tree", "skill_confirm"]:
+		match event.keycode:
+			KEY_ESCAPE:
+				if game_state == "skill_tree": handle_hud_action("skill_back")
+				elif game_state == "skill_confirm": handle_hud_action("skill_remove_cancel")
+				elif game_state == "campaign_confirm": handle_hud_action("campaign_cancel")
+				else: handle_hud_action("menu")
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
+			KEY_LEFT, KEY_A: hud.move_focus(Vector2i.LEFT)
+			KEY_RIGHT, KEY_D: hud.move_focus(Vector2i.RIGHT)
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE: hud.activate_focus()
+		return
 	if game_state == "controller_settings":
 		match event.keycode:
 			KEY_ESCAPE: handle_hud_action("controller_back")
@@ -2949,12 +3751,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if game_state == "title":
 		match event.keycode:
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
 			KEY_ENTER, KEY_KP_ENTER:
-				if has_resume:
+				if hud.focus_visible:
+					hud.activate_focus()
+				elif has_resume:
 					continue_game()
 				else:
-					new_game()
-			KEY_N: new_game()
+					handle_hud_action("new_run")
+			KEY_N: handle_hud_action("new_run")
 			KEY_L: open_level_select()
 			KEY_C: start_environment_lab()
 			KEY_M: audio.toggle_music()
@@ -2970,14 +3776,19 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			start_level(level_page_start + event.keycode - KEY_1)
 		return
 	if game_state == "paused":
-		if event.keycode in [KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER]:
-			game_state = "playing"
-		elif event.keycode == KEY_L and not lab_active:
-			open_level_select()
-		elif event.keycode == KEY_R:
-			restart_floor()
-		elif event.keycode == KEY_M:
-			audio.toggle_music()
+		match event.keycode:
+			KEY_ESCAPE: game_state = "playing"
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
+			KEY_LEFT, KEY_A: hud.move_focus(Vector2i.LEFT)
+			KEY_RIGHT, KEY_D: hud.move_focus(Vector2i.RIGHT)
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+				if hud.focus_visible: hud.activate_focus()
+				else: game_state = "playing"
+			KEY_L:
+				if not lab_active: open_level_select()
+			KEY_R: restart_floor()
+			KEY_M: audio.toggle_music()
 		return
 	if game_state == "game_over":
 		if event.keycode in [KEY_R, KEY_ENTER, KEY_KP_ENTER]:
@@ -2987,19 +3798,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		elif event.keycode == KEY_ESCAPE:
 			handle_hud_action("menu")
 		return
-	if game_state == "floor_clear":
-		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
-			advance_floor()
-		elif event.keycode == KEY_ESCAPE:
-			handle_hud_action("menu")
-		return
-	if game_state == "rescued":
-		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
-			advance_floor()
-		elif event.keycode == KEY_N:
-			new_game()
-		elif event.keycode == KEY_ESCAPE:
-			game_state = "title"
+	if game_state in ["floor_clear", "rescued"]:
+		match event.keycode:
+			KEY_UP, KEY_W: hud.move_focus(Vector2i.UP)
+			KEY_DOWN, KEY_S: hud.move_focus(Vector2i.DOWN)
+			KEY_LEFT, KEY_A: hud.move_focus(Vector2i.LEFT)
+			KEY_RIGHT, KEY_D: hud.move_focus(Vector2i.RIGHT)
+			KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+				if hud.focus_visible: hud.activate_focus()
+				else: advance_floor()
+			KEY_N:
+				if game_state == "rescued": handle_hud_action("new_run")
+			KEY_ESCAPE: handle_hud_action("menu")
 		return
 	match event.keycode:
 		KEY_ESCAPE: game_state = "paused"
@@ -3021,7 +3831,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_X: wait_turn()
 		KEY_R: restart_floor()
 		KEY_N:
-			if not lab_active: new_game()
+			if not lab_active:
+				slot_message = "VOLTA AO MENU PARA GERIR CAMPANHAS."
+				last_notice = slot_message
+				notice_timer = 2.0
 		KEY_L:
 			if not lab_active: open_level_select()
 		KEY_M: audio.toggle_music()
@@ -3050,7 +3863,7 @@ func _visible_world_rect() -> Rect2:
 
 
 func _world_is_visible() -> bool:
-	return game_state not in ["title", "level_select", "controller_settings", "controller_mapping"]
+	return game_state not in ["title", "level_select", "controller_settings", "controller_mapping", "campaign_select", "campaign_confirm", "skill_tree", "skill_confirm"]
 
 
 func _update_background_visibility(view: Rect2, draw_world: bool) -> void:
@@ -3066,14 +3879,18 @@ func _update_background_visibility(view: Rect2, draw_world: bool) -> void:
 
 
 func _enemy_draw_visible(enemy: Dictionary, view: Rect2) -> bool:
-	# The alert Warden draws a line and reticle all the way to the player; it
-	# must be drawn even when the body is outside the camera's expanded rect.
-	if enemy.get("role", "") == "warden":
-		var alert: bool = enemy["alert"] if enemy.has("alert") else _enemy_sees_player(enemy.pos)
-		if alert:
-			return true
-	# Includes the sentry's 120px scan, boss sprites, bobbing and ice rings.
+	# Include larger boss silhouettes, pose motion and ice rings in the margin.
+	# No enemy draws a targeting line to a player outside this region.
 	return view.grow(160.0).has_point(_enemy_visual_position(enemy))
+
+
+func _draw_heart_pickup(cell: Vector2i) -> void:
+	var center := _cell_center(cell) + Vector2(0, sin(animation_clock * 3.0) * 2.0)
+	draw_circle(center, 22.0, Color("ff6e97", 0.12))
+	draw_circle(center + Vector2(-6, -3), 7.0, Color("ff6e97"))
+	draw_circle(center + Vector2(6, -3), 7.0, Color("ff6e97"))
+	draw_colored_polygon(PackedVector2Array([center + Vector2(-13, 0), center + Vector2(13, 0), center + Vector2(0, 15)]), Color("ff6e97"))
+	draw_circle(center + Vector2(-6, -5), 2.5, Color("ffe1ea"))
 
 
 func _draw() -> void:
@@ -3087,15 +3904,19 @@ func _draw() -> void:
 	for gate in environment.gates:
 		if item_view.has_point(_cell_center(gate.pos)):
 			_draw_environment_gate(gate)
-	for crate in environment.crates:
-		if item_view.has_point(_cell_center(crate.pos)):
-			_draw_environment_crate(crate)
+	for index in environment.crates.size():
+		var crate: Dictionary = environment.crates[index]
+		if item_view.has_point(_crate_visual_position(index, crate)):
+			_draw_environment_crate(crate, index)
 	for pos in coins:
 		if item_view.has_point(_cell_center(pos)):
 			_draw_coin(pos)
 	for pos in shields:
 		if item_view.has_point(_cell_center(pos)):
 			_draw_shield(pos)
+	for pos in heart_pickups:
+		if item_view.has_point(_cell_center(pos)):
+			_draw_heart_pickup(pos)
 	for pos in breakers:
 		if item_view.has_point(_cell_center(pos)):
 			_draw_breaker(pos)
@@ -3108,11 +3929,17 @@ func _draw() -> void:
 		if not _enemy_draw_visible(enemy, view):
 			continue
 		_draw_enemy(enemy)
+		# Enemy bodies have their own procedural transform; never leak it into
+		# another actor, the ice state, or the rest of the board.
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		if freeze_turns > 0:
 			var ice_center := _enemy_visual_position(enemy)
 			var ice_radius := 36.0 if _is_elite(enemy) else 23.0
 			draw_arc(ice_center, ice_radius, animation_clock, animation_clock + TAU * 0.8, 28, Color("b4d8ff", 0.85), 1.7, true)
 			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
+	for ghost in enemy_defeat_visuals:
+		if view.grow(120.0).has_point(ghost.to):
+			_draw_enemy_defeat(ghost)
 	_draw_player()
 	_draw_particles()
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -3378,7 +4205,8 @@ func _draw_floor_shadows(target: CanvasItem, point: Vector2i, top_left: Vector2)
 func _enemy_visual_position(enemy: Dictionary) -> Vector2:
 	var t: float = clampf(float(enemy.get("t", 1.0)), 0.0, 1.0)
 	var eased := t * t * (3.0 - 2.0 * t)
-	var position: Vector2 = enemy.from.lerp(enemy.to, eased)
+	var track = enemy.get("_visual_motion")
+	var position: Vector2 = track.position() if track != null else enemy.from.lerp(enemy.to, eased)
 	if int(enemy.get("shield_repel_turn", -1)) == turn_number and enemy.get("shield_repel_visual", false):
 		# A short kick arc is presentation only; the board cell was resolved
 		# immediately and no additional turn or collision is generated here.
@@ -3677,6 +4505,19 @@ func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> v
 		target.draw_line(start, finish, glow, 2.0, true)
 
 
+func _draw_surface_reactions(target: CanvasItem, view: Rect2) -> void:
+	for reaction in surface_reactions:
+		var center: Vector2 = reaction.position
+		if not view.grow(32.0).has_point(center):
+			continue
+		var t := clampf(float(reaction.age) / float(reaction.duration), 0.0, 1.0)
+		var color := Color("a4f3ef", 0.48 * (1.0 - t)) if reaction.material == "water" else Color("c7f4ff", 0.30 * (1.0 - t))
+		var radius := lerpf(8.0, 23.0 if reaction.material == "water" else 16.0, t)
+		target.draw_set_transform(center + Vector2(0, 7), 0.0, Vector2(1.0, 0.48))
+		target.draw_arc(Vector2.ZERO, radius, 0.0, TAU, 24, color, 1.4, true)
+		target.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
 # Environmental symbols are high-contrast and static: arrows communicate flow,
 # lightning communicates danger, L/M identify the required crate material.
 func _draw_environment_surface(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
@@ -3735,9 +4576,13 @@ func _draw_environment_gate(gate: Dictionary) -> void:
 		draw_line(center + Vector2(-16, 0), center + Vector2(16, 0), Color("ffe4af"), 2.0, true)
 
 
-func _draw_environment_crate(crate: Dictionary) -> void:
-	var center := _cell_center(crate.pos)
+func _draw_environment_crate(crate: Dictionary, index: int) -> void:
+	var center := _crate_visual_position(index, crate)
 	var metal: bool = crate.get("material", "") == "metal"
+	var visible_cell := Vector2i(floori(center.x / CELL), floori(center.y / CELL))
+	if not metal and environment.is_water(visible_cell):
+		# Wood floats visually; logical occupancy remains at its resolved cell.
+		center.y += sin(animation_clock * 3.6 + float(index)) * 1.1
 	var top := Color("8db1bd") if metal else Color("bd864e")
 	var face := Color("34525f") if metal else Color("694322")
 	var side := Color("263c49") if metal else Color("4c2d18")
@@ -4133,15 +4978,91 @@ func _draw_trap(target: CanvasItem, trap: Dictionary) -> void:
 		target.draw_circle(center + Vector2(cos(angle), sin(angle)) * 7.0, 2.0, Color("ffbd73", alpha))
 
 
+func _draw_enemy_defeat(ghost: Dictionary) -> void:
+	var age: float = float(ghost.age)
+	var t := clampf(age / float(ghost.duration), 0.0, 1.0)
+	var center: Vector2 = Vector2(ghost.from).lerp(ghost.to, clampf(age / 0.13, 0.0, 1.0))
+	var alpha := (1.0 - t) * 0.72
+	var shrink := 1.0 - t * 0.20
+	if ghost.role == "chess_boss":
+		var texture: Texture2D = BOSS_TEXTURES.get(str(ghost.boss_kind), BOSS_TEXTURES["pawn"])
+		var size := 100.0 * shrink
+		draw_texture_rect(texture, Rect2(center + Vector2(-size * 0.5, -size * 0.78), Vector2(size, size)), false, Color(1, 1, 1, alpha))
+		return
+	var color := Color("ffe57a") if ghost.material == "electricity" else Color("ff8398")
+	if ghost.role == "warden":
+		color = Color("d79bff")
+	elif ghost.role == "mirror":
+		color = Color("a8e7ff")
+	elif ghost.role == "patrol":
+		color = Color("75f7b6")
+	var size := (20.0 if ghost.role == "warden" else 15.0) * shrink
+	var silhouette := _chamfered_square_points(center, size, size * 0.35)
+	draw_colored_polygon(silhouette, Color(color, alpha * 0.45))
+	silhouette.append(silhouette[0])
+	draw_polyline(silhouette, Color(color, alpha), 1.5, true)
+	draw_circle(center, 3.0 * shrink, Color("ffffff", alpha))
+
+
+func _enemy_pose_transform(enemy: Dictionary, center: Vector2, motion_arc: float, reaction: float) -> Transform2D:
+	# Shape the body from the segment already being presented, never the next
+	# logical step or path. Heavier silhouettes yield less than agile ones.
+	var role: String = enemy.get("role", "hunter")
+	var strength := 0.075
+	var lean_strength := 0.08
+	match role:
+		"rusher":
+			strength = 0.12
+			lean_strength = 0.13
+		"wisp":
+			strength = 0.11
+			lean_strength = 0.06
+		"sentry", "warden", "chess_boss":
+			strength = 0.035
+			lean_strength = 0.04
+		"patrol", "mirror":
+			strength = 0.055
+	var track = enemy.get("_visual_motion")
+	var direction := Vector2.ZERO
+	if track != null and track.is_active():
+		direction = (Vector2(track.to) - Vector2(track.from)).normalized()
+	elif motion_arc > 0.0:
+		direction = (Vector2(enemy.get("to", center)) - Vector2(enemy.get("from", center))).normalized()
+	if direction.length_squared() < 0.01:
+		direction = Vector2(enemy.get("face", Vector2i.DOWN)).normalized()
+	var axis := absf(direction.x) - absf(direction.y)
+	var breath := sin(animation_clock * 2.7 + center.x * 0.013) * 0.012
+	var impact := sin((1.0 - reaction) * PI) * reaction if reaction > 0.0 else 0.0
+	var stretch := motion_arc * strength
+	var scale := Vector2(1.0 + stretch * axis + breath + impact * 0.04, 1.0 - stretch * axis - breath - impact * 0.04)
+	var reaction_dir: Vector2 = enemy.get("_visual_reaction_direction", Vector2.ZERO)
+	var tilt := direction.x * motion_arc * lean_strength + reaction_dir.x * impact * 0.09
+	var pose := Transform2D(tilt, scale, 0.0, Vector2.ZERO)
+	pose.origin = center - pose * center
+	return pose
+
+
 func _draw_enemy(enemy: Dictionary) -> void:
 	var center := _enemy_visual_position(enemy)
 	var role: String = enemy.get("role", "hunter")
+	var track = enemy.get("_visual_motion")
+	var moving: bool = track.is_active() if track != null else float(enemy.get("t", 1.0)) < 1.0 and not Vector2(enemy.from).is_equal_approx(enemy.to)
+	var progress: float = track.progress if track != null else float(enemy.get("t", 1.0))
+	var motion_arc := sin(clampf(progress, 0.0, 1.0) * PI) if moving else 0.0
+	var leap_height := 7.0 if role == "chess_boss" and enemy.get("boss_kind", "") == "knight" else 3.5 if role == "wisp" else 2.0
+	center.y -= motion_arc * leap_height
+	var reaction: float = clampf(float(enemy.get("_visual_reaction", 0.0)) / 0.22, 0.0, 1.0)
+	if reaction > 0.0:
+		var direction: Vector2 = enemy.get("_visual_reaction_direction", Vector2.UP)
+		center += direction * sin((1.0 - reaction) * PI) * 4.0
 	if role == "chess_boss":
 		var kind: String = enemy.get("boss_kind", "pawn")
 		var texture: Texture2D = BOSS_TEXTURES.get(kind, BOSS_TEXTURES["pawn"])
 		var size := 110.0 if kind in ["queen", "king"] else 100.0
 		center.y += sin(animation_clock * 2.5 + center.x * 0.01) * 1.5
-		draw_texture_rect(texture, Rect2(center + Vector2(-size * 0.5, -size * 0.78), Vector2(size, size)), false)
+		var size_v := Vector2(size * (1.0 + motion_arc * 0.025), size * (1.0 - motion_arc * 0.025))
+		draw_set_transform_matrix(_enemy_pose_transform(enemy, center, motion_arc, reaction))
+		draw_texture_rect(texture, Rect2(center + Vector2(-size_v.x * 0.5, -size_v.y * 0.78), size_v), false)
 		return
 	var alert: bool = enemy.get("alert", _enemy_sees_player(enemy.pos))
 	var size_scale := 1.35 if role == "warden" else 0.88 if role == "wisp" else 0.95 if role == "rusher" else 1.08 if role == "sentry" else 1.02
@@ -4156,7 +5077,7 @@ func _draw_enemy(enemy: Dictionary) -> void:
 	# Sombra de chão dinâmica e suave
 	draw_set_transform(center + Vector2(0, 12 * size_scale), 0.0, Vector2(1.0, 0.45))
 	draw_circle(Vector2.ZERO, half_size * 1.15, Color("020612", 0.48))
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	draw_set_transform_matrix(_enemy_pose_transform(enemy, center, motion_arc, reaction))
 
 	if role == "patrol":
 		# Low, tracked scout; the chevron points along its patrol direction.
@@ -4288,9 +5209,7 @@ func _draw_enemy(enemy: Dictionary) -> void:
 			draw_circle(eye_center_alert, 3.2, Color("ff2020"))
 			draw_circle(eye_center_alert, 1.8, Color("fff0f0"))
 			draw_circle(eye_center_alert + Vector2(-0.8, -0.8), 0.9, Color("ffffff"))
-			# Linha de scan vermelha laser
-			var scan_end := eye_center_alert + (p_pos_s - eye_center_alert).normalized() * 120.0
-			draw_line(eye_center_alert, scan_end, Color("ff0000", 0.18), 1.2, true)
+			# Attention stays on the entity itself, not a projected line.
 		else:
 			# CALMO: scanner oscila lentamente em dourado
 			var sweep := sin(animation_clock * 4.0) * (half_size * 0.22)
@@ -4402,16 +5321,10 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		
 		# 3. Núcleo afiado central + sensor de mira
 		if alert:
-			# Núcleo VERMELHO em alerta + raias de velocidade
+			# Alert stays in the core and thruster; no projected speed lines.
 			draw_circle(center + f_dir * 3, 4.0, Color("ff0020", 0.60))
 			draw_circle(center + f_dir * 3, 3.2, Color("ffffff"))
 			draw_circle(center + f_dir * 3, 2.0, Color("ff2020"))
-			# Linhas de velocidade / rastro de calor nas asas
-			for i in 3:
-				var offset_p := perp * (float(i) - 1.0) * 5.0
-				draw_line(center + offset_p - f_dir * half_size,
-					center + offset_p - f_dir * (half_size * 2.5),
-					Color("ff6800", 0.35 - float(i) * 0.05), 1.2, true)
 			# Ponto de mira do sensor
 			var p_pos_r := _player_visual_position()
 			var to_p := (p_pos_r - center).normalized()
@@ -4459,21 +5372,11 @@ func _draw_enemy(enemy: Dictionary) -> void:
 		# 5. Núcleo do Reator de Fusão central (olho estelar)
 		var core_p := 1.0 + sin(animation_clock * 9.0) * 0.22
 		if alert:
-			# ALERTA: reactor VERMELHO sangue + drones mais rápidos + retícula sobre o jogador
+			# Alert is readable on the Warden's own reactor and orbiting drones.
 			draw_circle(center, 7.5 * core_p, Color("ff0020", 0.55))
 			draw_circle(center, 5.0 * core_p, Color("ffffff"))
 			draw_circle(center, 3.0 * core_p, Color("ff1530"))
-			# Retícula de targeting holográfica vermelha sobre o player
-			var p_pos_wd := _player_visual_position()
-			var reticle_r := 10.0 + sin(animation_clock * 8.0) * 1.5
-			draw_arc(p_pos_wd, reticle_r, 0.0, TAU, 32, Color("ff0020", 0.85), 1.8, true)
-			draw_line(p_pos_wd + Vector2(-reticle_r - 4, 0), p_pos_wd + Vector2(-reticle_r + 5, 0), Color("ff0020", 0.9), 1.5, true)
-			draw_line(p_pos_wd + Vector2(reticle_r - 5, 0), p_pos_wd + Vector2(reticle_r + 4, 0), Color("ff0020", 0.9), 1.5, true)
-			draw_line(p_pos_wd + Vector2(0, -reticle_r - 4), p_pos_wd + Vector2(0, -reticle_r + 5), Color("ff0020", 0.9), 1.5, true)
-			draw_line(p_pos_wd + Vector2(0, reticle_r - 5), p_pos_wd + Vector2(0, reticle_r + 4), Color("ff0020", 0.9), 1.5, true)
-			draw_circle(p_pos_wd, 2.2, Color("ff0020", 0.9))
-			# Linha de mira ligando warden ao player
-			draw_line(center, p_pos_wd, Color("ff0020", 0.12), 1.0, true)
+
 		else:
 			draw_circle(center, 7.5 * core_p, Color("c25eff", 0.45))
 			draw_circle(center, 5.0 * core_p, Color("ffffff"))
@@ -4506,12 +5409,11 @@ func _draw_player() -> void:
 	var size_scale := 1.0
 	var stretch := Vector2.ONE
 	var visibility := 1.0
-	var movement := clampf(1.0 - player_anim, 0.0, 1.0)
-	var travel := player_to - player_from
-	var roll := 0.0
-	if travel.length_squared() > 1.0:
-		roll = movement * travel.length() / 17.0 * (1.0 if travel.x * travel.y <= 0.0 else -1.0)
-	var hop := sin(movement * PI) * 4.0
+	var moving := player_anim < 1.0
+	var movement := sin(clampf(player_anim, 0.0, 1.0) * PI) if moving else 0.0
+	var roll := player_roll_angle
+	var hop_height := 8.0 if player_motion.kind == "jump" else 1.2 if player_motion.kind in ["ice", "current"] else 3.2
+	var hop := movement * hop_height
 	if game_state == "captured":
 		var inflation := clampf(capture_time / CAPTURE_POP_TIME, 0.0, 1.0)
 		size_scale = 1.0 + 0.78 * smoothstep(0.0, 1.0, inflation)
@@ -4519,10 +5421,21 @@ func _draw_player() -> void:
 		if inflation > 0.3 and int(capture_time * 26.0) % 2 == 0:
 			visibility = 0.3
 	else:
-		var squash := sin(movement * PI)
+		var block := sin((1.0 - clampf(blocked_feedback_time / 0.16, 0.0, 1.0)) * PI) if blocked_feedback_time > 0.0 else 0.0
+		var attack := sin((1.0 - clampf(attack_feedback_time / 0.22, 0.0, 1.0)) * PI) if attack_feedback_time > 0.0 else 0.0
+		var impact := sin((1.0 - clampf(impact_feedback_time / 0.20, 0.0, 1.0)) * PI) if impact_feedback_time > 0.0 else 0.0
+		center += blocked_feedback_direction * (block * 2.8)
+		center += Vector2(facing) * (attack * 4.0 - impact * 2.5)
+		var along := 1.0 + movement * 0.10 - block * 0.10 + attack * 0.04 - impact * 0.06
+		var across := 1.0 - movement * 0.065 + block * 0.065 - attack * 0.025 + impact * 0.04
+		var pose_direction := blocked_feedback_direction if block > 0.0 else Vector2(facing) if attack > 0.0 or impact > 0.0 else player_visual_direction
+		stretch = Vector2(along, across) if absf(pose_direction.x) >= absf(pose_direction.y) else Vector2(across, along)
 		var landing := clampf(landing_feedback_time / 0.12, 0.0, 1.0)
-		stretch = Vector2(1.0 + squash * 0.09 + landing * 0.07, 1.0 - squash * 0.07 - landing * 0.055)
-		hop += sin(animation_clock * 7.0) * 0.8
+		stretch *= Vector2(1.0 + landing * 0.06, 1.0 - landing * 0.05)
+		hop += sin(animation_clock * 7.0) * 0.5
+	if moving and player_motion.kind == "ice" and game_state != "captured":
+		var behind := center - player_visual_direction * 15.0
+		draw_line(behind, behind - player_visual_direction * (7.0 + movement * 5.0), Color("c6f3ff", 0.25 * movement), 1.3, true)
 	if threat_aura > 0.01 and game_state == "playing":
 		var pulse := 1.0 + 0.05 * sin(animation_clock * 5.0)
 		draw_arc(center, 21.0 * pulse, 0.0, TAU, 32, Color("ff6a71", threat_aura * 0.22), 1.4, true)
@@ -4546,9 +5459,11 @@ func _draw_player() -> void:
 				var a := rot + float(v) * TAU / 6.0
 				draw_circle(center + Vector2(cos(a), sin(a)) * hex_radius, 1.8 * size_scale, Color("ffffff", hex_alpha * 1.2))
 	# Esfera 3D Volumétrica da Bola Vermelha
-	var bob := sin(animation_clock * 8.5) * 1.0
+	var bob := sin(animation_clock * 8.5) * 0.6
 	var sphere_pos := center + Vector2(0, bob - hop)
-	draw_set_transform(sphere_pos, roll, stretch * size_scale)
+	# Screen-axis deformation follows the direction even while the texture rolls.
+	var body_transform := Transform2D(0.0, stretch * size_scale, 0.0, sphere_pos) * Transform2D(roll, Vector2.ONE, 0.0, Vector2.ZERO)
+	draw_set_transform_matrix(body_transform)
 	if player_sphere_texture != null:
 		var diameter := 32.0
 		var tex_rect := Rect2(-diameter * 0.5, -diameter * 0.5, diameter, diameter)
@@ -4601,13 +5516,20 @@ func _draw_player() -> void:
 		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("7ae7ff", visibility * 0.95))
 		draw_circle(sweat_pos + Vector2(-0.7, 0.8) * size_scale, 0.8 * size_scale, Color("ffffff", visibility))
 	else:
-		draw_circle(eye_left, eye_radius * size_scale, sclera)
-		draw_circle(eye_right, eye_radius * size_scale, sclera)
-		draw_circle(eye_left + gaze, 1.45 * size_scale, pupil)
-		draw_circle(eye_right + gaze, 1.45 * size_scale, pupil)
-		# Ponto especular na pupila
-		draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
+		# A brief deterministic idle blink adds life without consuming game RNG.
+		var blink_phase := fposmod(animation_clock, 4.8)
+		var blinking := not moving and blink_phase > 4.61 and blink_phase < 4.72
+		if blinking:
+			draw_line(eye_left + Vector2(-2.7, 0) * size_scale, eye_left + Vector2(2.7, 0) * size_scale, sclera, 1.5 * size_scale, true)
+			draw_line(eye_right + Vector2(-2.7, 0) * size_scale, eye_right + Vector2(2.7, 0) * size_scale, sclera, 1.5 * size_scale, true)
+		else:
+			draw_circle(eye_left, eye_radius * size_scale, sclera)
+			draw_circle(eye_right, eye_radius * size_scale, sclera)
+			draw_circle(eye_left + gaze, 1.45 * size_scale, pupil)
+			draw_circle(eye_right + gaze, 1.45 * size_scale, pupil)
+			# Ponto especular na pupila
+			draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
+			draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
 		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
 
 

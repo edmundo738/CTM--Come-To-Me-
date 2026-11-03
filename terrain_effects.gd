@@ -29,6 +29,7 @@ func _draw() -> void:
 				game._draw_nav_chevron(self, nav.pos, nav.dir, terrain.palette)
 		return
 	game._draw_floor_neon_glow(self, view)
+	game._draw_surface_reactions(self, view)
 	if game.turn_pulse_time >= 0.0:
 		var progress: float = clampf(game.turn_pulse_time / 0.28, 0.0, 1.0)
 		draw_arc(game.turn_pulse_position, 8.0 + progress * 24.0, 0.0, TAU, 40, Color("82f4ff", 0.30 * (1.0 - progress)), 1.4, true)
