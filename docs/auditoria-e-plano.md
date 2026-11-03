@@ -80,11 +80,11 @@ A mutação deve atualizar lista de células animadas, cache e vizinhos, estado 
 
 1. **Capacidade própria ativada:** uma ação escolhida pelo jogador, com custo, recarga e regras de turno.
 2. **Melhoria de power-up:** modificação desbloqueada do efeito, duração, alcance ou cargas de um poder; especificar se necessita de ativação adicional ou se age quando o poder é utilizado.
-3. **Atributo permanente:** valor como vida máxima ou força, caso seja aprovado como permanente.
+3. **Capacidade ou atributo:** limite concedido por uma habilidade válida; no caso da sobrevivência, é a quantidade de corações adicionais, não uma barra abstrata de HP. A permanência de outras melhorias depende de aprovação.
 4. **Efeito temporário:** estado ativo durante N ações ou usos; não é automaticamente uma habilidade adquirida na árvore.
 5. **Capacidade especial temporária:** transformação, com forma, duração e matriz explícita de deteção por família.
 
-O pedido inicial indica que o que está ligado diretamente ao jogador e aos power-ups deve ser **ativo**; o documento também pede não impor uma interpretação para atributos permanentes. **DECISÃO PENDENTE:** confirmar se um atributo como vida máxima deve exigir ativação manual, e se melhorias de um power-up só se aplicam depois de um comando separado. Não atribuir nomes, custos ou vantagens definitivas antes dessa resposta. Desenhar dependências, pontos e migração do perfil depois da decisão.
+**ATUALIZAÇÃO:** o jogador esclareceu que a sobrevivência é representada por corações adicionais: a habilidade pode exigir desbloqueio e ativação, mas o coração é consumido automaticamente num dano fatal elegível, sem comando por impacto. A ordem escolhida é escudo → coração → morte para inimigos e armadilhas protegíveis; perigos que ignorem ambos exigem regra e aviso explícitos. Não há turno adicional de invulnerabilidade contra um novo contacto legítimo. Desbloquear, equipar/ativar, usar e consumir são operações diferentes. O jogador também definiu três campanhas independentes, cosméticos globais e proteção/recuperação dos saves. As decisões, categorias e integração proposta estão em [design de corações e habilidades](design-coracoes-e-habilidades.md); a atualização não implica que estes sistemas estejam implementados.
 
 ## 3. Plano incremental, dependências e critérios de aceitação
 
@@ -106,7 +106,7 @@ O pedido inicial indica que o que está ligado diretamente ao jogador e aos powe
 
 ### P3 — Progressão e habilidades
 
-- Acordar as categorias ativas/passivas acima; desenhar árvore com requisitos, custos e desbloqueios sem impor números finais antes de jogar.
+- Detalhar as categorias passiva, ativa, descoberta e capacidade, que podem sobrepor-se; desenhar árvore com requisitos, custos, ativação e desbloqueios sem impor números finais antes de jogar. A proposta de sobrevivência e a atualização da auditoria estão em [design de corações e habilidades](design-coracoes-e-habilidades.md).
 - Persistir versão e defaults seguros para perfis antigos; separar atributos, capacidade equipada e efeitos temporários.
 - Transformação: matriz de reconhecimento explícita por forma e inimigo, duração por ação, riscos e comportamento na expiração; testar todos os pares e checkpoint.
 - Teletransporte: destinos legais, limite de usos, riscos comunicados e teste de saída alcançável; nunca colocar o jogador numa parede ou numa região sem solução.
