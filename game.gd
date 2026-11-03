@@ -51,6 +51,7 @@ const VIBRATION_PROFILE_VERSION := 2
 const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
+const TerrainRenderer = preload("res://terrain_renderer.gd")
 
 var grid: Array = []
 var world_size := Vector2i(0, 0)
@@ -81,6 +82,8 @@ var controller
 var feedback_bus: Node
 var capture_overlay: ColorRect
 var capture_material: ShaderMaterial
+var background_rect: ColorRect
+var terrain_renderer: Node2D
 var generator = Generator.new()
 var rng := RandomNumberGenerator.new()
 var active_seed := 0
@@ -169,12 +172,12 @@ func _ready() -> void:
 	var background_layer := CanvasLayer.new()
 	background_layer.layer = -2
 	add_child(background_layer)
-	var background := ColorRect.new()
+	background_rect = ColorRect.new()
 	var material := ShaderMaterial.new()
 	material.shader = BackgroundShader
-	background.material = material
-	background_layer.add_child(background)
-	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background_rect.material = material
+	background_layer.add_child(background_rect)
+	background_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	var hud_layer := CanvasLayer.new()
 	hud_layer.layer = 2
 	add_child(hud_layer)
@@ -187,6 +190,7 @@ func _ready() -> void:
 	capture_layer.layer = 1
 	add_child(capture_layer)
 	capture_overlay = ColorRect.new()
+	capture_overlay.visible = false
 	capture_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	capture_material = ShaderMaterial.new()
 	capture_material.shader = CaptureOverlayShader
@@ -212,6 +216,9 @@ func _ready() -> void:
 	camera.name = "Camera2D"
 	camera.enabled = true
 	add_child(camera)
+	terrain_renderer = TerrainRenderer.new()
+	terrain_renderer.setup(self)
+	add_child(terrain_renderer)
 	active_seed = int(Time.get_ticks_usec()) ^ randi()
 	rng.seed = active_seed
 	generate_floor(1)
@@ -303,6 +310,8 @@ func _reset_capture_state() -> void:
 		camera.offset = Vector2.ZERO
 	if audio != null and audio.has_method("reset_cinematic_mix"):
 		audio.reset_cinematic_mix()
+	if capture_overlay != null:
+		capture_overlay.visible = false
 
 
 func restart_floor() -> void:
@@ -547,6 +556,8 @@ func dev_load_sandbox_arena() -> void:
 	notice_timer = 3.0
 	_update_enemy_intents()
 	_update_camera(1.0)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
 	queue_redraw()
 
 
@@ -761,11 +772,7 @@ func generate_floor(number: int) -> void:
 	if power_position != Vector2i(-1, -1):
 		powerups.append({"pos": power_position, "kind": POWERUP_TYPES[posmod(number - 1, POWERUP_TYPES.size())]})
 		occupied[power_position] = true
-	for i in 8 + number:
-		var position: Vector2i = _pick_spaced(walkable, occupied, 1)
-		if position != Vector2i(-1, -1):
-			coins.append(position)
-			occupied[position] = true
+	_place_coins(walkable, occupied, 8 + number)
 	coins_spawned_this_floor = coins.size()
 	# Puzzle floors contain neither enemies nor traps: the sequence itself is
 	# the challenge. Other floors introduce visible recurring rhythm hazards.
@@ -795,6 +802,8 @@ func generate_floor(number: int) -> void:
 	notice_timer = 3.8
 	_update_enemy_intents()
 	_update_camera(1.0)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
 	queue_redraw()
 
 
@@ -1155,15 +1164,44 @@ func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
 	return result
 
 
+# Reuse the ordered list of free cells for all coins. Removing the chosen
+# entry preserves the same candidates, random draws and order as _pick_spaced
+# at distance 1; running out of cells used to consume no more random values.
+func _place_coins(cells: Array[Vector2i], occupied: Dictionary, count: int) -> void:
+	var candidates: Array[Vector2i] = []
+	for point in cells:
+		if not occupied.has(point):
+			candidates.append(point)
+	for _i in mini(count, candidates.size()):
+		var index := rng.randi_range(0, candidates.size() - 1)
+		var position := candidates[index]
+		coins.append(position)
+		occupied[position] = true
+		candidates.remove_at(index)
+
+
 func _pick_spaced(cells: Array[Vector2i], occupied: Dictionary, min_distance: int) -> Vector2i:
 	var candidates: Array[Vector2i] = []
+	# A Manhattan diamond is cheaper than scanning every occupied cell once
+	# there are many coins. It tests the same condition without changing order.
+	var use_local := min_distance > 1 and occupied.size() > 2 * min_distance * (min_distance - 1)
+	var offsets: Array[Vector2i] = []
+	if use_local:
+		for dx in range(1 - min_distance, min_distance):
+			var limit := min_distance - 1 - absi(dx)
+			for dy in range(-limit, limit + 1):
+				if dx != 0 or dy != 0:
+					offsets.append(Vector2i(dx, dy))
 	for point in cells:
 		if occupied.has(point):
 			continue
 		var far_enough := true
-		# With distance 1, the membership test above is the entire condition.
-		# This is the common case for the many coins on high floors.
-		if min_distance > 1:
+		if use_local:
+			for offset in offsets:
+				if occupied.has(point + offset):
+					far_enough = false
+					break
+		elif min_distance > 1:
 			for other in occupied:
 				if _manhattan(point, other) < min_distance:
 					far_enough = false
@@ -1591,6 +1629,8 @@ func try_break_wall() -> void:
 		return
 	breach_charges -= 1
 	grid[target.y][target.x] = TILE_FLOOR
+	if terrain_renderer != null:
+		terrain_renderer.invalidate_cell(target)
 	moves_this_floor += 1
 	_trigger_shake(0.22, 10.0)
 	flash_time = 0.08
@@ -2058,7 +2098,15 @@ func _update_capture_sequence(delta: float) -> void:
 func _update_capture_overlay() -> void:
 	if audio != null and audio.has_method("set_capture_mix"):
 		audio.set_capture_mix(capture_darkness)
-	if capture_material == null:
+	if capture_material == null or capture_overlay == null:
+		return
+	# All four terms contribute to alpha in the shader. Hide only when the
+	# result is transparent, or an opaque menu completely covers the world.
+	# This avoids a full-screen shader pass during ordinary play.
+	var active := _world_is_visible() and (capture_darkness > 0.0 or capture_flash > 0.0 or capture_noise > 0.0 or (capture_shockwave_radius > 0.001 and capture_shockwave_radius < 1.2))
+	if capture_overlay.visible != active:
+		capture_overlay.visible = active
+	if not active:
 		return
 	var focus := Vector2(0.5, 0.5)
 	var viewport := get_viewport_rect().size
@@ -2301,6 +2349,11 @@ func _process(delta: float) -> void:
 	if feedback_bus != null:
 		feedback_bus.tick(delta, visible_threat_distance, game_state == "playing" and not dev_menu_open, _current_threat_level())
 	_update_camera(delta)
+	var view := _visible_world_rect()
+	var draw_world := _world_is_visible()
+	_update_background_visibility(view, draw_world)
+	if terrain_renderer != null:
+		terrain_renderer.sync_view(view, draw_world)
 	queue_redraw()
 
 
@@ -2590,85 +2643,88 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_M: audio.toggle_music()
 
 
-func _draw() -> void:
-	if world_size == Vector2i.ZERO:
+# Convert the actual viewport through the CanvasItem transform. This accounts
+# for viewport stretching, zoom, camera rotation and shake, unlike subtracting
+# half the viewport from the camera position. A little padding protects AA.
+func _visible_world_rect() -> Rect2:
+	if not is_inside_tree():
+		return Rect2(Vector2.ZERO, Vector2(world_size) * CELL)
+	var viewport := get_viewport_rect()
+	var inverse := get_global_transform_with_canvas().affine_inverse()
+	var corners := [
+		inverse * viewport.position,
+		inverse * Vector2(viewport.end.x, viewport.position.y),
+		inverse * viewport.end,
+		inverse * Vector2(viewport.position.x, viewport.end.y),
+	]
+	var low: Vector2 = corners[0]
+	var high: Vector2 = corners[0]
+	for corner in corners:
+		low = low.min(corner)
+		high = high.max(corner)
+	return Rect2(low, high - low).grow(8.0)
+
+
+func _world_is_visible() -> bool:
+	return game_state not in ["title", "level_select", "controller_settings", "controller_mapping"]
+
+
+func _update_background_visibility(view: Rect2, draw_world: bool) -> void:
+	if background_rect == null:
 		return
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-	var half_view := get_viewport_rect().size * 0.5
-	var first_x := maxi(0, int(floor((camera.global_position.x - half_view.x) / CELL)) - 1)
-	var last_x := mini(world_size.x - 1, int(ceil((camera.global_position.x + half_view.x) / CELL)) + 1)
-	var first_y := maxi(0, int(floor((camera.global_position.y - half_view.y) / CELL)) - 1)
-	var last_y := mini(world_size.y - 1, int(ceil((camera.global_position.y + half_view.y) / CELL)) + 1)
-	
-	var biome_idx := get_biome_index(floor_number)
-	var pal := _get_biome_palette(biome_idx)
-	
-	# CAMADA 1: Chão estruturado (Steel Plates & Terrain)
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			var tcell: int = grid[y][x]
-			if tcell == TILE_FLOOR or tcell == TILE_WATER:
-				_draw_floor_tile(pt, Vector2(pt) * CELL, pal)
-	
-	# CAMADA 1.5: Setas de Navegação Direcionadas (Indicam Portas e Portal)
-	for nav in nav_chevrons:
-		_draw_nav_chevron(nav.pos, nav.dir, pal)
-	
-	# CAMADA 2: Sombras 2.5D projetadas das paredes sobre o chão
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			if _is_floor(pt):
-				_draw_floor_shadows(pt, Vector2(pt) * CELL)
-				
-	# CAMADA 3: Iluminação e Halos Néon no Chão (Radial Glows dos itens e player)
-	_draw_floor_neon_glow()
-	if turn_pulse_time >= 0.0:
-		var progress := clampf(turn_pulse_time / 0.28, 0.0, 1.0)
-		draw_arc(turn_pulse_position, 8.0 + progress * 24.0, 0.0, TAU, 40, Color("82f4ff", 0.30 * (1.0 - progress)), 1.4, true)
-	
-	# CAMADA 4: Elementos interativos de chão (Poça de sangue, armadilhas, botões)
-	_draw_blood_puddle()
-	for trap in traps:
-		_draw_trap(trap)
-	for item in switches:
-		_draw_switch(item)
-		
-	# CAMADA 5: Paredes 2.5D com Topo + Frente com Conduta Néon contínua
-	for y in range(first_y, last_y + 1):
-		for x in range(first_x, last_x + 1):
-			var pt := Vector2i(x, y)
-			var twall: int = grid[y][x]
-			if twall == TILE_WALL or twall == TILE_BORDER:
-				_draw_wall_tile(pt, Vector2(pt) * CELL, pal, twall == TILE_BORDER)
-				
-	# CAMADA 6: Itens e Pickups 3D
+	# Every cell has an opaque floor or wall base. When the padded viewport is
+	# wholly inside the board, the procedural full-screen background is hidden
+	# behind those cells; show it again at world edges and on small maps.
+	var board := Rect2(Vector2.ZERO, Vector2(world_size) * CELL)
+	var needed := draw_world and (world_size == Vector2i.ZERO or not board.encloses(view))
+	if background_rect.visible != needed:
+		background_rect.visible = needed
+
+
+func _enemy_draw_visible(enemy: Dictionary, view: Rect2) -> bool:
+	# The alert Warden draws a line and reticle all the way to the player; it
+	# must be drawn even when the body is outside the camera's expanded rect.
+	if enemy.get("role", "") == "warden":
+		var alert: bool = enemy["alert"] if enemy.has("alert") else _enemy_sees_player(enemy.pos)
+		if alert:
+			return true
+	# Includes the sentry's 120px scan, boss sprites, bobbing and ice rings.
+	return view.grow(160.0).has_point(_enemy_visual_position(enemy))
+
+
+func _draw() -> void:
+	if world_size == Vector2i.ZERO or not _world_is_visible():
+		return
+	var view := _visible_world_rect()
+	var item_view := view.grow(48.0)
+	# Static ground, shadows and walls are retained by terrain_renderer. The
+	# remaining dynamic actors are culled conservatively, never removed from
+	# the game state, so objectives and collision still use the full level.
 	for pos in coins:
-		_draw_coin(pos)
+		if item_view.has_point(_cell_center(pos)):
+			_draw_coin(pos)
 	for pos in shields:
-		_draw_shield(pos)
+		if item_view.has_point(_cell_center(pos)):
+			_draw_shield(pos)
 	for pos in breakers:
-		_draw_breaker(pos)
+		if item_view.has_point(_cell_center(pos)):
+			_draw_breaker(pos)
 	for item in powerups:
-		_draw_powerup(item)
-	_draw_portal()
-	
-	# CAMADA 7: Inimigos
+		if item_view.has_point(_cell_center(item.pos)):
+			_draw_powerup(item)
+	if view.grow(64.0).has_point(_cell_center(portal_position)):
+		_draw_portal()
 	for enemy in enemies:
+		if not _enemy_draw_visible(enemy, view):
+			continue
 		_draw_enemy(enemy)
 		if freeze_turns > 0:
 			var ice_center := _enemy_visual_position(enemy)
 			var ice_radius := 36.0 if _is_elite(enemy) else 23.0
 			draw_arc(ice_center, ice_radius, animation_clock, animation_clock + TAU * 0.8, 28, Color("b4d8ff", 0.85), 1.7, true)
 			draw_circle(ice_center + Vector2(ice_radius * 0.75, -ice_radius * 0.65), 2.5, Color("d6faff"))
-		
-	# CAMADA 8: Jogador (Bola vermelha 3D)
 	_draw_player()
-	
-	# CAMADA 9: Partículas e Efeitos
 	_draw_particles()
-	
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -2771,30 +2827,30 @@ func _get_biome_palette(idx: int) -> Dictionary:
 			}
 
 
-func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
+func _draw_floor_tile(target: CanvasItem, point: Vector2i, top_left: Vector2, pal: Dictionary) -> void:
 	var base_col: Color = pal.floor_base if (point.x + point.y) % 2 == 0 else pal.floor_alt
 	var btype: String = pal.get("biome_type", "neon")
 	
 	# Preenchimento base da placa (quadrado cheio)
-	draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
+	target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), base_col, true)
 	
 	# Borda 3D raised: borda superior/esquerda mais clara (luz), inferior/direita escura (sombra)
 	var bevel_light := Color(pal.wall_bevel, 0.30)
 	var bevel_shadow := Color(0, 0, 0, 0.65)
-	draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
-	draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
-	draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
-	draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
+	target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), bevel_light, 1.5, true)
+	target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), bevel_light, 1.0, true)
+	target.draw_line(top_left + Vector2(1, CELL - 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 2.0, true)
+	target.draw_line(top_left + Vector2(CELL - 1, 1), top_left + Vector2(CELL - 1, CELL - 1), bevel_shadow, 1.5, true)
 	
 	# Linha néon característica na borda inferior da placa
-	draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.40), 1.2, true)
+	target.draw_line(top_left + Vector2(3, CELL - 1), top_left + Vector2(CELL - 3, CELL - 1), Color(pal.neon_accent, 0.40), 1.2, true)
 	
 	# Parafusos/rebites nos cantos das placas
 	var rivet: Color = pal.floor_rivet
-	draw_circle(top_left + Vector2(4, 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(4, CELL - 4), 1.4, rivet)
-	draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(4, 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(CELL - 4, 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(4, CELL - 4), 1.4, rivet)
+	target.draw_circle(top_left + Vector2(CELL - 4, CELL - 4), 1.4, rivet)
 	
 	var tile_hash := (point.x * 37 + point.y * 79) % 18
 	
@@ -2803,14 +2859,14 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 		# BIO-LAB: Painéis com nós de dados e circuitos biológicos verde-esmeralda
 		if tile_hash in [1, 5]:
 			# Circuito em cruz / barramento hexagonal no centro da laje
-			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 3.2, Color(pal.neon_accent, 0.65))
-			draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 1.5, Color("ffffff", 0.9))
-			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 4), Color(pal.neon_accent, 0.25), 1.0, true)
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(pal.neon_accent, 0.25), 1.0, true)
+			target.draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 3.2, Color(pal.neon_accent, 0.65))
+			target.draw_circle(top_left + Vector2(CELL * 0.5, CELL * 0.5), 1.5, Color("ffffff", 0.9))
+			target.draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL - 4), Color(pal.neon_accent, 0.25), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(pal.neon_accent, 0.25), 1.0, true)
 		elif tile_hash == 2:
 			# Pequeno broto de flora bio-mecânica no canto
-			draw_circle(top_left + Vector2(6, 6), 2.2, Color("34d399", 0.7))
-			draw_circle(top_left + Vector2(9, 5), 1.6, Color("6ee7b7", 0.6))
+			target.draw_circle(top_left + Vector2(6, 6), 2.2, Color("34d399", 0.7))
+			target.draw_circle(top_left + Vector2(9, 5), 1.6, Color("6ee7b7", 0.6))
 			
 	elif btype == "factory":
 		# INDUSTRIAL: Placas estriadas de aço (diamond plate) e faixas de perigo (hazard stripes)
@@ -2818,14 +2874,14 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 			# Faixas diagonais amarelas e pretas de advertência industrial (hazard stripes)
 			for s in 3:
 				var ox := float(s) * 7.0
-				draw_line(top_left + Vector2(6 + ox, 6), top_left + Vector2(13 + ox, 13), Color("ffd000", 0.75), 2.2, true)
-				draw_line(top_left + Vector2(3 + ox, 6), top_left + Vector2(10 + ox, 13), Color("120904", 0.85), 2.0, true)
+				target.draw_line(top_left + Vector2(6 + ox, 6), top_left + Vector2(13 + ox, 13), Color("ffd000", 0.75), 2.2, true)
+				target.draw_line(top_left + Vector2(3 + ox, 6), top_left + Vector2(10 + ox, 13), Color("120904", 0.85), 2.0, true)
 		elif tile_hash in [2, 6]:
 			# Grelha de drenagem de metal perfurado / saída de vapor
-			draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 16)), Color("0a0710", 0.9), true)
+			target.draw_rect(Rect2(top_left + Vector2(8, 8), Vector2(CELL - 16, CELL - 16)), Color("0a0710", 0.9), true)
 			for i in 3:
 				var vy := top_left.y + 11.0 + float(i) * 5.5
-				draw_line(Vector2(top_left.x + 10, vy), Vector2(top_left.x + CELL - 10, vy), Color("ff8b3d", 0.5), 1.4, true)
+				target.draw_line(Vector2(top_left.x + 10, vy), Vector2(top_left.x + CELL - 10, vy), Color("ff8b3d", 0.5), 1.4, true)
 				
 	elif btype == "glacier":
 		# CATEDRAL DE GELO: Cantaria de pedra antiga com fendas glaciais azul-celeste
@@ -2837,49 +2893,49 @@ func _draw_floor_tile(point: Vector2i, top_left: Vector2, pal: Dictionary) -> vo
 				top_left + Vector2(CELL * 0.55, CELL * 0.68),
 				top_left + Vector2(CELL - 4, CELL * 0.82)
 			])
-			draw_polyline(crack, Color("6de9ff", 0.65), 1.6, true)
-			draw_polyline(crack, Color("ffffff", 0.85), 0.8, true)
+			target.draw_polyline(crack, Color("6de9ff", 0.65), 1.6, true)
+			target.draw_polyline(crack, Color("ffffff", 0.85), 0.8, true)
 		elif tile_hash in [2, 7]:
 			# Cantaria de blocos antigos lapidados (linha de argamassa de pedra)
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(0, 0, 0, 0.4), 1.2, true)
-			draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(0, 0, 0, 0.35), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(0, 0, 0, 0.4), 1.2, true)
+			target.draw_line(top_left + Vector2(CELL * 0.5, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(0, 0, 0, 0.35), 1.0, true)
 			
 	elif btype == "mystic":
 		# MÍSTICO: Mármore negro com runas circulares e linhas de canalização arcanas
 		if tile_hash in [1, 4]:
 			# Glifo rúnico circular entalhado no piso
 			var center_pt := top_left + Vector2(CELL * 0.5, CELL * 0.5)
-			draw_arc(center_pt, 7.0, 0.0, TAU, 18, Color(pal.neon_accent, 0.55), 1.2, true)
-			draw_circle(center_pt, 2.2, Color("ffffff", 0.8))
-			draw_circle(center_pt, 1.2, Color(pal.neon_accent))
+			target.draw_arc(center_pt, 7.0, 0.0, TAU, 18, Color(pal.neon_accent, 0.55), 1.2, true)
+			target.draw_circle(center_pt, 2.2, Color("ffffff", 0.8))
+			target.draw_circle(center_pt, 1.2, Color(pal.neon_accent))
 		elif tile_hash in [2, 5]:
 			# Linhas de canalização mágica diagonais
-			draw_line(top_left + Vector2(4, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
-			draw_line(top_left + Vector2(CELL - 4, CELL - 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			target.draw_line(top_left + Vector2(4, 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
+			target.draw_line(top_left + Vector2(CELL - 4, CELL - 4), top_left + Vector2(CELL * 0.5, CELL * 0.5), Color(pal.neon_accent, 0.3), 1.2, true)
 			
 	else:
 		# NEON RUINS (Urbano Cyberpunk padrão)
 		if tile_hash == 1:
 			var vent_rect := Rect2(top_left + Vector2(10, 11), Vector2(CELL - 20, CELL - 22))
-			draw_rect(vent_rect, Color("040610", 0.95), true)
-			draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
+			target.draw_rect(vent_rect, Color("040610", 0.95), true)
+			target.draw_rect(vent_rect, Color(pal.neon_accent, 0.06), true)
 			for i in 4:
 				var vy := top_left.y + 15.0 + float(i) * 7.0
-				draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
+				target.draw_line(Vector2(top_left.x + 12, vy), Vector2(top_left.x + CELL - 12, vy), Color(pal.wall_bevel, 0.55), 1.5, true)
 		elif tile_hash == 2:
-			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
-			draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
+			target.draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.08), true)
+			target.draw_rect(Rect2(top_left + Vector2(10, 10), Vector2(CELL - 20, CELL - 20)), Color(pal.wall_bevel, 0.25), false, 1.0)
 		elif tile_hash == 3:
-			draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
+			target.draw_line(top_left + Vector2(7, CELL - 10), top_left + Vector2(CELL - 10, 7), Color(pal.wall_bevel, 0.14), 1.0, true)
 
 
-func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
+func _draw_nav_chevron(target: CanvasItem, point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
 	var center := _cell_center(point)
 	var angle := dir.angle()
 	var pulse := 0.85 + sin(animation_clock * 4.5 + float(point.x + point.y)) * 0.15
 	var chevron_col: Color = pal.neon_accent
 	
-	draw_set_transform(center, angle, Vector2.ONE)
+	target.draw_set_transform(center, angle, Vector2.ONE)
 	for ci in 2:
 		var ox := (float(ci) - 0.5) * 9.0
 		var p := PackedVector2Array([
@@ -2888,40 +2944,40 @@ func _draw_nav_chevron(point: Vector2i, dir: Vector2, pal: Dictionary) -> void:
 			Vector2(ox - 5.0, 7.0)
 		])
 		# Halo emissivo de fundo
-		draw_polyline(p, Color(chevron_col, 0.25 * pulse), 4.5, true)
+		target.draw_polyline(p, Color(chevron_col, 0.25 * pulse), 4.5, true)
 		# Linha néon principal intensa
-		draw_polyline(p, Color(chevron_col, 0.95 * pulse), 1.8, true)
+		target.draw_polyline(p, Color(chevron_col, 0.95 * pulse), 1.8, true)
 		# Centro branco puro de incandescência
-		draw_polyline(p, Color("ffffff", 0.75 * pulse), 0.8, true)
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		target.draw_polyline(p, Color("ffffff", 0.75 * pulse), 0.8, true)
+	target.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
-func _draw_radial_light(pos: Vector2, radius: float, core_color: Color, glow_color: Color, pulse: float = 1.0) -> void:
+func _draw_radial_light(target: CanvasItem, pos: Vector2, radius: float, core_color: Color, glow_color: Color, pulse: float = 1.0) -> void:
 	if radial_light_texture == null:
 		return
 	var r := radius * pulse
 	# Halo difuso exterior (dispersão ambiental suave)
 	var outer_rect := Rect2(pos - Vector2(r, r), Vector2(r * 2.0, r * 2.0))
-	draw_texture_rect(radial_light_texture, outer_rect, false, glow_color)
+	target.draw_texture_rect(radial_light_texture, outer_rect, false, glow_color)
 	# Manto de iluminação intermediário saturado
 	var mr := r * 0.62
 	var mid_rect := Rect2(pos - Vector2(mr, mr), Vector2(mr * 2.0, mr * 2.0))
-	draw_texture_rect(radial_light_texture, mid_rect, false, Color(glow_color.r, glow_color.g, glow_color.b, minf(1.0, glow_color.a * 1.5)))
+	target.draw_texture_rect(radial_light_texture, mid_rect, false, Color(glow_color.r, glow_color.g, glow_color.b, minf(1.0, glow_color.a * 1.5)))
 	# Núcleo quente incandescente
 	var cr := r * 0.32
 	var core_rect := Rect2(pos - Vector2(cr, cr), Vector2(cr * 2.0, cr * 2.0))
-	draw_texture_rect(radial_light_texture, core_rect, false, core_color)
+	target.draw_texture_rect(radial_light_texture, core_rect, false, core_color)
 
 
-func _draw_floor_shadows(point: Vector2i, top_left: Vector2) -> void:
+func _draw_floor_shadows(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	# Sombra profunda que cai das paredes ao norte sobre o chão
 	if _is_wall(point + Vector2i.UP):
-		draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
-		draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
 	# Sombra lateral projetada das paredes a oeste
 	if _is_wall(point + Vector2i.LEFT):
-		draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
-		draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
+		target.draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
+		target.draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
 
 
 func _enemy_visual_position(enemy: Dictionary) -> Vector2:
@@ -2930,35 +2986,42 @@ func _enemy_visual_position(enemy: Dictionary) -> Vector2:
 	return enemy.from.lerp(enemy.to, t)
 
 
-func _draw_floor_neon_glow() -> void:
+func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	var pulse := 1.0 + sin(animation_clock * 3.8) * 0.07
+	var light_view := view.grow(116.0)
+	var coin_view := view.grow(36.0)
 	
 	# Halo néon suave da bola vermelha do jogador no chão (sem anel ruidoso)
 	var p_pos := _player_visual_position()
-	_draw_radial_light(p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
+	_draw_radial_light(target, p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
 	
 	# Halo dos escudos cibernéticos (ciano radiante)
 	for s in shields:
 		var sc := _cell_center(s)
-		_draw_radial_light(sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
+		if not light_view.has_point(sc): continue
+		_draw_radial_light(target, sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
 		
 	# Halo dos baús breaker (âmbar / dourado quente)
 	for b in breakers:
 		var bc := _cell_center(b)
-		_draw_radial_light(bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
+		if not light_view.has_point(bc): continue
+		_draw_radial_light(target, bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
 		
 	# Four power-up colors also match their in-world icon and HUD effects.
 	for item in powerups:
+		if not light_view.has_point(_cell_center(item.pos)): continue
 		var color := Color(POWERUP_COLORS.get(item.kind, "ffffff"))
-		_draw_radial_light(_cell_center(item.pos) + Vector2(0, 4), 43.0, Color(color, 0.9), Color(color, 0.4), pulse)
+		_draw_radial_light(target, _cell_center(item.pos) + Vector2(0, 4), 43.0, Color(color, 0.9), Color(color, 0.4), pulse)
 	# Halo das moedas (dourado compacto)
 	for c in coins:
 		var cc := _cell_center(c)
-		_draw_radial_light(cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
+		if not coin_view.has_point(cc): continue
+		_draw_radial_light(target, cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
 		
 	# Halo dos interruptores (azul/ciano inativo, verde esmeralda ativado)
 	for sw in switches:
 		var sc := _cell_center(sw.pos)
+		if not light_view.has_point(sc): continue
 		var sw_on: bool = sw.get("active", false)
 		var sw_core := Color("a0ffcf", 0.92) if sw_on else Color("6de9ff", 0.82)
 		var sw_glow := Color("15b565", 0.48) if sw_on else Color("1468b8", 0.38)
@@ -2966,11 +3029,12 @@ func _draw_floor_neon_glow() -> void:
 			var rune_color := Color(PUZZLE_COLORS[clampi(int(sw.order), 0, 2)])
 			sw_core = Color(rune_color, 0.95 if sw_on else 0.7)
 			sw_glow = Color(rune_color, 0.45 if sw_on else 0.27)
-		_draw_radial_light(sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
+		_draw_radial_light(target, sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
 		
 	# Halo dos inimigos no chão (luz volumétrica viva e colorida por tipo de mob)
 	for enemy in enemies:
 		var ec := _enemy_visual_position(enemy)
+		if not light_view.has_point(ec): continue
 		var role: String = enemy.get("role", "hunter")
 		var alert: bool = enemy.get("alert", false)
 		var e_radius := 44.0
@@ -3010,17 +3074,18 @@ func _draw_floor_neon_glow() -> void:
 				e_radius = 72.0
 				e_core = Color(piece_color, 0.95)
 				e_glow = Color(piece_color, 0.48)
-		_draw_radial_light(ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
+		_draw_radial_light(target, ec + Vector2(0, 4), e_radius, e_core, e_glow, pulse)
 		
 	# Halo do portal dimensional (vórtice violeta/ciano expansivo)
 	var pc := _cell_center(portal_position)
-	var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
-	var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
-	var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
-	_draw_radial_light(pc, 96.0, portal_core, portal_glow, portal_pulse)
+	if light_view.has_point(pc):
+		var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
+		var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
+		var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
+		_draw_radial_light(target, pc, 96.0, portal_core, portal_glow, portal_pulse)
 
 
-func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
+func _draw_wall_tile(target: CanvasItem, point: Vector2i, top_left: Vector2, pal: Dictionary, border: bool) -> void:
 	var has_front: bool = _has_wall_front(point) and not border
 	
 	if has_front:
@@ -3030,23 +3095,23 @@ func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border
 		
 		# TOPO DA PAREDE (Roof — superfície plana superior, levemente texturizada)
 		var roof_rect := Rect2(top_left, Vector2(CELL, roof_h))
-		draw_rect(roof_rect, pal.wall_roof, true)
+		target.draw_rect(roof_rect, pal.wall_roof, true)
 		# Painel interno texturizado (inner surface com recuo)
-		draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, roof_h - 3)), pal.wall_roof.lightened(0.05), true)
+		target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 4, roof_h - 3)), pal.wall_roof.lightened(0.05), true)
 		# Linha de topo iluminada (aresta superior da parede)
-		draw_line(top_left + Vector2(0, 0), top_left + Vector2(CELL, 0), Color(pal.wall_bevel, 0.5), 1.5, true)
+		target.draw_line(top_left + Vector2(0, 0), top_left + Vector2(CELL, 0), Color(pal.wall_bevel, 0.5), 1.5, true)
 		# Cornija — borda inferior do topo
-		draw_line(top_left + Vector2(0, roof_h), top_left + Vector2(CELL, roof_h), Color(0, 0, 0, 0.9), 2.0, true)
+		target.draw_line(top_left + Vector2(0, roof_h), top_left + Vector2(CELL, roof_h), Color(0, 0, 0, 0.9), 2.0, true)
 		
 		# FRENTE DA PAREDE (Face vertical iluminada)
 		var face_top := top_left.y + roof_h
 		var face_rect := Rect2(Vector2(top_left.x, face_top), Vector2(CELL, front_h))
-		draw_rect(face_rect, pal.wall_face, true)
+		target.draw_rect(face_rect, pal.wall_face, true)
 		# Linha central de divisória
-		draw_line(Vector2(top_left.x + CELL * 0.5, face_top), Vector2(top_left.x + CELL * 0.5, face_top + front_h), Color(0, 0, 0, 0.55), 1.0, true)
+		target.draw_line(Vector2(top_left.x + CELL * 0.5, face_top), Vector2(top_left.x + CELL * 0.5, face_top + front_h), Color(0, 0, 0, 0.55), 1.0, true)
 		
 		# BORDA SUPERIOR ILUMINADA DA FACE FRONTAL (cornija neon)
-		draw_rect(Rect2(Vector2(top_left.x, face_top), Vector2(CELL, 2.0)), Color(pal.wall_bevel, 0.6), true)
+		target.draw_rect(Rect2(Vector2(top_left.x, face_top), Vector2(CELL, 2.0)), Color(pal.wall_bevel, 0.6), true)
 		
 		# CONDUTA NÉON HORIZONTAL CONTÍNUA (na metade da frente)
 		var tube_y := face_top + float(front_h) * 0.55
@@ -3056,85 +3121,89 @@ func _draw_wall_tile(point: Vector2i, top_left: Vector2, pal: Dictionary, border
 		var x_end := top_left.x + CELL if right_conn else top_left.x + CELL - 6.0
 		
 		# Glow néon amplo externo
-		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), Color(pal.neon_accent, 0.30), 6.0, true)
+		target.draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), Color(pal.neon_accent, 0.30), 6.0, true)
 		# Tubo néon emissivo colorido
-		draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), pal.neon_accent, 2.2, true)
+		target.draw_line(Vector2(x_start, tube_y), Vector2(x_end, tube_y), pal.neon_accent, 2.2, true)
 		# Núcleo branco brilhante
-		draw_line(Vector2(x_start + 2, tube_y), Vector2(x_end - 2, tube_y), Color("ffffff", 0.95), 0.8, true)
+		target.draw_line(Vector2(x_start + 2, tube_y), Vector2(x_end - 2, tube_y), Color("ffffff", 0.95), 0.8, true)
 		
 		# Terminações/Suportes nos extremos do tubo (se não continua)
 		if not left_conn:
-			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
-			draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+			target.draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			target.draw_rect(Rect2(top_left.x + 3.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
 		if not right_conn:
-			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
-			draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
+			target.draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(pal.wall_bevel, 0.8), true)
+			target.draw_rect(Rect2(top_left.x + CELL - 8.0, tube_y - 4.0, 5.0, 8.0), Color(0, 0, 0, 0.4), false, 1.0)
 		
 		# Rodapé escuro de contacto com o chão
-		draw_rect(Rect2(Vector2(top_left.x, top_left.y + CELL - 2.0), Vector2(CELL, 2.0)), Color("02030a", 0.9), true)
+		target.draw_rect(Rect2(Vector2(top_left.x, top_left.y + CELL - 2.0), Vector2(CELL, 2.0)), Color("02030a", 0.9), true)
 		
 		# Trepadeiras/Vegetação cibernética pendente (nas paredes com bioma verde)
 		if pal.has_vines and ((point.x * 29 + point.y * 61) % 5 == 0):
-			_draw_wall_vines(Vector2(top_left.x, face_top), pal.vine_color, pal.neon_accent)
+			_draw_wall_vines(target, Vector2(top_left.x, face_top), pal.vine_color, pal.neon_accent)
 	else:
 		# PAREDE SÓLIDA (não tem face frontal — parede interna ou borda)
 		var roof_col: Color = pal.wall_roof.darkened(0.05) if not border else pal.wall_roof.darkened(0.30)
 		var bevel_col: Color = pal.wall_bevel if not border else pal.wall_bevel.darkened(0.5)
-		draw_rect(Rect2(top_left, Vector2(CELL, CELL)), roof_col, true)
+		target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), roof_col, true)
 		# Interior mais claro (raised effect)
-		draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), roof_col.lightened(0.06), true)
+		target.draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), roof_col.lightened(0.06), true)
 		# Bordas 3D raised: topo e esquerda iluminados
-		draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), Color(bevel_col, 0.45), 1.5, true)
-		draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), Color(bevel_col, 0.25), 1.0, true)
+		target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(CELL - 1, 1), Color(bevel_col, 0.45), 1.5, true)
+		target.draw_line(top_left + Vector2(1, 1), top_left + Vector2(1, CELL - 1), Color(bevel_col, 0.25), 1.0, true)
 		# Fundo e direita em sombra
-		draw_line(top_left + Vector2(0, CELL - 1), top_left + Vector2(CELL, CELL - 1), Color(0, 0, 0, 0.65), 1.5, true)
-		draw_line(top_left + Vector2(CELL - 1, 0), top_left + Vector2(CELL - 1, CELL), Color(0, 0, 0, 0.4), 1.0, true)
+		target.draw_line(top_left + Vector2(0, CELL - 1), top_left + Vector2(CELL, CELL - 1), Color(0, 0, 0, 0.65), 1.5, true)
+		target.draw_line(top_left + Vector2(CELL - 1, 0), top_left + Vector2(CELL - 1, CELL), Color(0, 0, 0, 0.4), 1.0, true)
 		# Decoração interna (variar por tipo)
 		var wall_var := (point.x * 23 + point.y * 41) % 5
 		if wall_var == 0 and not border:
 			# Faixas horizontais de painel
-			draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(bevel_col, 0.20), 1.0, true)
+			target.draw_line(top_left + Vector2(4, CELL * 0.5), top_left + Vector2(CELL - 4, CELL * 0.5), Color(bevel_col, 0.20), 1.0, true)
 		elif wall_var == 1 and not border:
 			# Grelha de ventilação
 			for gi in 3:
-				draw_line(top_left + Vector2(9, 13 + gi * 9), top_left + Vector2(CELL - 9, 13 + gi * 9), Color(bevel_col, 0.30), 1.2, true)
+				target.draw_line(top_left + Vector2(9, 13 + gi * 9), top_left + Vector2(CELL - 9, 13 + gi * 9), Color(bevel_col, 0.30), 1.2, true)
 
 
-func _draw_wall_vines(pos: Vector2, vine_col: Color, bio_glow: Color) -> void:
+func _draw_wall_vines(target: CanvasItem, pos: Vector2, vine_col: Color, bio_glow: Color) -> void:
 	# Pequenas folhas e gavinhas que descem da borda da parede
 	var offsets := [Vector2(12, 0), Vector2(16, 6), Vector2(14, 13)]
 	for i in range(offsets.size() - 1):
-		draw_line(pos + offsets[i], pos + offsets[i+1], vine_col, 1.6, true)
-	draw_circle(pos + Vector2(13, 8), 2.2, vine_col)
-	draw_circle(pos + Vector2(17, 12), 1.8, vine_col)
-	draw_circle(pos + Vector2(14, 14), 1.2, bio_glow)
+		target.draw_line(pos + offsets[i], pos + offsets[i+1], vine_col, 1.6, true)
+	target.draw_circle(pos + Vector2(13, 8), 2.2, vine_col)
+	target.draw_circle(pos + Vector2(17, 12), 1.8, vine_col)
+	target.draw_circle(pos + Vector2(14, 14), 1.2, bio_glow)
 	
 	var offsets2 := [Vector2(CELL - 16, 0), Vector2(CELL - 13, 5), Vector2(CELL - 15, 10)]
 	for i in range(offsets2.size() - 1):
-		draw_line(pos + offsets2[i], pos + offsets2[i+1], vine_col, 1.4, true)
-	draw_circle(pos + Vector2(CELL - 14, 6), 2.0, vine_col)
-	draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
+		target.draw_line(pos + offsets2[i], pos + offsets2[i+1], vine_col, 1.4, true)
+	target.draw_circle(pos + Vector2(CELL - 14, 6), 2.0, vine_col)
+	target.draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
 
 
-func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
+func _draw_water_base(target: CanvasItem, _point: Vector2i, top_left: Vector2) -> void:
 	var is_garden := get_biome_index(floor_number) == 1
 	var deep := Color("082029") if is_garden else Color("0d2538")
 	var water := Color("134c56") if is_garden else Color("21536b")
+	# Static base is retained with the underlying floor tile.
+	target.draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
+	target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
+
+
+func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	var is_garden := get_biome_index(floor_number) == 1
 	var caustic := Color("7bf6e4", 0.32) if is_garden else Color("8de4ff", 0.34)
 	var shore := Color("8bfad0", 0.65) if is_garden else Color("9fe9ff", 0.68)
-	# Fundo abissal
-	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
-	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
 	# Caustics procedurais animadas (redes de luz de água)
 	var phase := animation_clock * 1.6 + point.x * 0.8 + point.y * 0.6
 	var cy1 := 14.0 + sin(phase) * 3.2
 	var cy2 := 32.0 + cos(phase * 1.3) * 3.0
-	draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
-	draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
-	draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
+	target.draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
+	target.draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
+	target.draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
 	# Bolhas de luz cintilantes
 	var bubble_y := fposmod(CELL - 6.0 - (animation_clock * 16.0 + (point.x + point.y) * 12.0), CELL - 8.0)
-	draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
+	target.draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
 	# Contornos de margem e espuma neon
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
@@ -3150,28 +3219,31 @@ func _draw_water_tile(point: Vector2i, top_left: Vector2) -> void:
 			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
-		draw_line(start, finish, shore, 2.2, true)
+		target.draw_line(start, finish, shore, 2.2, true)
 
 
-func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
+func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var ice_deep := Color("0b1e33")
 	var ice_surface := Color("1a3d5e")
 	var crack_color := Color("c6f3ff", 0.65)
-	var glow := Color("6ee3ff", 0.40)
-	draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), ice_deep, true)
-	draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), ice_surface, true)
-	# Rachas cristalinas procedurais deterministas
+	target.draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), ice_deep, true)
+	target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), ice_surface, true)
+	# Rachas cristalinas procedurais deterministas, retidas com o chão.
 	var seed_val := (point.x * 47 + point.y * 89)
 	var r1 := float(seed_val % 10) / 10.0
 	var r2 := float((seed_val / 10) % 10) / 10.0
-	draw_line(top_left + Vector2(6, 8 + r1 * 10), top_left + Vector2(24, 22), crack_color, 1.4, true)
-	draw_line(top_left + Vector2(24, 22), top_left + Vector2(CELL - 8, 16 + r2 * 14), crack_color, 1.2, true)
-	draw_line(top_left + Vector2(24, 22), top_left + Vector2(18 + r1 * 8, CELL - 8), Color(crack_color, 0.45), 1.0, true)
+	target.draw_line(top_left + Vector2(6, 8 + r1 * 10), top_left + Vector2(24, 22), crack_color, 1.4, true)
+	target.draw_line(top_left + Vector2(24, 22), top_left + Vector2(CELL - 8, 16 + r2 * 14), crack_color, 1.2, true)
+	target.draw_line(top_left + Vector2(24, 22), top_left + Vector2(18 + r1 * 8, CELL - 8), Color(crack_color, 0.45), 1.0, true)
+
+
+func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	var glow := Color("6ee3ff", 0.40)
 	# Brilho especular dinâmico que desliza sobre o gelo
 	var sweep := fposmod(animation_clock * 0.45 + point.x * 0.12 - point.y * 0.08, 1.8)
 	if sweep < 1.0:
 		var glint_x := top_left.x + sweep * (CELL + 16.0) - 8.0
-		draw_line(Vector2(glint_x, top_left.y + 4), Vector2(glint_x - 14.0, top_left.y + CELL - 4), Color("ffffff", 0.28), 2.5, true)
+		target.draw_line(Vector2(glint_x, top_left.y + 4), Vector2(glint_x - 14.0, top_left.y + CELL - 4), Color("ffffff", 0.28), 2.5, true)
 	# Contorno de geada e cristalização nas margens
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
@@ -3187,7 +3259,7 @@ func _draw_ice_tile(point: Vector2i, top_left: Vector2) -> void:
 			start = top_left + Vector2(2, 3); finish = top_left + Vector2(2, CELL - 4)
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
-		draw_line(start, finish, glow, 2.0, true)
+		target.draw_line(start, finish, glow, 2.0, true)
 
 
 func _draw_powerup(item: Dictionary) -> void:
@@ -3470,7 +3542,7 @@ func _draw_portal() -> void:
 		draw_arc(center, 18.0, 0.0, TAU, 40, Color("ff7990"), 2.2, true)
 
 
-func _draw_switch(item: Dictionary) -> void:
+func _draw_switch(target: CanvasItem, item: Dictionary) -> void:
 	var center := _cell_center(item.pos)
 	var is_active: bool = item.active
 	var state_col := Color("5ef59f") if is_active else Color("52e3ff")
@@ -3479,54 +3551,54 @@ func _draw_switch(item: Dictionary) -> void:
 	var pulse := 1.0 + sin(animation_clock * 4.2 + center.x * 0.05) * 0.08
 	
 	# Sombra da consola projetada no chão
-	draw_circle(center + Vector2(0, 5), 14.0, Color("02050f", 0.45))
+	target.draw_circle(center + Vector2(0, 5), 14.0, Color("02050f", 0.45))
 	
 	# Placa base octogonal industrial chanfrada
 	var base_poly := _chamfered_square_points(center, 13.5, 4.0)
-	draw_colored_polygon(base_poly, Color("151a2d"))
+	target.draw_colored_polygon(base_poly, Color("151a2d"))
 	var base_border := base_poly.duplicate()
 	base_border.append(base_poly[0])
-	draw_polyline(base_border, Color("35426b"), 1.2, true)
+	target.draw_polyline(base_border, Color("35426b"), 1.2, true)
 	
 	# Parafusos / rebites nos 4 cantos
 	var bolt_offsets := [Vector2(-9, -9), Vector2(9, -9), Vector2(-9, 9), Vector2(9, 9)]
 	for bo in bolt_offsets:
-		draw_circle(center + bo, 1.4, Color("4a5987"))
-		draw_circle(center + bo + Vector2(-0.4, -0.4), 0.5, Color("9ab0e6"))
+		target.draw_circle(center + bo, 1.4, Color("4a5987"))
+		target.draw_circle(center + bo + Vector2(-0.4, -0.4), 0.5, Color("9ab0e6"))
 	
 	# Ranhuras de conduta nos 4 lados ligando ao chão
-	draw_line(center + Vector2(0, -13), center + Vector2(0, -8), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(0, 8), center + Vector2(0, 13), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(-13, 0), center + Vector2(-8, 0), Color(state_col, 0.7), 1.6, true)
-	draw_line(center + Vector2(8, 0), center + Vector2(13, 0), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(0, -13), center + Vector2(0, -8), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(0, 8), center + Vector2(0, 13), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(-13, 0), center + Vector2(-8, 0), Color(state_col, 0.7), 1.6, true)
+	target.draw_line(center + Vector2(8, 0), center + Vector2(13, 0), Color(state_col, 0.7), 1.6, true)
 	
 	# Anel metálico interno elevado (cilindro 2.5D)
-	draw_circle(center + Vector2(0, 1), 8.2, Color("0c101e"))
-	draw_circle(center, 8.0, Color("202842"))
-	draw_circle(center, 7.0, Color("10162a"))
+	target.draw_circle(center + Vector2(0, 1), 8.2, Color("0c101e"))
+	target.draw_circle(center, 8.0, Color("202842"))
+	target.draw_circle(center, 7.0, Color("10162a"))
 	
 	# Cristal / Pilar holográfico central pulsante
 	var crystal_radius := 4.6 * (pulse if is_active else 1.0)
-	draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
-	draw_circle(center, crystal_radius, state_col)
+	target.draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
+	target.draw_circle(center, crystal_radius, state_col)
 	# Núcleo branco brilhante de alta energia
-	draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
+	target.draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
 	
 	# Anel de status circular giratório
 	if is_active:
 		var rot := animation_clock * 2.4
-		draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
+		target.draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
 	else:
-		draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5), 1.0, true)
+		target.draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5), 1.0, true)
 	# One, two or three white dots distinguish the ordered runes without color.
 	if item.has("order"):
 		var count := clampi(int(item.order) + 1, 1, 3)
-		draw_rect(Rect2(center + Vector2(-10, 14), Vector2(20, 7)), Color("07101d", 0.9))
+		target.draw_rect(Rect2(center + Vector2(-10, 14), Vector2(20, 7)), Color("07101d", 0.9))
 		for dot in count:
-			draw_circle(center + Vector2((float(dot) - float(count - 1) * 0.5) * 5.5, 17.5), 1.8, Color("f3ffff"))
+			target.draw_circle(center + Vector2((float(dot) - float(count - 1) * 0.5) * 5.5, 17.5), 1.8, Color("f3ffff"))
 
 
-func _draw_trap(trap: Dictionary) -> void:
+func _draw_trap(target: CanvasItem, trap: Dictionary) -> void:
 	var center := _cell_center(trap.pos)
 	if trap.get("type", "one_shot") == "rhythm":
 		# Three LEDs: the outlined one is the phase of the NEXT action. The
@@ -3534,26 +3606,26 @@ func _draw_trap(trap: Dictionary) -> void:
 		var next_phase := posmod(turn_number + 1 + int(trap.get("phase", 0)), 3)
 		var hot := _rhythm_is_hot(trap, turn_number + 1)
 		var color := Color("ff6957") if hot else Color("70dfd8")
-		draw_circle(center, 18.0, Color(color, 0.14))
-		draw_arc(center, 13.0, 0.0, TAU, 28, Color(color, 0.9), 2.2, true)
+		target.draw_circle(center, 18.0, Color(color, 0.14))
+		target.draw_arc(center, 13.0, 0.0, TAU, 28, Color(color, 0.9), 2.2, true)
 		var spikes := PackedVector2Array([center + Vector2(0, -9), center + Vector2(7, 7), center + Vector2(-7, 7)])
-		draw_colored_polygon(spikes, Color(color, 0.8 if hot else 0.28))
-		draw_rect(Rect2(center + Vector2(-14, 15), Vector2(28, 8)), Color("07101d", 0.92))
+		target.draw_colored_polygon(spikes, Color(color, 0.8 if hot else 0.28))
+		target.draw_rect(Rect2(center + Vector2(-14, 15), Vector2(28, 8)), Color("07101d", 0.92))
 		for i in 3:
 			var led := center + Vector2((float(i) - 1.0) * 8.0, 19.0)
-			draw_circle(led, 2.0, Color("ff7761") if i == 0 else Color("83eee5"))
+			target.draw_circle(led, 2.0, Color("ff7761") if i == 0 else Color("83eee5"))
 			if i == next_phase:
-				draw_arc(led, 3.4, 0.0, TAU, 12, Color("ffffff"), 1.0, true)
+				target.draw_arc(led, 3.4, 0.0, TAU, 12, Color("ffffff"), 1.0, true)
 		return
 	if not trap.get("armed", true) and not trap.get("revealed", false):
 		return
 	var armed: bool = trap.get("armed", true)
 	var alpha := (0.64 + sin(animation_clock * 5.0 + center.x) * 0.16) if armed else 0.2
-	draw_circle(center, 18.0, Color("ff684c", alpha * 0.12))
-	draw_arc(center, 13.0, animation_clock * 0.25, animation_clock * 0.25 + TAU, 28, Color("ff775c", alpha), 2.0, true)
+	target.draw_circle(center, 18.0, Color("ff684c", alpha * 0.12))
+	target.draw_arc(center, 13.0, animation_clock * 0.25, animation_clock * 0.25 + TAU, 28, Color("ff775c", alpha), 2.0, true)
 	for i in 4:
 		var angle := i * TAU / 4.0
-		draw_circle(center + Vector2(cos(angle), sin(angle)) * 7.0, 2.0, Color("ffbd73", alpha))
+		target.draw_circle(center + Vector2(cos(angle), sin(angle)) * 7.0, 2.0, Color("ffbd73", alpha))
 
 
 func _draw_enemy(enemy: Dictionary) -> void:
@@ -4034,45 +4106,45 @@ func _draw_player() -> void:
 		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
 
 
-func _draw_blood_puddle() -> void:
+func _draw_blood_puddle(target: CanvasItem) -> void:
 	if not capture_puddle_active or capture_puddle_points.size() < 3:
 		return
 	# Sombra profunda sob a poça
 	var shadow_outline := PackedVector2Array()
 	for point in capture_puddle_points:
 		shadow_outline.append(point + Vector2(0, 3.5))
-	draw_colored_polygon(shadow_outline, Color("000000", 0.45))
+	target.draw_colored_polygon(shadow_outline, Color("000000", 0.45))
 	
 	# Camada viscosa base
-	draw_colored_polygon(capture_puddle_points, Color("590519", 0.98))
+	target.draw_colored_polygon(capture_puddle_points, Color("590519", 0.98))
 	
 	# Camada interna arterial
 	var inset := PackedVector2Array()
 	for point in capture_puddle_points:
 		inset.append(capture_origin + (point - capture_origin) * 0.74)
-	draw_colored_polygon(inset, Color("a10b2a", 0.95))
+	target.draw_colored_polygon(inset, Color("a10b2a", 0.95))
 	
 	# Centro líquido reflexivo
 	var center_inset := PackedVector2Array()
 	for point in capture_puddle_points:
 		center_inset.append(capture_origin + (point - capture_origin) * 0.48)
-	draw_colored_polygon(center_inset, Color("c91638", 0.90))
+	target.draw_colored_polygon(center_inset, Color("c91638", 0.90))
 	
 	# Reflexos especulares de líquido fresco
 	var spec1 := capture_origin + Vector2(-CELL * 0.35, -CELL * 0.28)
-	draw_circle(spec1, 4.2, Color("ffffff", 0.65))
-	draw_circle(spec1 + Vector2(7, 2), 2.2, Color("ffffff", 0.45))
+	target.draw_circle(spec1, 4.2, Color("ffffff", 0.65))
+	target.draw_circle(spec1 + Vector2(7, 2), 2.2, Color("ffffff", 0.45))
 	
 	# Contorno neon arterial pulsante
 	var outline := capture_puddle_points.duplicate()
 	outline.append(capture_puddle_points[0])
-	draw_polyline(outline, Color("ff365c", 0.88), 2.4, true)
+	target.draw_polyline(outline, Color("ff365c", 0.88), 2.4, true)
 	
 	# Gotículas e respingos periféricos com mini-brilho
 	for splat in capture_splats:
-		draw_circle(splat.pos + Vector2(0, 1.5), splat.radius, Color("000000", 0.35))
-		draw_circle(splat.pos, splat.radius, Color("ab0c2e", 0.96))
-		draw_circle(splat.pos + Vector2(-splat.radius * 0.25, -splat.radius * 0.25), maxf(1.0, splat.radius * 0.35), Color("ff6379", 0.85))
+		target.draw_circle(splat.pos + Vector2(0, 1.5), splat.radius, Color("000000", 0.35))
+		target.draw_circle(splat.pos, splat.radius, Color("ab0c2e", 0.96))
+		target.draw_circle(splat.pos + Vector2(-splat.radius * 0.25, -splat.radius * 0.25), maxf(1.0, splat.radius * 0.35), Color("ff6379", 0.85))
 
 
 func _player_is_frightened() -> bool:

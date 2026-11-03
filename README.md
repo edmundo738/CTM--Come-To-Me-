@@ -70,11 +70,28 @@ O **Guardião original** permanece como mini-chefe nos andares 4, 9, 14… e nã
 
 O diário guarda até cinco estrelas por andar e desbloqueia o próximo quando o portal é alcançado. O checkpoint guarda a seed, moedas, escudos, cargas de demolição, direção, histórico, efeitos temporários (incluindo a fase da velocidade) e cargas de Blink do início do andar. **R**, derrota e continuação restauram esses valores; ao concluir um andar, os efeitos restantes seguem para o checkpoint do andar seguinte. Perfis antigos continuam a carregar, com os poderes novos inicialmente a zero. O perfil local fica em `user://come_to_me_profile.cfg`.
 
-O gerador WFC foi otimizado para mapas maiores. Uma mesma seed continua reproduzível nesta versão, inclusive ao repetir ou continuar, mas **o layout e os itens gerados por uma seed antiga podem ser diferentes** após a atualização; o progresso e os recursos do perfil não são apagados.
+Uma mesma seed continua reproduzível, inclusive ao repetir ou continuar. As otimizações atuais preservam a sequência aleatória e os mapas, itens e desafios da versão imediatamente anterior; há testes de comparação até ao andar 1000. Seeds de versões mais antigas, anteriores à geração atual, ainda podem produzir layouts diferentes; o progresso e os recursos do perfil não são apagados.
 
 ## Geração e biomas
 
-O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacências e depois monta uma rede conectada de salas, corredores largos e ligações alternativas. Há cinco perfis de bioma e de salas que se repetem ao longo da campanha. O quarto andar mantém a vista de cima, com interruptores, armadilhas, perseguidores e o Guardião mini-chefe.
+O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacências e depois monta uma rede conectada de salas, corredores largos e ligações alternativas. Há cinco perfis de bioma e de salas que se repetem ao longo da campanha. O quarto andar mantém a vista de cima, com interruptores, armadilhas, perseguidores e o Guardião mini-chefe. Os lagos do Jardim de Vidro têm reflexos animados e os da Catedral de Gelo mostram fissuras e brilhos; são apenas melhorias visuais: essas casas continuam transitáveis, sem deslizamento ou regras novas.
+
+## Desempenho
+
+- Nos mapas maiores, o WFC atualiza uma fila de entropia em vez de voltar a percorrer todas as células a cada escolha. A colocação das moedas reutiliza a lista ordenada de casas livres, mantendo as mesmas escolhas e o mesmo estado aleatório.
+- O chão, as sombras e as paredes são desenhados em blocos de 6×6 casas e mantidos em cache; apenas os blocos perto da câmara são criados inicialmente. Demolir uma parede atualiza os blocos afetados, incluindo sombras e junções nas bordas. Setas, reflexos, halos e personagens continuam animados nas suas camadas.
+- Objetos e luzes fora da câmara deixam de ser desenhados, com margem para o movimento, zoom e tremor. Isto não remove itens nem altera colisões ou objetivos. A mira do Guardião e o feixe da sentinela são preservados mesmo quando os respetivos corpos estão fora do ecrã.
+- Os shaders de ecrã inteiro não são processados quando estão totalmente invisíveis: a sobreposição de captura é reativada para a sequência, e o fundo reaparece nas margens do mapa ou em mapas pequenos.
+
+Estas escolhas seguem as recomendações do Godot sobre [desenho 2D em cache](https://docs.godotengine.org/en/stable/tutorials/2d/custom_drawing_in_2d.html) e [medição de desempenho](https://docs.godotengine.org/en/stable/tutorials/performance/general_optimization.html). Para comparar antes/depois na mesma máquina e com o mesmo executável Godot:
+
+```sh
+godot --headless --path . --script res://tools/performance_benchmark.gd -- floors=30,100,200,1000 seeds=12900,48211,77123 frames=120 motion=1
+```
+
+O teste informa a mediana de geração, a mediana e o percentil 95 dos frames, e uma impressão digital do mapa/itens/RNG. Para comparar com a referência `f3513b5`, copie este mesmo script para uma cópia dessa versão e importe os recursos de ambas. `motion=1` percorre o mapa sinteticamente para exercitar a câmara e os blocos; não simula movimentos legais. `root_draw_median_ms` mede apenas o `_draw()` do nó principal, **não** as novas camadas filhas, pelo que não deve ser comparado isoladamente como tempo total de desenho.
+
+Num ensaio local com três seeds, 120 frames em movimento, 1280×720 e uma build personalizada de depuração do Godot 4.7.2, a mediana de geração do andar 200 passou de aproximadamente 2,18 s para 0,56 s; o intervalo mediano entre frames passou de 32,4 ms para 6,9 ms. O host variou de velocidade entre execuções e o renderizador era dummy: são resultados ilustrativos, não uma previsão de FPS. Em modo headless as medições incluem espera/escalonamento e não medem a GPU. Use o profiler e teste também numa janela com o renderizador e o hardware de destino.
 
 ## Validar
 
@@ -85,10 +102,11 @@ godot --headless --path . --editor --import
 godot --headless --path . --script res://tests/self_test.gd
 godot --headless --path . --script res://tests/controller_test.gd
 godot --headless --path . --script res://tests/tactical_feedback_test.gd
+godot --headless --path . --script res://tests/performance_regression_test.gd
 godot --headless --path . --script res://tests/sweep.gd -- floors=1-40 seeds=3 bots=1
 ```
 
-No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
+No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. `PERFORMANCE_REGRESSION_PASS` compara o gerador e o estado aleatório com a versão anterior e verifica cache, demolição, limites da câmara, biomas e captura; em headless não substitui a inspeção visual. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
 
 ## Referências analisadas
 
