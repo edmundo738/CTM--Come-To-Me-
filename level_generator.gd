@@ -23,6 +23,13 @@ var rng := RandomNumberGenerator.new()
 var last_attempts := 0
 var last_failure := ""
 var entropy_table := PackedFloat32Array()
+# Indexed min-heap of unresolved cells. The index is also the deterministic
+# tie-breaker, matching the former row-major scan exactly.
+var _heap: Array[int] = []
+var _heap_positions := PackedInt32Array()
+var _heap_scores := PackedFloat64Array()
+var _heap_noise := PackedFloat32Array()
+var _heap_active := false
 
 
 func _init() -> void:
@@ -39,10 +46,13 @@ func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dic
 		var domains: Array = []
 		for y in height:
 			for x in width:
-				var domain := 65535
-				for tile in 16:
-					if not _fits_boundary(tile, x, y, width, height):
-						domain &= ~(1 << tile)
+				var domain := 0xFFFF
+				# Eliminate boundary-opening tiles as bitsets rather than testing
+				# all 16 tiles individually. This is the same boundary constraint.
+				if y == 0: domain &= 0xFFFF ^ OPEN_TILE_MASKS[0]
+				if x == width - 1: domain &= 0xFFFF ^ OPEN_TILE_MASKS[1]
+				if y == height - 1: domain &= 0xFFFF ^ OPEN_TILE_MASKS[2]
+				if x == 0: domain &= 0xFFFF ^ OPEN_TILE_MASKS[3]
 				domains.append(domain)
 		if _solve(domains, width, height):
 			var layout: Array = []
@@ -63,9 +73,14 @@ func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dic
 
 
 func _solve(domains: Array, width: int, height: int) -> bool:
+	# For small maps, the tight linear scan has less bookkeeping overhead.
+	# Large maps benefit from incremental O(log n) heap updates instead.
+	_heap_active = width * height > 900
+	return _solve_heap(domains, width, height) if _heap_active else _solve_scan(domains, width, height)
+
+
+func _solve_scan(domains: Array, width: int, height: int) -> bool:
 	var total := width * height
-	# One deterministic tie-break value per cell avoids drawing a new random
-	# number for every still-open cell on every collapse.
 	var noise := PackedFloat32Array()
 	noise.resize(total)
 	var open: Array[int] = []
@@ -107,6 +122,100 @@ func _solve(domains: Array, width: int, height: int) -> bool:
 	return false
 
 
+func _solve_heap(domains: Array, width: int, height: int) -> bool:
+	var total := width * height
+	_heap.clear()
+	_heap_positions.resize(total)
+	_heap_positions.fill(-1)
+	_heap_scores.resize(total)
+	_heap_noise.resize(total)
+	# Keep the original one-random-value-per-cell order and float32 noise.
+	for index in total:
+		_heap_noise[index] = rng.randf() * 0.0001
+		var options: int = domains[index]
+		if options == 0:
+			return false
+		if (options & (options - 1)) != 0:
+			_heap_positions[index] = _heap.size()
+			_heap_scores[index] = _entropy(options) + _heap_noise[index]
+			_heap.append(index)
+	# Bottom-up heap construction is linear, rather than a sort for each cell.
+	for slot in range(_heap.size() / 2 - 1, -1, -1):
+		_heap_sift_down(slot)
+	while not _heap.is_empty():
+		var chosen: int = _heap[0]
+		_heap_remove(chosen)
+		var collapsed := _weighted_choice(domains[chosen])
+		domains[chosen] = 1 << collapsed
+		if not _propagate(domains, width, height, chosen):
+			return false
+	return true
+
+
+func _heap_less(first: int, second: int) -> bool:
+	var first_score := _heap_scores[first]
+	var second_score := _heap_scores[second]
+	return first_score < second_score or (first_score == second_score and first < second)
+
+
+func _heap_swap(first_slot: int, second_slot: int) -> void:
+	var first: int = _heap[first_slot]
+	var second: int = _heap[second_slot]
+	_heap[first_slot] = second
+	_heap[second_slot] = first
+	_heap_positions[first] = second_slot
+	_heap_positions[second] = first_slot
+
+
+func _heap_sift_up(slot: int) -> int:
+	while slot > 0:
+		var parent := (slot - 1) / 2
+		if not _heap_less(_heap[slot], _heap[parent]):
+			break
+		_heap_swap(slot, parent)
+		slot = parent
+	return slot
+
+
+func _heap_sift_down(slot: int) -> void:
+	while true:
+		var left := slot * 2 + 1
+		if left >= _heap.size():
+			return
+		var best := left
+		var right := left + 1
+		if right < _heap.size() and _heap_less(_heap[right], _heap[left]):
+			best = right
+		if not _heap_less(_heap[best], _heap[slot]):
+			return
+		_heap_swap(slot, best)
+		slot = best
+
+
+func _heap_remove(index: int) -> void:
+	var slot := _heap_positions[index]
+	if slot < 0:
+		return
+	var last: int = _heap.pop_back()
+	_heap_positions[index] = -1
+	if last != index:
+		_heap[slot] = last
+		_heap_positions[last] = slot
+		_heap_sift_down(_heap_sift_up(slot))
+
+
+func _heap_domain_changed(index: int, options: int) -> void:
+	var slot := _heap_positions[index]
+	if slot < 0:
+		return
+	if (options & (options - 1)) == 0:
+		_heap_remove(index)
+		return
+	# Entropy can go up or down for weighted domains, so rebalance both ways.
+	_heap_scores[index] = _entropy(options) + _heap_noise[index]
+	_heap_sift_down(_heap_sift_up(slot))
+
+
 func _propagate(domains: Array, width: int, height: int, origin: int) -> bool:
 	var queue: Array[int] = [origin]
 	var head := 0
@@ -127,6 +236,8 @@ func _propagate(domains: Array, width: int, height: int, origin: int) -> bool:
 				if kept == 0:
 					return false
 				domains[neighbor_index] = kept
+				if _heap_active:
+					_heap_domain_changed(neighbor_index, kept)
 				queue.append(neighbor_index)
 	return true
 
