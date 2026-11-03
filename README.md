@@ -2,7 +2,7 @@
 
 Jogo tático 2D por turnos feito em Godot 4.7.2. A protagonista é uma bola vermelha que atravessa ruínas para encontrar Lia. Cada ação válida faz avançar o turno; salas, rotas alternativas, objetivos e inimigos exigem decisões diferentes em cada andar.
 
-A [auditoria e o plano de evolução](docs/auditoria-e-plano.md) distinguem o que existe do que ainda precisa de design, implementação e validação visual.
+A [auditoria e o plano de evolução](docs/auditoria-e-plano.md) distinguem o que existe do que ainda precisa de design, implementação e validação visual. A [proposta de corações e habilidades](docs/design-coracoes-e-habilidades.md) documenta as regras pretendidas; estes sistemas ainda não estão implementados.
 
 ## Jogar
 
