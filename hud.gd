@@ -149,6 +149,10 @@ func _draw() -> void:
 		_draw_boss_bar(screen)
 		if game.objective_type == "puzzle":
 			_draw_puzzle_guide()
+		if game.lab_active:
+			_draw_lab_guide(screen)
+		elif game.environment_bonus_available and not game.environment_bonus_claimed:
+			_draw_environment_bonus_guide(screen)
 		_draw_effect_strip(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
@@ -278,7 +282,8 @@ func _draw_header(screen: Vector2) -> void:
 	draw_string(font, Vector2(38, 30), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 180, 15, Color("f0e8ff"))
 	draw_string(font, Vector2(38, 49), "NEON RUINS", HORIZONTAL_ALIGNMENT_LEFT, 180, 10, Color("c060ff"))
 	# Subtítulo: andar e bioma
-	draw_string(font, Vector2(38, 66), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 240 if screen.x >= 1100 else 165, 9, Color("9060d0"))
+	var location_label: String = "CAMARA %d / %s" % [game.lab_index + 1, game.lab_name] if game.lab_active else "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)]
+	draw_string(font, Vector2(38, 66), location_label, HORIZONTAL_ALIGNMENT_LEFT, 240 if screen.x >= 1100 else 165, 9, Color("9060d0"))
 	
 	# ── OBJETIVO (centro) ─────────────────────────────────────────────────────────
 	# On smaller windows, hide the minimap and give the objective its own space
@@ -297,12 +302,15 @@ func _draw_header(screen: Vector2) -> void:
 	draw_string(font, Vector2(obj_x, 23), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
 	draw_string(font, Vector2(obj_x, 40), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 10, Color("d0b0ff"))
 	var challenge_color := Color("ff8b90") if game.is_challenge_failed() else Color("f0cf7a")
-	draw_string(font, Vector2(obj_x, 57), "DESAFIO +5 / " + game.get_challenge_text(), HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, challenge_color)
+	var objective_detail: String = "LABORATORIO / SEM RECOMPENSAS" if game.lab_active else "DESAFIO +5 / " + game.get_challenge_text()
+	draw_string(font, Vector2(obj_x, 57), objective_detail, HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, challenge_color)
 	
 	# ── STATS top-right: Shield | Coin | Switch | Key ─────────────────────────────
 	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "shield", "%d" % game.charges, Color("8cf4ff"))
 	_draw_stat_chip(Rect2(chip_start_x + chip_w + chip_gap, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
 	var sw_val := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
+	if game.lab_active:
+		sw_val = "%d/%d" % [game.environment.active_plate_count(), game.environment.plates.size()]
 	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 2.0, 16, chip_w, chip_h), "switch", sw_val, Color("b9f39c"))
 	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
 	
@@ -486,13 +494,15 @@ func _draw_title(screen: Vector2) -> void:
 	button_y += button_height + gap
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "MATRIZ DE ANDARES", "levels", "menu")
 	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CAMARAS EXPERIMENTAIS  [C]", "experimental", "menu")
+	button_y += button_height + gap
 	var music_label := "MUSICA  /  LIGADA" if not game.audio.music_muted else "MUSICA  /  DESLIGADA"
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), music_label, "music", "menu")
 	button_y += button_height + gap
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "COMANDOS / VIBRACAO", "controller_settings", "menu")
 	var controller_status: String = "COMANDO: %s" % game.controller.device_name() if game.controller.active_device >= 0 else "COMANDO: NAO LIGADO"
 	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 78), controller_status, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.65, 9, Color("77e8f1", 0.9))
-	var menu_hint := "CLIQUE  SELECIONAR     ENTER  JOGAR / CONTINUAR     N  NOVO JOGO     M  SOM"
+	var menu_hint := "CLIQUE  SELECIONAR     ENTER  JOGAR     C  CAMARAS     N  NOVO JOGO     M  SOM"
 	if game.controller.using_gamepad:
 		menu_hint = "DIRECIONAL / ANALOGICO  NAVEGAR     %s  CONFIRMAR     %s  VOLTAR" % [game.controller.button_label("confirm"), game.controller.button_label("cancel")]
 	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), menu_hint, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
@@ -555,7 +565,10 @@ func _draw_pause(screen: Vector2) -> void:
 	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 80), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 104, panel.size.x - 96, 39), "VOLTAR AO JOGO", "resume", "primary")
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 149, panel.size.x - 96, 39), "REINICIAR ANDAR", "restart_floor", "secondary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, panel.size.x - 96, 39), "DIARIO DE ANDARES", "levels", "secondary")
+	if not game.lab_active:
+		_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, panel.size.x - 96, 39), "DIARIO DE ANDARES", "levels", "secondary")
+	else:
+		draw_string(font, Vector2(panel.position.x + 48, panel.position.y + 218), "A CAMPANHA NAO E ALTERADA NESTAS CAMARAS", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 96, 9, Color("9caecc"))
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 239, panel.size.x - 96, 39), "COMANDOS / VIBRACAO", "controller_settings", "secondary")
 	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 284, panel.size.x - 96, 39), "SAIR PARA O MENU", "menu", "secondary")
 
@@ -650,6 +663,9 @@ func _draw_controller_mapping(screen: Vector2) -> void:
 
 
 func _draw_result(screen: Vector2, rescued: bool) -> void:
+	if game.lab_active:
+		_draw_lab_result(screen)
+		return
 	_draw_modal_backdrop(screen, Color("08061a", 0.78))
 	var panel_width := minf(610.0, screen.x - 34.0)
 	var panel_height := minf(410.0, screen.y - 32.0)
@@ -688,6 +704,9 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 
 
 func _draw_game_over(screen: Vector2) -> void:
+	if game.lab_active:
+		_draw_lab_game_over(screen)
+		return
 	_draw_modal_backdrop(screen, Color("09040d", 0.84))
 	var panel_width := minf(540.0, screen.x - 32.0)
 	var panel_height := minf(340.0, screen.y - 32.0)
@@ -702,6 +721,47 @@ func _draw_game_over(screen: Vector2) -> void:
 	_draw_button(Rect2(button_x, button_y, button_width, 42), "CONTINUAR NO ANDAR %02d" % game.resume_floor, "continue", "primary")
 	_draw_button(Rect2(button_x, button_y + 51, button_width, 38), "ESCOLHER ANDAR", "levels", "secondary")
 	_draw_button(Rect2(button_x, button_y + 98, button_width, 38), "VOLTAR AO MENU", "menu", "secondary")
+
+
+func _draw_environment_bonus_guide(screen: Vector2) -> void:
+	var width := minf(720.0, screen.x - 24.0)
+	var rect := Rect2(12, 80, width, 30)
+	draw_rect(rect, Color("080d1c", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
+	draw_string(font, rect.position + Vector2(12, 20), "OPCIONAL: EMPURRA MADEIRA NA CORRENTE ATE A PLACA L = ESCUDO +1", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("e8d8bb"))
+
+
+func _draw_lab_guide(screen: Vector2) -> void:
+	var width := minf(820.0, screen.x - 24.0)
+	var rect := Rect2(12, 80, width, 52)
+	draw_rect(rect, Color("080d1c", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("67dfe8", 0.8))
+	draw_string(font, rect.position + Vector2(12, 20), game.lab_hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("d6edf2"))
+	draw_string(font, rect.position + Vector2(12, 40), "PLACAS: L MADEIRA / M METAL   |   R REINICIA   |   SEM GUARDAR A CAMPANHA", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 11, Color("b4c8dc"))
+
+
+func _draw_lab_result(screen: Vector2) -> void:
+	_draw_modal_backdrop(screen, Color("08061a", 0.78))
+	var panel_size := Vector2(minf(560.0, screen.x - 34.0), 260.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("79e5e8", 0.7))
+	draw_string(font, panel.position + Vector2(25, 55), "CAMARA %d CONCLUIDA" % (game.lab_index + 1), HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 23, Color("f0fbff"))
+	draw_string(font, panel.position + Vector2(25, 93), game.lab_name, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 13, Color("8be8f1"))
+	draw_string(font, panel.position + Vector2(25, 128), "A campanha e o checkpoint nao foram alterados.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 11, Color("b3c0d8"))
+	var next_label := "PROXIMA CAMARA" if game.lab_index < 3 else "VOLTAR AO MENU"
+	_draw_button(Rect2(panel.position.x + 35, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), next_label, "next_floor", "primary")
+	_draw_button(Rect2(panel.get_center().x + 7, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "MENU", "menu", "secondary")
+
+
+func _draw_lab_game_over(screen: Vector2) -> void:
+	_draw_modal_backdrop(screen, Color("09040d", 0.84))
+	var panel_size := Vector2(minf(520.0, screen.x - 34.0), 240.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ff536f", 0.6))
+	draw_string(font, panel.position + Vector2(25, 55), "CAMARA INTERROMPIDA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 21, Color("ffe7ec"))
+	draw_string(font, panel.position + Vector2(25, 90), "A campanha continua intacta. Tenta novamente.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 11, Color("d7a7b8"))
+	_draw_button(Rect2(panel.position.x + 35, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "REPETIR  [R]", "continue", "primary")
+	_draw_button(Rect2(panel.get_center().x + 7, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "MENU", "menu", "secondary")
 
 
 func _draw_panel(rect: Rect2, accent: Color) -> void:

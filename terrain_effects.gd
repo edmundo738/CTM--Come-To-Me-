@@ -12,16 +12,18 @@ func _draw() -> void:
 		return
 	var view: Rect2 = game._visible_world_rect()
 	if is_underlay:
-		# Water and ice are visual landmarks, not new collision or movement rules.
+		# Authored water/ice can carry turn rules; legacy biome tiles remain visual.
 		var water_view := view.grow(game.CELL * 1.5)
 		for point in terrain.water_cells:
 			if not water_view.has_point(game._cell_center(point)):
 				continue
 			var top_left: Vector2 = Vector2(point) * game.CELL
-			if terrain.palette.biome_type == "glacier":
+			if game._surface_kind(point) == "ice":
 				game._draw_ice_tile(self, point, top_left)
 			else:
 				game._draw_water_tile(self, point, top_left)
+			if game.environment.cells.has(point):
+				game._draw_environment_surface(self, point, top_left)
 		for nav in game.nav_chevrons:
 			if view.grow(48.0).has_point(game._cell_center(nav.pos)):
 				game._draw_nav_chevron(self, nav.pos, nav.dir, terrain.palette)
@@ -38,3 +40,6 @@ func _draw() -> void:
 	for item in game.switches:
 		if ground_view.has_point(game._cell_center(item.pos)):
 			game._draw_switch(self, item)
+	for plate in game.environment.plates:
+		if ground_view.has_point(game._cell_center(plate.pos)):
+			game._draw_environment_plate(self, plate)

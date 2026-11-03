@@ -191,10 +191,11 @@ func _test_turn_loop(game: Node) -> void:
 	game.enemies[0].pos = Vector2i(3, 5)
 	var moves_before: int = game.moves_this_floor
 	game.player_position = Vector2i(0, 5)
+	game.shake_time = 0.0
 	game.try_move(-1, 0)
 	_expect(game.player_position == Vector2i(0, 5), "world edge blocks movement")
 	_expect(game.moves_this_floor == moves_before, "blocked move does not count as movement")
-	_expect(game.shake_time > 0.0 and game.audio.effects.has("blocked"), "invalid move triggers feedback")
+	_expect(game.shake_time == 0.0 and game.audio.effects.has("blocked") and game.last_notice != "", "invalid move gives feedback without camera shake")
 	game.enemies.clear()
 
 

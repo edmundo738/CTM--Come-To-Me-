@@ -34,6 +34,16 @@ jobs:
         run: '"$GODOT" --headless --path . --editor --import'
       - name: Gameplay regression tests
         run: '"$GODOT" --headless --path . --script res://tests/self_test.gd'
+      - name: Environmental gameplay and campaign integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          "$GODOT" --headless --path . --script res://tests/environment_test.gd 2>&1 | tee "$log"
+          if grep -qE 'SCRIPT ERROR|^ERROR:' "$log"; then
+            exit 1
+          fi
+          grep -q '^ENVIRONMENT_TEST_PASS' "$log"
       - name: Gamepad and haptic routing tests
         run: '"$GODOT" --headless --path . --script res://tests/controller_test.gd'
       - name: Tactical feedback bus tests

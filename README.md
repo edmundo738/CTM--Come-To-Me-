@@ -15,6 +15,20 @@ A [auditoria e o plano de evolução](docs/auditoria-e-plano.md) distinguem o qu
 - **Enter** continua depois de concluir um andar; **R** repete o andar com a mesma seed e os recursos do início desse andar; **N** começa uma campanha nova; **L** abre o diário; **Esc** pausa; **M** alterna a música. O menu de pausa também permite repetir o andar.
 - Se for capturado, o jogo apresenta a sequência de inflação e explosão antes do ecrã de derrota. Continuar restaura o início do andar perdido sem apagar os andares já desbloqueados nem as estrelas anteriores.
 
+## Ambiente, caixas e câmaras
+
+As mecânicas ambientais fazem parte do mesmo fluxo de turnos da campanha. Nos andares **6, 26, 46…**, o gerador tenta colocar um desafio opcional: empurra a caixa de madeira para a corrente e deixa-a sobre a placa **L** para receber **uma carga de escudo**. O portal mantém o objetivo normal do andar. A colocação não consome números aleatórios e só é usada quando a conectividade continua segura antes e depois do movimento, mesmo sem atravessar a corrente; se não existir uma posição adequada, o desafio é omitido. A recompensa não se repete no mesmo andar e **R** restaura também os recursos do início do andar.
+
+No menu, escolhe **CÂMARAS EXPERIMENTAIS [C]** para praticar quatro puzzles construídos à mão: corrente e madeira, condução por metal, gelo e armadilha de ritmo, e duas placas com portão. Ativa todas as placas para abrir o portal; **R** reconstrói a câmara, e o ecrã de resultado leva à seguinte ou ao menu. A derrota permite repetir a mesma câmara. Estas câmaras **não dão prémios nem alteram o progresso ou checkpoint da campanha**; podes voltar ao menu e continuar a campanha anterior.
+
+- Empurra uma caixa ortogonalmente para uma casa livre; não é possível empurrar várias de uma vez nem atravessar uma caixa com o salto. As placas **L** e **M** exigem, respetivamente, madeira e metal. São mantidas enquanto a caixa correta estiver em cima. Um portão aberto não fecha sobre um ocupante.
+- Em cada ação válida, a corrente desloca madeira até uma casa na direção da seta; metal não flutua. Uma corrente também arrasta o jogador uma casa, mesmo ao esperar, se a casa seguinte estiver livre. Uma tentativa bloqueada não gasta turno.
+- Água marcada com um raio está eletrificada. A eletricidade propaga-se ortogonalmente pela água e por caixas de metal adjacentes; mover o metal pode ligar ou interromper a condução. Inimigos comuns na água eletrificada são derrotados; elites perdem uma vida por turno. O jogador usa as regras habituais de escudo e recebe no máximo um impacto por ação.
+- Ao entrar em gelo **explicitamente marcado**, o jogador desliza uma casa adicional na direção do movimento, se puder; esperar não produz deslizamento. Inimigos sobre esse gelo ficam parados nas ações pares, com a intenção parada anunciada antecipadamente. Uma armadilha de ritmo no gelo conserva o seu ciclo.
+- Itens, armadilhas e contactos são resolvidos tanto na casa de entrada como na casa adicional; uma captura na primeira casa interrompe o deslocamento. A lógica não espera pelas animações.
+
+Esta é uma integração inicial, não um sistema físico contínuo: a corrente e o gelo deslocam no máximo uma casa adicional por ação; o gelo não se parte e as caixas não são destruídas pela eletricidade. Os antigos lagos/gelo decorativos gerados pelo bioma continuam sem novas regras, salvo nas casas ambientais explicitamente marcadas. O comportamento dos puzzles de runas e do portal existente é preservado.
+
 ## Comandos e vibração
 
 O jogo reconhece comandos suportados pelo Godot/SDL, incluindo muitos modelos **Xbox**, **PlayStation/PS3** e gamepads genéricos. Liga o comando antes ou durante o jogo: o nome aparece no menu, e desligar ou trocar de comando não exige reiniciar. O último comando utilizado controla o jogo e recebe a vibração; não é necessário que seja o dispositivo número zero. Na pausa ou no menu inicial, abre **COMANDOS / VIBRAÇÃO** para ver os dispositivos, escolher qual configurar, ligar/desligar a vibração, ajustar a **intensidade de 0% a 200%** e testar o comando selecionado. Na barra de intensidade, usa esquerda/direita quando estiver focada, ou clica/toca e arrasta. O valor e o interruptor são independentes e ficam guardados. Novos perfis usam automaticamente 200%; perfis antigos que estavam no máximo também passam para 200%, enquanto valores reduzidos e a opção desligada são preservados.
@@ -72,11 +86,11 @@ O **Guardião original** permanece como mini-chefe nos andares 4, 9, 14… e nã
 
 O diário guarda até cinco estrelas por andar e desbloqueia o próximo quando o portal é alcançado. O checkpoint guarda a seed, moedas, escudos, cargas de demolição, direção, histórico, efeitos temporários (incluindo a fase da velocidade) e cargas de Blink do início do andar. **R**, derrota e continuação restauram esses valores; ao concluir um andar, os efeitos restantes seguem para o checkpoint do andar seguinte. Perfis antigos continuam a carregar, com os poderes novos inicialmente a zero. O perfil local fica em `user://come_to_me_profile.cfg`.
 
-Uma mesma seed continua reproduzível, inclusive ao repetir ou continuar. As otimizações atuais preservam a sequência aleatória e os mapas, itens e desafios da versão imediatamente anterior; há testes de comparação até ao andar 1000. Seeds de versões mais antigas, anteriores à geração atual, ainda podem produzir layouts diferentes; o progresso e os recursos do perfil não são apagados.
+Uma mesma seed continua reproduzível, inclusive ao repetir ou continuar. O gerador mantém a sequência aleatória e os itens e tipos de desafio existentes; o limite de ações pode ser ajustado à rota com a caixa. Nos andares elegíveis, a integração ambiental pode acrescentar uma caixa, uma corrente e uma placa e alterar a aparência de duas casas de chão. As impressões digitais dos andares de regressão sem este desafio são comparadas até ao andar 1000. Seeds de versões mais antigas, anteriores à geração atual, ainda podem produzir layouts diferentes; o progresso e os recursos do perfil não são apagados.
 
 ## Geração e biomas
 
-O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacências e depois monta uma rede conectada de salas, corredores largos e ligações alternativas. Há cinco perfis de bioma e de salas que se repetem ao longo da campanha. O quarto andar mantém a vista de cima, com interruptores, armadilhas, perseguidores e o Guardião mini-chefe. Os lagos do Jardim de Vidro têm reflexos animados e os da Catedral de Gelo mostram fissuras e brilhos; são apenas melhorias visuais: essas casas continuam transitáveis, sem deslizamento ou regras novas.
+O gerador usa o modelo tiled do Wave Function Collapse para respeitar adjacências e depois monta uma rede conectada de salas, corredores largos e ligações alternativas. Há cinco perfis de bioma e de salas que se repetem ao longo da campanha. O quarto andar mantém a vista de cima, com interruptores, armadilhas, perseguidores e o Guardião mini-chefe. Os lagos decorativos do Jardim de Vidro têm reflexos animados e os da Catedral de Gelo mostram fissuras e brilhos; essas casas legadas continuam transitáveis, sem deslizamento ou regras novas. Apenas as superfícies ambientais explicitamente marcadas usam as regras descritas acima.
 
 ## Desempenho
 
@@ -95,6 +109,8 @@ O teste informa a mediana de geração, a mediana e o percentil 95 dos frames, e
 
 Num ensaio local com três seeds, 120 frames em movimento, 1280×720 e uma build personalizada de depuração do Godot 4.7.2, a mediana de geração do andar 200 passou de aproximadamente 2,18 s para 0,56 s; o intervalo mediano entre frames passou de 32,4 ms para 6,9 ms. O host variou de velocidade entre execuções e o renderizador era dummy: são resultados ilustrativos, não uma previsão de FPS. Em modo headless as medições incluem espera/escalonamento e não medem a GPU. Use o profiler e teste também numa janela com o renderizador e o hardware de destino.
 
+Numa comparação limitada desta integração, com o Godot oficial, 1280×720, três seeds, 40 frames com movimento sintético e duas execuções em **llvmpipe** (OpenGL por software), a mediana de geração do andar 6 ficou entre 46–47 ms antes e 64–66 ms depois, incluindo a validação do desafio; os intervalos medianos entre frames nesse andar ficaram em 79–84 ms e 88–89 ms, respetivamente. O host e as amostras variaram, e o renderizador usa CPU: não é uma medição da GPU nem uma previsão de FPS no hardware de destino.
+
 ## Validar
 
 Depois de importar o projeto uma vez no editor, execute a partir da pasta do projeto:
@@ -102,13 +118,14 @@ Depois de importar o projeto uma vez no editor, execute a partir da pasta do pro
 ```sh
 godot --headless --path . --editor --import
 godot --headless --path . --script res://tests/self_test.gd
+godot --headless --path . --script res://tests/environment_test.gd
 godot --headless --path . --script res://tests/controller_test.gd
 godot --headless --path . --script res://tests/tactical_feedback_test.gd
 godot --headless --path . --script res://tests/performance_regression_test.gd
 godot --headless --path . --script res://tests/sweep.gd -- floors=1-40 seeds=3 bots=1
 ```
 
-No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. `PERFORMANCE_REGRESSION_PASS` compara o gerador e o estado aleatório com a versão anterior e verifica cache, demolição, limites da câmara, biomas e captura; em headless não substitui a inspeção visual. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
+No PowerShell, substitua `godot` pelo caminho do executável de consola do Godot 4.7.2. O primeiro teste imprime `SELFTEST_PASS` e verifica WFC, desafios, checkpoints, bosses separados, poderes, puzzles, patrulha, espelho, armadilhas, captura e áudio. `ENVIRONMENT_TEST_PASS` cobre as soluções das quatro câmaras, isolamento do perfil, colisões, corrente, gelo, condução, perigos, reinício e o desafio de campanha em várias seeds. O teste de comandos imprime `CONTROLLER_TEST_PASS` e simula vários IDs, ligação/desligação, menus, sticks, remapeamento, perfil e pedidos de vibração; não substitui um teste com hardware físico. `TACTICAL_FEEDBACK_TEST_PASS` verifica eventos reais dos turnos, análise das bandas de áudio, sequências, prioridade, ganho 2× e saturação, pulsos de perigo e cancelamento seguro com um backend simulado. `PERFORMANCE_REGRESSION_PASS` compara o gerador e o estado aleatório com a versão anterior e verifica cache, demolição, limites da câmara, biomas e captura; em headless não substitui a inspeção visual. A varredura imprime `SWEEP_PASS` se os mapas, itens, ordem de puzzle, reprodutibilidade e bots passarem; um bot é invulnerável para verificar que consegue concluir cada objetivo. Use, por exemplo, `floors=100-100 seeds=3 bots=1` para testar um andar específico. Os tempos mostrados são medições locais, não limites de desempenho. Os testes também correm no GitHub Actions com o Godot oficial 4.7.2.
 
 ## Referências analisadas
 

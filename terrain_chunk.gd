@@ -38,7 +38,7 @@ func _draw() -> void:
 					if tile == game.TILE_FLOOR or tile == game.TILE_WATER:
 						game._draw_floor_tile(self, point, top_left, palette)
 						if tile == game.TILE_WATER:
-							if palette.biome_type == "glacier":
+							if game._surface_kind(point) == "ice":
 								game._draw_ice_base(self, point, top_left)
 							else:
 								game._draw_water_base(self, point, top_left)

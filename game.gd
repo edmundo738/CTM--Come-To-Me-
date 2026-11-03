@@ -52,7 +52,17 @@ const TacticalFeedbackScript = preload("res://tactical_feedback.gd")
 const BackgroundShader = preload("res://background.gdshader")
 const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 const TerrainRenderer = preload("res://terrain_renderer.gd")
+const EnvironmentSystem = preload("res://environment_system.gd")
+const EnvironmentChambers = preload("res://environment_chambers.gd")
 
+var environment = EnvironmentSystem.new()
+var lab_active := false
+var lab_index := 0
+var lab_name := ""
+var lab_hint := ""
+# Optional campaign landmark, separate from the main portal objective.
+var environment_bonus_available := false
+var environment_bonus_claimed := false
 var grid: Array = []
 var world_size := Vector2i(0, 0)
 var player_position := Vector2i.ZERO
@@ -226,6 +236,7 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	lab_active = false
 	if camera != null:
 		camera.enabled = true
 	if seed_value >= 0:
@@ -256,6 +267,9 @@ func new_game(seed_value: int = -1) -> void:
 
 
 func continue_game() -> void:
+	if lab_active:
+		_load_lab_chamber(lab_index)
+		return
 	if not has_resume:
 		new_game()
 		return
@@ -315,6 +329,9 @@ func _reset_capture_state() -> void:
 
 
 func restart_floor() -> void:
+	if lab_active and game_state in ["playing", "paused", "game_over"]:
+		_load_lab_chamber(lab_index)
+		return
 	if floor_start_snapshot.is_empty() or game_state not in ["playing", "paused"]:
 		return
 	# Copy before generate_floor replaces the snapshot. Do not call start_level:
@@ -336,7 +353,9 @@ func restart_floor() -> void:
 
 
 func handle_hud_action(action: String) -> void:
-	if action == "new_run":
+	if action == "experimental":
+		start_environment_lab()
+	elif action == "new_run":
 		new_game()
 	elif action == "continue":
 		continue_game()
@@ -349,6 +368,8 @@ func handle_hud_action(action: String) -> void:
 		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
 		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "menu":
+		lab_active = false
+		environment.reset()
 		capture_darkness = 0.0
 		capture_flash = 0.0
 		dev_menu_open = false
@@ -519,6 +540,8 @@ func dev_open_portal() -> void:
 
 
 func dev_load_sandbox_arena() -> void:
+	lab_active = false
+	environment.reset()
 	world_size = Vector2i(18, 14)
 	grid.clear()
 	for y in world_size.y:
@@ -665,7 +688,197 @@ func _restore_power_state(raw: Variant) -> void:
 	blink_charges = state.blink_charges
 
 
+# Experimental chambers deliberately bypass campaign generation/checkpoints.
+# They use the same actions, collision, hazards and portal loop as normal play.
+func start_environment_lab() -> void:
+	lab_active = true
+	_load_lab_chamber(0)
+
+
+func _load_lab_chamber(index: int) -> void:
+	lab_active = true
+	lab_index = clampi(index, 0, EnvironmentChambers.COUNT - 1)
+	environment_bonus_available = false
+	environment_bonus_claimed = false
+	var spec: Dictionary = EnvironmentChambers.chamber(lab_index)
+	lab_name = spec.name
+	lab_hint = spec.hint
+	floor_number = [2, 2, 4, 1][lab_index]
+	world_size = spec.size
+	grid.clear()
+	for y in world_size.y:
+		var row: Array[int] = []
+		for x in world_size.x:
+			row.append(TILE_BORDER if x == 0 or y == 0 or x == world_size.x - 1 or y == world_size.y - 1 else TILE_FLOOR)
+		grid.append(row)
+	for wall in spec.walls:
+		grid[wall.y][wall.x] = TILE_WALL
+	for point in spec.cells:
+		grid[point.y][point.x] = TILE_WATER
+	environment.reset(spec)
+	player_position = spec.start
+	player_from = _cell_center(player_position)
+	player_to = player_from
+	player_anim = 1.0
+	facing = Vector2i.RIGHT
+	portal_position = spec.portal
+	enemies.clear()
+	shields.clear()
+	breakers.clear()
+	powerups.clear()
+	coins.clear()
+	switches.clear()
+	traps.assign(spec.traps.duplicate(true))
+	rooms.clear()
+	room_graph_edges.clear()
+	nav_chevrons.clear()
+	charges = 0
+	breach_charges = 0
+	_restore_power_state({})
+	objective_type = "environment"
+	turn_number = 0
+	moves_this_floor = 0
+	jumps_this_floor = 0
+	hits_this_floor = 0
+	coins_this_floor = 0
+	coins_spawned_this_floor = 0
+	challenge_complete = false
+	dev_god_mode = false
+	dev_noclip = false
+	dev_menu_open = false
+	_reset_capture_state()
+	game_state = "playing"
+	_sync_environment_mechanisms()
+	last_notice = lab_hint
+	notice_timer = 5.0
+	_update_enemy_intents()
+	_update_camera(0.0)
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
+	queue_redraw()
+
+
+func _crate_destination_free(point: Vector2i) -> bool:
+	return point != player_position and _is_floor(point) and not _enemy_at(point)
+
+
+func _sync_environment_mechanisms() -> void:
+	var enemy_positions: Array[Vector2i] = []
+	for enemy in enemies:
+		enemy_positions.append(enemy.pos)
+	var active: bool = environment.update_mechanisms(player_position, enemy_positions)
+	if environment_bonus_available and not environment_bonus_claimed and active:
+		environment_bonus_claimed = true
+		charges += 1
+		last_notice = "PLACA DA CORRENTE ATIVADA — ESCUDO +1"
+		notice_timer = 2.8
+		_spawn_burst(_cell_center(environment.plates[0].pos), Color("81f4d0"), 12, 90.0)
+		_emit_feedback("SHIELD_PICKUP")
+	if objective_type == "environment":
+		var was_open := portal_open
+		portal_open = active
+		if portal_open and not was_open:
+			last_notice = "PLACAS ATIVAS — PORTAL ABERTO"
+			notice_timer = 2.0
+			_emit_feedback("PORTAL_OPEN")
+
+
+# Resolve a single environmental displacement after the entry cell. Hazards,
+# pickups and contacts are resolved on both cells before enemy movement.
+func _resolve_environment_displacement(action_direction: Vector2i) -> void:
+	var direction: Vector2i = environment.forced_direction(player_position, action_direction)
+	if direction == Vector2i.ZERO or _enemy_at(player_position):
+		return
+	var destination := player_position + direction
+	if not _is_floor(destination) or _enemy_at(destination):
+		return
+	_begin_player_move(destination)
+	last_notice = "CORRENTE: +1 CASA" if environment.kind_at(player_position - direction) == "current" else "GELO: +1 CASA"
+	notice_timer = 1.2
+	_collect_pickups()
+	_trigger_traps()
+	if game_state == "playing" and environment.is_electrified(player_position):
+		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"))
+	if game_state != "playing":
+		return
+	_activate_switches()
+	_sync_environment_mechanisms()
+	_check_enemy_collision(direction)
+
+
+# Water hazards affect enemies too. Ordinary enemies are defeated; elites lose
+# one HP per committed turn. The resolution is after contact/crossing checks.
+func _resolve_electrified_enemies() -> void:
+	for index in range(enemies.size() - 1, -1, -1):
+		var enemy: Dictionary = enemies[index]
+		if not environment.is_electrified(enemy.pos):
+			continue
+		if _is_elite(enemy):
+			enemy["hp"] = maxi(0, int(enemy.get("hp", 1)) - 1)
+			if enemy.hp > 0:
+				enemies[index] = enemy
+				continue
+		_spawn_burst(_cell_center(enemy.pos), Color("ffe46a"), 12, 100.0)
+		enemies.remove_at(index)
+
+
+# Authored surfaces override the legacy biome-based water/ice appearance.
+func _surface_kind(point: Vector2i) -> String:
+	if not environment.cells.is_empty():
+		var explicit: String = environment.kind_at(point)
+		if explicit != "":
+			return explicit
+	return "ice" if get_biome_index(floor_number) == 3 else "water"
+
+
+# Try a straight, four-cell push in an otherwise connected existing map. No
+# RNG is consumed. The original floor must remain connected with BOTH the
+# current and either crate position treated as blocked. Thus the existing
+# objectives never depend on fighting a one-way current to cross a bottleneck.
+# If no candidate is safe, omit it rather than damaging the generated floor.
+func _place_environment_bonus(walkable: Array[Vector2i], occupied: Dictionary) -> void:
+	var candidates := walkable.duplicate()
+	candidates.sort_custom(func(a: Vector2i, b: Vector2i) -> bool:
+		var da := _manhattan(a, player_position)
+		var db := _manhattan(b, player_position)
+		return da < db if da != db else (a.y < b.y if a.y != b.y else a.x < b.x)
+	)
+	for crate_pos in candidates:
+		for direction in FOUR_WAY:
+			var approach: Vector2i = crate_pos - direction
+			var current: Vector2i = crate_pos + direction
+			var plate: Vector2i = current + direction
+			var clear := true
+			for point in [approach, crate_pos, current, plate]:
+				if not _inside(point) or grid[point.y][point.x] != TILE_FLOOR or occupied.has(point):
+					clear = false
+					break
+			if not clear:
+				continue
+			var spec := {"crates": [{"pos": crate_pos, "material": "wood"}],
+				"plates": [{"pos": plate, "required": "wood"}],
+				"cells": {current: {"kind": "current", "flow": direction}, plate: {"kind": "water"}}}
+			environment.reset(spec)
+			if _reachable_without_cell(player_position, current) != walkable.size() - 2:
+				continue
+			environment.crates[0].pos = plate
+			var connected_after: bool = _reachable_without_cell(player_position, current) == walkable.size() - 2
+			environment.crates[0].pos = crate_pos
+			if not connected_after:
+				continue
+			grid[current.y][current.x] = TILE_WATER
+			grid[plate.y][plate.x] = TILE_WATER
+			environment_bonus_available = true
+			generation_report += "; corrente opcional validada"
+			return
+	environment.reset()
+
+
 func generate_floor(number: int) -> void:
+	lab_active = false
+	environment.reset()
+	environment_bonus_available = false
+	environment_bonus_claimed = false
 	floor_number = maxi(1, number)
 	world_size = get_floor_size(floor_number)
 	var level_seed := active_seed + number * 7919
@@ -785,6 +998,10 @@ func generate_floor(number: int) -> void:
 				else:
 					traps.append({"pos": position, "type": "one_shot", "armed": true, "revealed": false})
 				occupied[position] = true
+	# Selected non-puzzle floors get an optional, solvability-checked landmark.
+	# Existing enemies, switches, routes and the main portal are not replaced.
+	if number >= 6 and number % 20 == 6:
+		_place_environment_bonus(walkable, occupied)
 	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
@@ -928,11 +1145,14 @@ func _estimate_route_length() -> int:
 		return int(_plan_puzzle_route().length)
 	var total := 0
 	var here := player_position
+	# Currents can be one-way. Avoid them when estimating an attainable action
+	# limit for the existing objective, even if a shorter geometric route exists.
+	var avoid_currents := environment.is_active()
 	var pending: Array[Vector2i] = []
 	for item in switches:
 		pending.append(item.pos)
 	while not pending.is_empty():
-		var distances := _path_distances(here)
+		var distances := _path_distances(here, avoid_currents)
 		var best_index := -1
 		var best_distance := 2147483647
 		for i in pending.size():
@@ -945,11 +1165,11 @@ func _estimate_route_length() -> int:
 		total += best_distance
 		here = pending[best_index]
 		pending.remove_at(best_index)
-	var last_leg: int = _path_distances(here).get(portal_position, -1)
+	var last_leg: int = _path_distances(here, avoid_currents).get(portal_position, -1)
 	return total + last_leg if last_leg >= 0 else -1
 
 
-func _path_distances(start: Vector2i) -> Dictionary:
+func _path_distances(start: Vector2i, avoid_currents: bool = false) -> Dictionary:
 	var distances := {start: 0}
 	var queue: Array[Vector2i] = [start]
 	var head := 0
@@ -958,7 +1178,7 @@ func _path_distances(start: Vector2i) -> Dictionary:
 		head += 1
 		for direction in FOUR_WAY:
 			var next: Vector2i = point + direction
-			if _is_floor(next) and not distances.has(next):
+			if _is_floor(next) and (not avoid_currents or environment.kind_at(next) != "current") and not distances.has(next):
 				distances[next] = int(distances[point]) + 1
 				queue.append(next)
 	return distances
@@ -972,6 +1192,7 @@ func _build_nav_chevrons() -> void:
 	var parent: Dictionary = {}
 	parent[player_position] = player_position
 	var found := false
+	var environmental_nav := environment.is_active()
 	var head := 0
 	while head < queue.size():
 		var current: Vector2i = queue[head]
@@ -985,6 +1206,10 @@ func _build_nav_chevrons() -> void:
 				continue
 			var tile: int = grid[next_pos.y][next_pos.x]
 			if tile == TILE_FLOOR or tile == TILE_WATER:
+				# Mark a route that can be walked without accidentally entering a
+				# crate, closed gate or one-way current.
+				if environmental_nav and (environment.is_blocked(next_pos) or environment.kind_at(next_pos) == "current"):
+					continue
 				parent[next_pos] = current
 				queue.append(next_pos)
 	if not found:
@@ -1145,6 +1370,23 @@ func _carve_route(start: Vector2i, goal: Vector2i) -> void:
 			var branch: Vector2i = point + FOUR_WAY[rng.randi_range(0, 3)]
 			if _inside(branch):
 				grid[branch.y][branch.x] = 0
+
+
+# Conservative campaign placement check: no required cell may rely on
+# crossing a current in a direction that its forced displacement prevents.
+func _reachable_without_cell(start: Vector2i, excluded: Vector2i) -> int:
+	var visited := {start: true}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point := queue[head]
+		head += 1
+		for direction in FOUR_WAY:
+			var next: Vector2i = point + direction
+			if next != excluded and _is_floor(next) and not visited.has(next):
+				visited[next] = true
+				queue.append(next)
+	return visited.size()
 
 
 func _reachable_cells(start: Vector2i) -> Array[Vector2i]:
@@ -1327,6 +1569,11 @@ func _update_enemy_intents() -> void:
 			enemy.face = Vector2i(signi(face_vector.x), signi(face_vector.y))
 		enemy.alert = _enemy_sees_player(origin)
 		enemy["path"] = []
+		# Ice delays enemies on even-numbered actions. Announce the stationary
+		# intent before that action; no animation decides the rule.
+		if environment.kind_at(origin) == "ice" and posmod(turn_number + 1, 2) == 0:
+			enemy.next = origin
+			continue
 		if role == "chess_boss":
 			var intent := _boss_intent(enemy, reserved)
 			enemy.next = intent.pos
@@ -1406,6 +1653,10 @@ func _plan_reactive_mirrors(action_direction: Vector2i) -> void:
 		if enemy.get("role", "") != "mirror" or int(enemy.get("shield_repel_turn", -1)) == turn_number:
 			continue
 		var origin: Vector2i = enemy.pos
+		if environment.kind_at(origin) == "ice" and posmod(turn_number, 2) == 0:
+			enemy.next = origin
+			enemy["path"] = []
+			continue
 		var target: Vector2i = origin - action_direction
 		enemy.next = origin
 		enemy["path"] = []
@@ -1466,19 +1717,29 @@ func try_move(dx: int, dy: int) -> void:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
-	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
-	if not can_walk:
-		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
-		notice_timer = 1.0
-		_trigger_shake(0.12, 5.0)
-		_emit_feedback("BLOCKED")
-		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
-		queue_redraw()
-		return
+	var crate_pushed := false
+	var crate_index: int = environment.crate_index_at(next)
+	if crate_index >= 0:
+		if not environment.push(crate_index, facing, Callable(self, "_crate_destination_free")):
+			last_notice = "CAIXA BLOQUEADA — PRECISA DE UMA CASA LIVRE"
+			notice_timer = 1.2
+			_emit_feedback("BLOCKED")
+			queue_redraw()
+			return
+		crate_pushed = true
+	else:
+		var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next) and not environment.is_blocked(next))
+		if not can_walk:
+			last_notice = "TOC! A passagem esta bloqueada."
+			notice_timer = 1.0
+			_emit_feedback("BLOCKED")
+			_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
+			queue_redraw()
+			return
 	_begin_player_move(next)
 	moves_this_floor += 1
 	_emit_feedback("MOVE", {"material": _current_haptic_material()})
-	_take_turn(facing)
+	_take_turn(facing, crate_pushed)
 
 
 func wait_turn() -> void:
@@ -1510,12 +1771,11 @@ func try_jump() -> void:
 	var middle := player_position + facing
 	var landing := player_position + facing * 2
 	var can_jump: bool = _inside(middle) and _inside(landing) and _is_floor(middle) and _is_floor(landing)
-	if dev_noclip and _inside(middle) and _inside(landing):
+	if dev_noclip and _inside(middle) and _inside(landing) and not environment.is_blocked(middle) and not environment.is_blocked(landing):
 		can_jump = true
 	if not can_jump:
 		last_notice = "Precisas de duas casas livres para saltar"
 		notice_timer = 1.5
-		_trigger_shake(0.12, 3.5)
 		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
@@ -1611,7 +1871,6 @@ func try_break_wall() -> void:
 	if grid[target.y][target.x] == TILE_BORDER:
 		last_notice = "A FRONTEIRA DAS RUINAS NAO CEDE"
 		notice_timer = 1.2
-		_trigger_shake(0.1, 4.0)
 		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
@@ -1642,17 +1901,27 @@ func try_break_wall() -> void:
 	_take_turn()
 
 
-func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
+func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool = false) -> void:
 	damage_this_turn = false
 	turn_number += 1
 	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
+	var environmental_turn: bool = environment.is_active()
+	var update_navigation := false
+	if environmental_turn:
+		var floated: Array[Dictionary] = environment.advance_currents(Callable(self, "_crate_destination_free"))
+		_sync_environment_mechanisms()
+		update_navigation = not lab_active and (crate_pushed or not floated.is_empty())
 	_collect_pickups()
 	_trigger_traps()
+	if game_state == "playing" and environmental_turn and environment.is_electrified(player_position):
+		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"))
 	if game_state != "playing":
 		_tick_power_effects()
 		queue_redraw()
 		return
 	_activate_switches()
+	if environmental_turn:
+		_sync_environment_mechanisms()
 	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
 	# the player could pass through a stationary enemy without consequence.
 	_check_enemy_collision(action_direction)
@@ -1660,6 +1929,12 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 		_tick_power_effects()
 		queue_redraw()
 		return
+	if environmental_turn:
+		_resolve_environment_displacement(action_direction)
+		if game_state != "playing":
+			_tick_power_effects()
+			queue_redraw()
+			return
 	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
 	var enemy_advanced_near := false
 	if not immobilized:
@@ -1668,8 +1943,18 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 		var crossings: Array[int] = []
 		for i in enemies.size():
 			var enemy: Dictionary = enemies[i]
-			positions.append(enemy.next)
-			if enemy.next != player_position and enemy.get("path", []).has(player_position):
+			var planned: Vector2i = enemy.next
+			# A crate/gate may invalidate the previously announced path. Cancel it
+			# rather than inventing an untelegraphed alternate move this turn.
+			if environmental_turn:
+				if not _is_floor(planned):
+					planned = enemy.pos
+				for path_cell in enemy.get("path", []):
+					if not _is_floor(path_cell):
+						planned = enemy.pos
+						break
+			positions.append(planned)
+			if (not environmental_turn or planned != enemy.pos) and planned != player_position and enemy.get("path", []).has(player_position):
 				crossings.append(i)
 		for i in enemies.size():
 			var enemy: Dictionary = enemies[i]
@@ -1692,6 +1977,9 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 				_resolve_enemy_contact(index, _shield_recoil_direction(enemy, Vector2i.ZERO, true))
 				break
 	if game_state == "playing":
+		if environmental_turn:
+			_resolve_electrified_enemies()
+			_sync_environment_mechanisms()
 		if feedback_bus != null and enemy_advanced_near and not damage_this_turn and not dev_god_mode:
 			feedback_bus.near_miss({"cell": player_position})
 		_update_enemy_intents()
@@ -1699,6 +1987,8 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	# Tick before saving a completed floor, so its checkpoint contains the
 	# duration remaining after the portal action, not one extra turn.
 	if game_state == "playing":
+		if update_navigation:
+			_build_nav_chevrons()
 		_check_portal()
 	queue_redraw()
 
@@ -2157,11 +2447,12 @@ func _update_capture_sequence(delta: float) -> void:
 			capture_flash = 0.0
 			capture_chromatic = 0.0
 			capture_noise = 0.25
-			last_notice = "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
-			_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
-				int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
-				floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT),
-				floor_start_snapshot.get("powers", {}))
+			last_notice = "FOSTE CAPTURADO — R REINICIA A CAMARA" if lab_active else "FOSTE CAPTURADO — R CONTINUA NO ANDAR %d" % floor_number
+			if not lab_active:
+				_save_resume(floor_number, int(floor_start_snapshot.get("coins", 0)),
+					int(floor_start_snapshot.get("charges", 0)), int(floor_start_snapshot.get("breach_charges", 0)),
+					floor_start_snapshot.get("history", []), floor_start_snapshot.get("facing", Vector2i.RIGHT),
+					floor_start_snapshot.get("powers", {}))
 	elif game_state == "game_over":
 		capture_darkness = 0.91
 		capture_flash = 0.0
@@ -2200,8 +2491,14 @@ func _check_portal() -> void:
 	if player_position != portal_position or game_state != "playing":
 		return
 	if not portal_open:
-		last_notice = "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
+		last_notice = "PORTAL BLOQUEADO — ATIVA AS PLACAS" if lab_active else "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
+		return
+	if lab_active:
+		game_state = "floor_clear"
+		last_notice = "CAMARA CONCLUIDA — SEM ALTERAR A CAMPANHA"
+		notice_timer = 999.0
+		_emit_feedback("PORTAL_ENTER")
 		return
 	if is_challenge_met() and not challenge_complete:
 		challenge_complete = true
@@ -2239,6 +2536,12 @@ func _check_portal() -> void:
 
 
 func advance_floor() -> void:
+	if lab_active and game_state == "floor_clear":
+		if lab_index + 1 < EnvironmentChambers.COUNT:
+			_load_lab_chamber(lab_index + 1)
+		else:
+			handle_hud_action("menu")
+		return
 	if game_state == "floor_clear" or game_state == "rescued":
 		generate_floor(floor_number + 1)
 		game_state = "playing"
@@ -2254,6 +2557,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if lab_active:
+		return "PLACAS %d/%d  /  %s" % [environment.active_plate_count(), environment.plates.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if objective_type == "puzzle":
 		return "RUNAS %d/3  /  %s" % [_active_switches(), "PORTAL ABERTO" if portal_open else "SEGUIR A ORDEM"]
 	if objective_type == "switches":
@@ -2427,6 +2732,9 @@ func _process(delta: float) -> void:
 	var view := _visible_world_rect()
 	var draw_world := _world_is_visible()
 	_update_background_visibility(view, draw_world)
+	if background_rect != null and background_rect.visible and camera != null:
+		var background_material := background_rect.material as ShaderMaterial
+		background_material.set_shader_parameter("camera_offset", camera.global_position / 2048.0)
 	if terrain_renderer != null:
 		terrain_renderer.sync_view(view, draw_world)
 	queue_redraw()
@@ -2648,6 +2956,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 					new_game()
 			KEY_N: new_game()
 			KEY_L: open_level_select()
+			KEY_C: start_environment_lab()
 			KEY_M: audio.toggle_music()
 		return
 	if game_state == "level_select":
@@ -2663,7 +2972,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if game_state == "paused":
 		if event.keycode in [KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER]:
 			game_state = "playing"
-		elif event.keycode == KEY_L:
+		elif event.keycode == KEY_L and not lab_active:
 			open_level_select()
 		elif event.keycode == KEY_R:
 			restart_floor()
@@ -2673,18 +2982,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if game_state == "game_over":
 		if event.keycode in [KEY_R, KEY_ENTER, KEY_KP_ENTER]:
 			continue_game()
-		elif event.keycode == KEY_L:
+		elif event.keycode == KEY_L and not lab_active:
 			open_level_select()
 		elif event.keycode == KEY_ESCAPE:
-			capture_darkness = 0.0
-			capture_flash = 0.0
-			game_state = "title"
+			handle_hud_action("menu")
 		return
 	if game_state == "floor_clear":
 		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
 			advance_floor()
 		elif event.keycode == KEY_ESCAPE:
-			game_state = "title"
+			handle_hud_action("menu")
 		return
 	if game_state == "rescued":
 		if event.keycode in [KEY_ENTER, KEY_KP_ENTER]:
@@ -2713,8 +3020,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_Q: try_blink()
 		KEY_X: wait_turn()
 		KEY_R: restart_floor()
-		KEY_N: new_game()
-		KEY_L: open_level_select()
+		KEY_N:
+			if not lab_active: new_game()
+		KEY_L:
+			if not lab_active: open_level_select()
 		KEY_M: audio.toggle_music()
 
 
@@ -2775,6 +3084,12 @@ func _draw() -> void:
 	# Static ground, shadows and walls are retained by terrain_renderer. The
 	# remaining dynamic actors are culled conservatively, never removed from
 	# the game state, so objectives and collision still use the full level.
+	for gate in environment.gates:
+		if item_view.has_point(_cell_center(gate.pos)):
+			_draw_environment_gate(gate)
+	for crate in environment.crates:
+		if item_view.has_point(_cell_center(crate.pos)):
+			_draw_environment_crate(crate)
 	for pos in coins:
 		if item_view.has_point(_cell_center(pos)):
 			_draw_coin(pos)
@@ -2814,7 +3129,7 @@ func _is_floor(pos: Vector2i) -> bool:
 	if not _inside(pos):
 		return false
 	var t: int = grid[pos.y][pos.x]
-	return t == TILE_FLOOR or t == TILE_WATER
+	return (t == TILE_FLOOR or t == TILE_WATER) and ((environment.crates.is_empty() and environment.gates.is_empty()) or not environment.is_blocked(pos))
 
 
 func _has_wall_front(pos: Vector2i) -> bool:
@@ -3049,10 +3364,15 @@ func _draw_floor_shadows(target: CanvasItem, point: Vector2i, top_left: Vector2)
 	if _is_wall(point + Vector2i.UP):
 		target.draw_rect(Rect2(top_left, Vector2(CELL, 16.0)), Color(0, 0, 0, 0.55), true)
 		target.draw_rect(Rect2(top_left, Vector2(CELL, 8.0)), Color(0, 0, 0, 0.28), true)
+		# Retained translucent bands soften the contact shadow without a
+		# screen-wide pass or invalidating static chunks each frame.
+		target.draw_rect(Rect2(top_left + Vector2(0, 16), Vector2(CELL, 6)), Color(0, 0, 0, 0.12), true)
+		target.draw_rect(Rect2(top_left + Vector2(0, 22), Vector2(CELL, 5)), Color(0, 0, 0, 0.05), true)
 	# Sombra lateral projetada das paredes a oeste
 	if _is_wall(point + Vector2i.LEFT):
 		target.draw_rect(Rect2(top_left, Vector2(8.0, CELL)), Color(0, 0, 0, 0.38), true)
 		target.draw_rect(Rect2(top_left, Vector2(4.0, CELL)), Color(0, 0, 0, 0.20), true)
+		target.draw_rect(Rect2(top_left + Vector2(8, 0), Vector2(5, CELL)), Color(0, 0, 0, 0.07), true)
 
 
 func _enemy_visual_position(enemy: Dictionary) -> Vector2:
@@ -3071,6 +3391,12 @@ func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	var light_view := view.grow(116.0)
 	var coin_view := view.grow(36.0)
 	
+	# Held plates provide local grounding light beneath actors, never a
+	# screen-wide flash and never a gameplay input.
+	for plate in environment.plates:
+		var center := _cell_center(plate.pos)
+		if plate.get("active", false) and light_view.has_point(center):
+			_draw_radial_light(target, center, 35.0, Color("adffe3", 0.35), Color("39cda3", 0.18), 1.0)
 	# Halo néon suave da bola vermelha do jogador no chão (sem anel ruidoso)
 	var p_pos := _player_visual_position()
 	_draw_radial_light(target, p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
@@ -3261,33 +3587,42 @@ func _draw_wall_vines(target: CanvasItem, pos: Vector2, vine_col: Color, bio_glo
 	target.draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
 
 
-func _draw_water_base(target: CanvasItem, _point: Vector2i, top_left: Vector2) -> void:
+func _draw_water_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var is_garden := get_biome_index(floor_number) == 1
 	var deep := Color("082029") if is_garden else Color("0d2538")
 	var water := Color("134c56") if is_garden else Color("21536b")
-	# Static base is retained with the underlying floor tile.
-	target.draw_rect(Rect2(top_left, Vector2(CELL - 1.0, CELL - 1.0)), deep, true)
-	target.draw_rect(Rect2(top_left + Vector2(2, 2), Vector2(CELL - 5, CELL - 5)), water, true)
+	# Fill adjoining cells edge-to-edge. Contact shading belongs only to the
+	# outer shoreline, so retained chunks do not draw a dark grid across a lake.
+	target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), water, true)
+	var above := point + Vector2i.UP
+	var below := point + Vector2i.DOWN
+	if not _inside(above) or grid[above.y][above.x] != TILE_WATER or _surface_kind(above) == "ice":
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 3)), deep, true)
+		target.draw_rect(Rect2(top_left + Vector2(0, 3), Vector2(CELL, 5)), Color("78c6c8", 0.07), true)
+	if not _inside(below) or grid[below.y][below.x] != TILE_WATER or _surface_kind(below) == "ice":
+		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 2), Vector2(CELL, 2)), deep, true)
+		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 9), Vector2(CELL, 7)), Color("020c19", 0.17), true)
 
 
 func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var is_garden := get_biome_index(floor_number) == 1
 	var caustic := Color("7bf6e4", 0.32) if is_garden else Color("8de4ff", 0.34)
 	var shore := Color("8bfad0", 0.65) if is_garden else Color("9fe9ff", 0.68)
-	# Caustics procedurais animadas (redes de luz de água)
-	var phase := animation_clock * 1.6 + point.x * 0.8 + point.y * 0.6
-	var cy1 := 14.0 + sin(phase) * 3.2
-	var cy2 := 32.0 + cos(phase * 1.3) * 3.0
-	target.draw_line(top_left + Vector2(6, cy1), top_left + Vector2(CELL - 8, cy1 + 2.0), caustic, 1.8, true)
-	target.draw_line(top_left + Vector2(8, cy2), top_left + Vector2(CELL - 6, cy2 - 2.5), caustic, 1.6, true)
-	target.draw_line(top_left + Vector2(18, 6), top_left + Vector2(22 + sin(phase) * 4.0, CELL - 8), Color(caustic, 0.18), 1.2, true)
+	# Shared endpoints in world-cell coordinates carry each animated wave across
+	# adjacent tiles/chunk boundaries rather than restarting it in every cell.
+	var phase := animation_clock * 1.35 + float(point.y) * 0.57
+	for wave in 2:
+		var base_y := 14.0 + float(wave) * 22.0
+		var start_y := base_y + sin(phase + float(point.x) * 0.7 + float(wave)) * 3.2
+		var end_y := base_y + sin(phase + float(point.x + 1) * 0.7 + float(wave)) * 3.2
+		target.draw_line(top_left + Vector2(0, start_y), top_left + Vector2(CELL, end_y), caustic, 1.5, true)
 	# Bolhas de luz cintilantes
 	var bubble_y := fposmod(CELL - 6.0 - (animation_clock * 16.0 + (point.x + point.y) * 12.0), CELL - 8.0)
 	target.draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
 	# Contornos de margem e espuma neon
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
-		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER:
+		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER and _surface_kind(neighbor) != "ice":
 			continue
 		var start := Vector2.ZERO
 		var finish := Vector2.ZERO
@@ -3327,7 +3662,7 @@ func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> v
 	# Contorno de geada e cristalização nas margens
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
-		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER:
+		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER and _surface_kind(neighbor) == "ice":
 			continue
 		var start := Vector2.ZERO
 		var finish := Vector2.ZERO
@@ -3340,6 +3675,96 @@ func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> v
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
 		target.draw_line(start, finish, glow, 2.0, true)
+
+
+# Environmental symbols are high-contrast and static: arrows communicate flow,
+# lightning communicates danger, L/M identify the required crate material.
+func _draw_environment_surface(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	var kind: String = environment.kind_at(point)
+	if kind == "ice":
+		# An explicit frost border and corner crystal distinguish slippery ice
+		# from the legacy biome's purely decorative cracks, even under a trap.
+		var frost := Color("a8efff", 0.95)
+		target.draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), frost, false, 2.2)
+		var crystal := top_left + Vector2(11, 11)
+		for axis in [Vector2(5, 0), Vector2(2.5, 4.3), Vector2(-2.5, 4.3)]:
+			target.draw_line(crystal - axis, crystal + axis, frost, 1.5, true)
+	elif kind == "current":
+		var direction: Vector2i = environment.cells[point].get("flow", Vector2i.ZERO)
+		if direction in FOUR_WAY:
+			var center := top_left + Vector2(CELL * 0.5, CELL * 0.5)
+			var forward := Vector2(direction)
+			var side := Vector2(-forward.y, forward.x)
+			target.draw_line(center - forward * 10.0, center + forward * 9.0, Color("b5fff5", 0.88), 2.3, true)
+			target.draw_line(center + forward * 9.0, center + forward * 2.0 + side * 6.0, Color("b5fff5", 0.88), 2.3, true)
+			target.draw_line(center + forward * 9.0, center + forward * 2.0 - side * 6.0, Color("b5fff5", 0.88), 2.3, true)
+	if environment.is_electrified(point):
+		var center := top_left + Vector2(CELL * 0.5, CELL * 0.5)
+		target.draw_rect(Rect2(top_left + Vector2(3, 3), Vector2(CELL - 6, CELL - 6)), Color("ffde62", 0.85), false, 2.0)
+		var bolt := PackedVector2Array([center + Vector2(1, -13), center + Vector2(-8, 2), center + Vector2(-1, 2), center + Vector2(-4, 13), center + Vector2(9, -4), center + Vector2(2, -4)])
+		target.draw_colored_polygon(bolt, Color("ffe57a"))
+		target.draw_polyline(bolt + PackedVector2Array([bolt[0]]), Color("40270a"), 1.0, true)
+
+
+func _draw_environment_plate(target: CanvasItem, plate: Dictionary) -> void:
+	var center := _cell_center(plate.pos)
+	var active: bool = plate.get("active", false)
+	var edge := Color("8effc9") if active else Color("e5bd72")
+	var top := Rect2(center - Vector2(20, 13), Vector2(40, 29))
+	target.draw_rect(top.grow(3), Color("020b16", 0.8))
+	target.draw_rect(top, Color("174439") if active else Color("3f3024"))
+	target.draw_rect(top, edge, false, 2.0)
+	var label := "L" if plate.get("required", "") == "wood" else "M" if plate.get("required", "") == "metal" else "+"
+	target.draw_string(font, center + Vector2(-5, 6), label, HORIZONTAL_ALIGNMENT_LEFT, 15, 15, Color("effff7") if active else Color("ffdfa3"))
+
+
+func _draw_environment_gate(gate: Dictionary) -> void:
+	var center := _cell_center(gate.pos)
+	var opened: bool = gate.get("open", false)
+	var dark := Color("0b1522")
+	var edge := Color("65eebc") if opened else Color("ffb96d")
+	# Open posts remain legible but do not cover the player or path.
+	draw_rect(Rect2(center + Vector2(-24, -25), Vector2(6, 50)), dark)
+	draw_rect(Rect2(center + Vector2(18, -25), Vector2(6, 50)), dark)
+	draw_line(center + Vector2(-21, -22), center + Vector2(-21, 23), edge, 2.0, true)
+	draw_line(center + Vector2(21, -22), center + Vector2(21, 23), edge, 2.0, true)
+	if not opened:
+		draw_rect(Rect2(center + Vector2(-18, -22), Vector2(36, 45)), Color("27313e"))
+		for x in [-10.0, 0.0, 10.0]:
+			draw_line(center + Vector2(x, -18), center + Vector2(x, 19), edge, 2.5, true)
+		draw_line(center + Vector2(-16, 0), center + Vector2(16, 0), Color("ffe4af"), 2.0, true)
+
+
+func _draw_environment_crate(crate: Dictionary) -> void:
+	var center := _cell_center(crate.pos)
+	var metal: bool = crate.get("material", "") == "metal"
+	var top := Color("8db1bd") if metal else Color("bd864e")
+	var face := Color("34525f") if metal else Color("694322")
+	var side := Color("263c49") if metal else Color("4c2d18")
+	var trim := Color("d9f6ff") if metal else Color("f5c58a")
+	# Contact shadow, front and bevel give a small 2.5D silhouette while the
+	# logical position remains an integer cell resolved before drawing.
+	draw_set_transform(center + Vector2(0, 19), 0.0, Vector2(1.0, 0.34))
+	draw_circle(Vector2.ZERO, 24, Color(0, 0, 0, 0.42))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	var upper := center + Vector2(0, -5)
+	var face_points := PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(18, 4), upper + Vector2(18, 18), upper + Vector2(-18, 18)])
+	draw_colored_polygon(face_points, face)
+	var top_points := PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(-14, -15), upper + Vector2(15, -15), upper + Vector2(18, 4)])
+	draw_colored_polygon(top_points, top)
+	draw_colored_polygon(PackedVector2Array([upper + Vector2(18, 4), upper + Vector2(15, -15), upper + Vector2(21, -10), upper + Vector2(21, 13), upper + Vector2(18, 18)]), side)
+	draw_polyline(PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(-14, -15), upper + Vector2(15, -15), upper + Vector2(18, 4), upper + Vector2(-18, 4)]), trim, 1.5, true)
+	if metal:
+		draw_line(upper + Vector2(-10, -10), upper + Vector2(10, -10), Color("34525f"), 2.0, true)
+		draw_line(upper + Vector2(-10, -4), upper + Vector2(10, -4), Color("34525f"), 2.0, true)
+		for x in [-12.0, 12.0]:
+			draw_circle(upper + Vector2(x, 11), 1.8, trim)
+	else:
+		draw_line(upper + Vector2(-10, -11), upper + Vector2(10, 1), Color("694322"), 2.2, true)
+		draw_line(upper + Vector2(10, -11), upper + Vector2(-10, 1), Color("694322"), 2.2, true)
+		draw_line(upper + Vector2(-14, 10), upper + Vector2(14, 10), Color("eab579", 0.65), 1.5, true)
+	if metal and environment.powered.has(crate.pos):
+		draw_string(font, center + Vector2(-4, 13), "!", HORIZONTAL_ALIGNMENT_LEFT, 12, 14, Color("ffe57a"))
 
 
 func _draw_powerup(item: Dictionary) -> void:
