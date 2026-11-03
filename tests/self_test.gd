@@ -43,6 +43,8 @@ func _run_tests() -> void:
 	_expect(game.audio.effects.has("break_wall") and game.audio.effects.has("breaker"), "wall breaking and its power-up have separate sound cues")
 	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "captor_reveal"]:
 		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "new action has synthesized audio: " + cue)
+	for cue in ["crate_push", "current", "ice_crack", "electric_water"]:
+		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "environment action has synthesized audio: " + cue)
 	_expect(game.capture_overlay != null and game.capture_material != null, "capture has a camera-darkening overlay")
 	_expect(game.audio.music_player.stream.get_length() >= 38.0 and game.audio.music_player.stream.stereo, "music is an arranged 40-second stereo track with bass, melody and percussion")
 	_expect(is_equal_approx(game.audio.threat_player.stream.get_length(), game.audio.music_player.stream.get_length()), "enemy-tension layer stays synchronized with the score")
@@ -61,11 +63,12 @@ func _run_tests() -> void:
 	_test_shield_recoil(game)
 	_test_chess_bosses(game)
 	_test_powerups(game)
+	_test_environment_interactions(game)
 	_test_puzzle_floor(game)
 	_test_patrol_mirror_and_rhythm(game)
 	_test_capture_sequence(game)
 	if failures.is_empty():
-		print("SELFTEST_PASS: WFC, desafios, checkpoint, chefes, mini-chefe, poderes, puzzles, patrulha, espelho, armadilhas, captura e audio")
+		print("SELFTEST_PASS: WFC, desafios, checkpoint, chefes, mini-chefe, poderes, puzzles, ambiente, patrulha, espelho, armadilhas, captura e audio")
 	else:
 		printerr("SELFTEST_FAIL: %d check(s): %s" % [failures.size(), "; ".join(failures)])
 	game.audio.stop_all()
@@ -314,9 +317,17 @@ func _test_arena(game: Node) -> void:
 			row.append(game.TILE_BORDER if x == 0 or y == 0 or x == game.world_size.x - 1 or y == game.world_size.y - 1 else game.TILE_FLOOR)
 		game.grid.append(row)
 	game.game_state = "playing"
+	game.floor_number = 1
 	game.dev_god_mode = false
 	game.dev_noclip = false
 	game.enemies.clear()
+	game.crates.clear()
+	game.water_current_dirs.clear()
+	game.electrified_water.clear()
+	game.brittle_ice.clear()
+	game.ice_stress.clear()
+	game.broken_ice.clear()
+	game.player_step_path.clear()
 	game.coins.clear()
 	game.shields.clear()
 	game.breakers.clear()
@@ -867,6 +878,71 @@ func _test_powerups(game: Node) -> void:
 	_expect(game.game_state == "floor_clear" and game.resume_powers == {"speed_turns": 1, "speed_phase": 0, "magnet_turns": 2, "freeze_turns": 0, "blink_charges": 2}, "portal checkpoint saves the effects remaining after the action")
 	game.new_game(12001)
 	_expect(game._capture_power_state() == {"speed_turns": 0, "speed_phase": 0, "magnet_turns": 0, "freeze_turns": 0, "blink_charges": 0}, "new campaign resets all powers")
+
+
+func _test_environment_interactions(game: Node) -> void:
+	game.new_game(44127)
+	game.generate_floor(2)
+	_expect(not game.water_current_dirs.is_empty(), "garden biome marks readable flowing-water cells")
+	_expect(game.crates.size() > 0, "water and ice biomes place optional pushable crates")
+	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "generated crates leave a route to the portal")
+	for crate in game.crates:
+		_expect(crate.pos != game.player_position and crate.pos != game.portal_position, "generated crate avoids the start and portal")
+	game.generate_floor(7)
+	_expect(not game.electrified_water.is_empty(), "later garden biome introduces a marked electric-water tile")
+	for point in game.electrified_water:
+		var old_tile: int = game.grid[point.y][point.x]
+		game.grid[point.y][point.x] = game.TILE_WALL
+		var alternate_route: bool = game._reachable_cells(game.player_position).has(game.portal_position)
+		game.grid[point.y][point.x] = old_tile
+		_expect(alternate_route, "electric-water tile always has a safe route around it")
+
+	_test_arena(game)
+	game.floor_number = 2
+	game.grid[4][6] = game.TILE_WATER
+	game.grid[4][7] = game.TILE_WATER
+	game.grid[4][8] = game.TILE_WATER
+	for x in [6, 7, 8]:
+		game.water_current_dirs[Vector2i(x, 4)] = Vector2i.RIGHT
+	var crate_pos := Vector2i(5, 4)
+	var crate_center: Vector2 = game._cell_center(crate_pos)
+	game.crates.append({"pos": crate_pos, "from": crate_center, "to": crate_center, "t": 1.0, "floating": false})
+	game.try_move(1, 0)
+	_expect(game.player_position == Vector2i(5, 4) and game.crates[0].pos == Vector2i(7, 4) and game.crates[0].floating, "pushed wooden crate floats and follows the marked current")
+	_expect(not game._is_floor(game.crates[0].pos), "crate occupies a cell and blocks actor pathfinding")
+	game.wait_turn()
+	_expect(game.crates[0].pos == Vector2i(8, 4), "floating crate advances once per spent turn")
+
+	_test_arena(game)
+	game.floor_number = 4
+	for x in [5, 6, 7]:
+		game.grid[4][x] = game.TILE_WATER
+	game.brittle_ice[Vector2i(5, 4)] = true
+	game.try_move(1, 0)
+	_expect(game.player_position == Vector2i(8, 4), "player slides across an ice patch and settles on the first safe floor cell")
+	_expect(int(game.ice_stress.get(Vector2i(5, 4), 0)) == 1, "crossing brittle ice records one deterministic stress step")
+	var ice_cell: Array[Vector2i] = [Vector2i(5, 4)]
+	game._stress_brittle_ice(ice_cell)
+	game._stress_brittle_ice(ice_cell)
+	_expect(game.broken_ice.has(Vector2i(5, 4)) and not game._is_slippery_ice(Vector2i(5, 4)), "brittle ice cracks after three crossings and stops sliding")
+
+	_test_arena(game)
+	game.floor_number = 2
+	game.grid[4][5] = game.TILE_WATER
+	game.electrified_water[Vector2i(5, 4)] = true
+	game.charges = 1
+	game.try_move(1, 0)
+	_expect(game.charges == 0 and game.hits_this_floor == 1 and game.game_state == "playing", "electrified water is a single readable hit absorbed by one shield")
+
+	_test_arena(game)
+	game.floor_number = 2
+	game.grid[4][5] = game.TILE_WATER
+	game.water_current_dirs[Vector2i(5, 4)] = Vector2i.RIGHT
+	game.electrified_water[Vector2i(5, 4)] = true
+	game.powerups.append({"pos": Vector2i(5, 4), "kind": "time_freeze"})
+	game.try_move(1, 0)
+	_expect(game.player_position == Vector2i(5, 4) and game.hits_this_floor == 0 and game.game_state == "playing", "time-freeze pickup halts currents and makes electrified water safe on contact")
+	_expect(game.freeze_turns == 3, "surface safety uses the existing four-action power timer")
 
 
 func _test_puzzle_floor(game: Node) -> void:

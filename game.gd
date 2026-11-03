@@ -66,12 +66,19 @@ var facing := Vector2i.RIGHT
 var portal_position := Vector2i.ZERO
 var portal_open := true
 var enemies: Array[Dictionary] = []
+var crates: Array[Dictionary] = []
 var shields: Array[Vector2i] = []
 var breakers: Array[Vector2i] = []
 var powerups: Array[Dictionary] = []
 var coins: Array[Vector2i] = []
 var switches: Array[Dictionary] = []
 var traps: Array[Dictionary] = []
+var water_current_dirs: Dictionary = {}
+var electrified_water: Dictionary = {}
+var brittle_ice: Dictionary = {}
+var ice_stress: Dictionary = {}
+var broken_ice: Dictionary = {}
+var player_step_path: Array[Vector2i] = []
 var rooms: Array[Dictionary] = []
 var room_graph_edges: Array[Dictionary] = []
 var nav_chevrons: Array[Dictionary] = []
@@ -726,7 +733,9 @@ func generate_floor(number: int) -> void:
 	grid[portal_position.y][portal_position.x] = TILE_FLOOR
 	if not result.ok:
 		_carve_route(player_position, portal_position)
+	crates.clear()
 	_add_biome_landmarks(number)
+	_configure_biome_surfaces(number)
 	player_from = _cell_center(player_position)
 	player_to = player_from
 	player_anim = 1.0
@@ -798,6 +807,7 @@ func generate_floor(number: int) -> void:
 	if power_position != Vector2i(-1, -1):
 		powerups.append({"pos": power_position, "kind": POWERUP_TYPES[posmod(number - 1, POWERUP_TYPES.size())]})
 		occupied[power_position] = true
+	_place_biome_crates(walkable, occupied)
 	_place_coins(walkable, occupied, 8 + number)
 	coins_spawned_this_floor = coins.size()
 	# Puzzle floors contain neither enemies nor traps: the sequence itself is
@@ -1143,6 +1153,87 @@ func _add_biome_landmarks(number: int) -> void:
 				break
 			for point in patch:
 				grid[point.y][point.x] = TILE_FLOOR
+
+
+func _configure_biome_surfaces(number: int) -> void:
+	water_current_dirs.clear()
+	electrified_water.clear()
+	brittle_ice.clear()
+	ice_stress.clear()
+	broken_ice.clear()
+	player_step_path.clear()
+	var biome_index := get_biome_index(number)
+	var water_cells: Array[Vector2i] = []
+	for y in world_size.y:
+		for x in world_size.x:
+			if grid[y][x] != TILE_WATER:
+				continue
+			var point := Vector2i(x, y)
+			water_cells.append(point)
+			if biome_index == 1:
+				water_current_dirs[point] = Vector2i.RIGHT
+			elif biome_index == 3 and posmod(x * 5 + y * 3 + number + active_seed, 4) == 0:
+				brittle_ice[point] = true
+	# The first electrified pool arrives after the player has already seen the
+	# water biome. It is placed only when an alternate route remains open.
+	if biome_index == 1 and number >= 7 and posmod(number, 5) == 2:
+		for point in water_cells:
+			var old_tile: int = grid[point.y][point.x]
+			grid[point.y][point.x] = TILE_WALL
+			var has_safe_route := _reachable_cells(player_position).has(portal_position)
+			grid[point.y][point.x] = old_tile
+			if has_safe_route:
+				electrified_water[point] = true
+				break
+
+
+func _place_biome_crates(walkable: Array[Vector2i], occupied: Dictionary) -> void:
+	var biome_index := get_biome_index(floor_number)
+	if biome_index not in [1, 3]:
+		return
+	var candidates: Array[Dictionary] = []
+	var water_cells: Array[Vector2i] = []
+	for point in walkable:
+		if grid[point.y][point.x] == TILE_WATER:
+			water_cells.append(point)
+	for crate_pos in walkable:
+		if grid[crate_pos.y][crate_pos.x] != TILE_FLOOR or occupied.has(crate_pos):
+			continue
+		var near_water := false
+		for water in water_cells:
+			if _manhattan(crate_pos, water) <= 4:
+				near_water = true
+				break
+		if not near_water or _manhattan(crate_pos, player_position) < 4 or _manhattan(crate_pos, portal_position) < 4:
+			continue
+		for direction in FOUR_WAY:
+			var approach: Vector2i = crate_pos - direction
+			var destination: Vector2i = crate_pos + direction
+			if not _terrain_is_floor(approach) or not _terrain_is_floor(destination):
+				continue
+			if occupied.has(approach) or occupied.has(destination) or electrified_water.has(destination):
+				continue
+			candidates.append({"pos": crate_pos, "direction": direction, "approach": approach, "destination": destination})
+	if candidates.is_empty():
+		return
+	var start_index := posmod(active_seed + floor_number, candidates.size())
+	for offset in candidates.size():
+		if crates.size() >= 2:
+			break
+		var candidate: Dictionary = candidates[posmod(start_index + offset, candidates.size())]
+		var crate_pos: Vector2i = candidate.pos
+		var approach: Vector2i = candidate.approach
+		if occupied.has(crate_pos) or occupied.has(approach) or occupied.has(candidate.destination):
+			continue
+		var old_tile: int = grid[crate_pos.y][crate_pos.x]
+		grid[crate_pos.y][crate_pos.x] = TILE_WALL
+		var has_route_around := _reachable_cells(player_position).has(portal_position)
+		grid[crate_pos.y][crate_pos.x] = old_tile
+		if not has_route_around:
+			continue
+		var center := _cell_center(crate_pos)
+		crates.append({"pos": crate_pos, "from": center, "to": center, "t": 1.0, "floating": false})
+		occupied[crate_pos] = true
 
 
 func _fallback_layout(width: int, height: int) -> Array:
@@ -1492,19 +1583,31 @@ func try_move(dx: int, dy: int) -> void:
 		return
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
-	var can_walk: bool = (_inside(next) and _is_floor(next)) or (dev_noclip and _inside(next))
-	if not can_walk:
-		last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
-		notice_timer = 1.0
-		_trigger_shake(0.12, 5.0)
-		_emit_feedback("BLOCKED")
-		_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
-		queue_redraw()
+	var crate_index := _crate_index_at(next)
+	if crate_index >= 0 and not _push_crate(crate_index, facing):
+		_blocked_move()
 		return
-	_begin_player_move(next)
+	var can_walk: bool = (_inside(next) and _terrain_is_floor(next) and _crate_index_at(next) < 0) or (dev_noclip and _inside(next))
+	if not can_walk:
+		_blocked_move()
+		return
+	var path: Array[Vector2i] = [next]
+	if _is_slippery_ice(next):
+		path = _ice_slide_path(next, facing)
+	var landing: Vector2i = path[path.size() - 1]
+	_begin_player_move(landing, path)
 	moves_this_floor += 1
-	_emit_feedback("MOVE", {"material": _current_haptic_material()})
+	_emit_feedback("MOVE", {"material": _current_haptic_material(), "slide": path.size() > 1})
 	_take_turn(facing)
+
+
+func _blocked_move() -> void:
+	last_notice = "TOC! A parede nao cedeu. Procura outra passagem."
+	notice_timer = 1.0
+	_trigger_shake(0.12, 5.0)
+	_emit_feedback("BLOCKED")
+	_spawn_burst(_cell_center(player_position), Color("70e9ff"), 5, 58.0)
+	queue_redraw()
 
 
 func wait_turn() -> void:
@@ -1517,11 +1620,88 @@ func wait_turn() -> void:
 	_take_turn()
 
 
-func _begin_player_move(next: Vector2i) -> void:
+func _begin_player_move(next: Vector2i, path: Array[Vector2i] = []) -> void:
 	player_from = _player_visual_position()
 	player_position = next
 	player_to = _cell_center(next)
 	player_anim = 0.0
+	player_step_path.clear()
+	if path.is_empty():
+		player_step_path.append(next)
+	else:
+		for point in path:
+			player_step_path.append(point)
+
+
+func _crate_index_at(point: Vector2i, except_index: int = -1) -> int:
+	for index in crates.size():
+		if index == except_index:
+			continue
+		if crates[index].pos == point:
+			return index
+	return -1
+
+
+func _can_crate_occupy(point: Vector2i, crate_index: int) -> bool:
+	if not _terrain_is_floor(point) or point == player_position or point == portal_position:
+		return false
+	if _crate_index_at(point, crate_index) >= 0 or _enemy_at(point):
+		return false
+	for item in switches:
+		if item.pos == point:
+			return false
+	return true
+
+
+func _push_crate(crate_index: int, direction: Vector2i) -> bool:
+	if crate_index < 0 or crate_index >= crates.size():
+		return false
+	var crate: Dictionary = crates[crate_index]
+	var first: Vector2i = crate.pos + direction
+	if not _can_crate_occupy(first, crate_index):
+		return false
+	var destination := first
+	if _is_slippery_ice(first):
+		for slide_point in _ice_slide_path(first, direction).slice(1):
+			if not _can_crate_occupy(slide_point, crate_index):
+				break
+			destination = slide_point
+	var from: Vector2 = _crate_visual_position(crate)
+	crate["from"] = from
+	crate["pos"] = destination
+	crate["to"] = _cell_center(destination)
+	crate["t"] = 0.0
+	crate["floating"] = get_biome_index(floor_number) == 1 and grid[destination.y][destination.x] == TILE_WATER
+	crates[crate_index] = crate
+	last_notice = "CAIXA DE MADEIRA EMPURRADA"
+	notice_timer = 1.0
+	_spawn_burst(_cell_center(destination), Color("e5b66c"), 8, 72.0)
+	_emit_feedback("CRATE_PUSH")
+	return true
+
+
+func _ice_slide_path(first: Vector2i, direction: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = [first]
+	var point := first
+	for _step in 8:
+		if not _is_slippery_ice(point):
+			break
+		var next := point + direction
+		if not _terrain_is_floor(next) or _crate_index_at(next) >= 0 or _enemy_at(next):
+			break
+		path.append(next)
+		point = next
+		if _enemy_at(point):
+			break
+	return path
+
+
+func _crate_visual_position(crate: Dictionary) -> Vector2:
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var eased := t * t * (3.0 - 2.0 * t)
+	var from: Vector2 = crate.get("from", _cell_center(crate.pos))
+	var to: Vector2 = crate.get("to", _cell_center(crate.pos))
+	return from.lerp(to, eased)
 
 
 func try_jump() -> void:
@@ -1672,18 +1852,30 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	damage_this_turn = false
 	turn_number += 1
 	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
-	_collect_pickups()
-	_trigger_traps()
+	var turn_path: Array[Vector2i] = []
+	for point in player_step_path:
+		turn_path.append(point)
+	if turn_path.is_empty():
+		turn_path.append(player_position)
+	player_step_path.clear()
+	_collect_pickups(turn_path)
+	_resolve_water_currents(turn_path)
+	_collect_pickups(turn_path)
+	_trigger_traps(turn_path)
+	_resolve_electrified_water(turn_path)
+	_stress_brittle_ice(turn_path)
 	if game_state != "playing":
 		_tick_power_effects()
+		player_step_path.clear()
 		queue_redraw()
 		return
-	_activate_switches()
+	_activate_switches(turn_path)
 	# Initial-cell contact still hurts even when an enemy is frozen; otherwise
 	# the player could pass through a stationary enemy without consequence.
 	_check_enemy_collision(action_direction)
 	if game_state != "playing":
 		_tick_power_effects()
+		player_step_path.clear()
 		queue_redraw()
 		return
 	var immobilized := freeze_turns > 0 or (speed_turns > 0 and speed_phase == 0)
@@ -1726,6 +1918,7 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO) -> void:
 	# duration remaining after the portal action, not one extra turn.
 	if game_state == "playing":
 		_check_portal()
+	player_step_path.clear()
 	queue_redraw()
 
 
@@ -1737,6 +1930,78 @@ func _tick_power_effects() -> void:
 		magnet_turns -= 1
 	if freeze_turns > 0:
 		freeze_turns -= 1
+
+
+func _resolve_water_currents(path: Array[Vector2i]) -> void:
+	if freeze_turns > 0:
+		return
+	_advance_floating_crates()
+	var direction: Vector2i = water_current_dirs.get(player_position, Vector2i.ZERO)
+	if direction == Vector2i.ZERO:
+		return
+	var destination := player_position + direction
+	if not _terrain_is_floor(destination) or _crate_index_at(destination) >= 0 or _enemy_at(destination):
+		return
+	player_position = destination
+	player_to = _cell_center(destination)
+	if not path.has(destination):
+		path.append(destination)
+	_spawn_burst(_cell_center(destination), Color("63eedb"), 5, 48.0)
+	_emit_feedback("CURRENT_DRIFT")
+
+
+func _advance_floating_crates() -> void:
+	var moved_any := false
+	for index in crates.size():
+		var crate: Dictionary = crates[index]
+		if not crate.get("floating", false):
+			continue
+		var source: Vector2i = crate.pos
+		var direction: Vector2i = water_current_dirs.get(source, Vector2i.ZERO)
+		var destination := source + direction
+		if direction == Vector2i.ZERO or not _can_crate_occupy(destination, index):
+			continue
+		if grid[destination.y][destination.x] != TILE_WATER or not water_current_dirs.has(destination):
+			continue
+		crate["from"] = _crate_visual_position(crate)
+		crate["pos"] = destination
+		crate["to"] = _cell_center(destination)
+		crate["t"] = 0.0
+		crates[index] = crate
+		moved_any = true
+		_spawn_burst(_cell_center(destination), Color("80f0d7"), 4, 40.0)
+	if moved_any:
+		_emit_feedback("CURRENT_DRIFT")
+
+
+func _resolve_electrified_water(path: Array[Vector2i]) -> void:
+	if freeze_turns > 0:
+		return
+	for point in path:
+		if not electrified_water.has(point):
+			continue
+		_apply_damage("AGUA ELETRIFICADA", Color("8af5ff"))
+		_spawn_burst(_cell_center(point), Color("a2faff"), 14, 130.0)
+		_emit_feedback("ELECTRIC_WATER")
+		return
+
+
+func _stress_brittle_ice(path: Array[Vector2i]) -> void:
+	var seen: Dictionary = {}
+	for point in path:
+		if not brittle_ice.has(point) or broken_ice.has(point) or seen.has(point):
+			continue
+		seen[point] = true
+		var stress := int(ice_stress.get(point, 0)) + 1
+		ice_stress[point] = stress
+		if stress < 3:
+			continue
+		broken_ice[point] = true
+		_spawn_burst(_cell_center(point), Color("b5f5ff"), 12, 104.0)
+		last_notice = "GELO FINO PARTIU — A SUPERFICIE FICOU LISA"
+		notice_timer = 1.8
+		_emit_feedback("ICE_CRACK")
+		queue_redraw()
 
 
 func _collect_coin(point: Vector2i) -> bool:
@@ -1770,25 +2035,34 @@ func _nearby_floor_cells(start: Vector2i, reach: int) -> Dictionary:
 	return distances
 
 
-func _collect_pickups() -> void:
-	var collected_coins := 1 if _collect_coin(player_position) else 0
-	if shields.has(player_position):
-		shields.erase(player_position)
-		charges += 1
-		last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
-		notice_timer = 2.2
-		_spawn_burst(_cell_center(player_position), Color("53edff"), 22, 130.0)
-		_emit_feedback("SHIELD_PICKUP")
-	if breakers.has(player_position):
-		breakers.erase(player_position)
-		breach_charges += 1
-		last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
-		notice_timer = 2.6
-		_spawn_burst(_cell_center(player_position), Color("ffad67"), 26, 155.0)
-		_emit_feedback("BREAKER_PICKUP")
+func _collect_pickups(path: Array[Vector2i] = []) -> void:
+	var pickup_path: Array[Vector2i] = []
+	if path.is_empty():
+		pickup_path.append(player_position)
+	else:
+		for point in path:
+			pickup_path.append(point)
+	var collected_coins := 0
+	for point in pickup_path:
+		if _collect_coin(point):
+			collected_coins += 1
+		if shields.has(point):
+			shields.erase(point)
+			charges += 1
+			last_notice = "ESCUDO +1 / ABSORVE IMPACTO E REPELE INIMIGOS; SALTAR GASTA 1"
+			notice_timer = 2.2
+			_spawn_burst(_cell_center(point), Color("53edff"), 22, 130.0)
+			_emit_feedback("SHIELD_PICKUP")
+		if breakers.has(point):
+			breakers.erase(point)
+			breach_charges += 1
+			last_notice = "CARGA DE DEMOLICAO +1 — B PARA ABRIR UMA PAREDE"
+			notice_timer = 2.6
+			_spawn_burst(_cell_center(point), Color("ffad67"), 26, 155.0)
+			_emit_feedback("BREAKER_PICKUP")
 	for i in range(powerups.size() - 1, -1, -1):
 		var item: Dictionary = powerups[i]
-		if item.pos == player_position:
+		if pickup_path.has(item.pos):
 			powerups.remove_at(i)
 			_activate_powerup(item.kind)
 	if magnet_turns > 0 and not coins.is_empty():
@@ -1816,7 +2090,7 @@ func _activate_powerup(kind: String) -> void:
 			last_notice = "BLINK +1 / Q TELEPORTA ATE 3 CASAS"
 		"time_freeze":
 			freeze_turns = FREEZE_DURATION
-			last_notice = "TEMPO CONGELADO / ARMADILHAS CONTINUAM ATIVAS"
+			last_notice = "TEMPO E CORRENTES CONGELADOS / AGUA ELETRICA SEGURA / ARMADILHAS ATIVAS"
 		_:
 			return
 	notice_timer = 2.6
@@ -1828,10 +2102,16 @@ func _audio_coin() -> void:
 	_emit_feedback("COIN_PICKUP")
 
 
-func _activate_switches() -> void:
+func _activate_switches(path: Array[Vector2i] = []) -> void:
+	var activation_path: Array[Vector2i] = []
+	if path.is_empty():
+		activation_path.append(player_position)
+	else:
+		for point in path:
+			activation_path.append(point)
 	for i in switches.size():
 		var item: Dictionary = switches[i]
-		if item.active or item.pos != player_position:
+		if item.active or not activation_path.has(item.pos):
 			continue
 		if objective_type == "puzzle" and int(item.get("order", -1)) != _active_switches():
 			for j in switches.size():
@@ -1874,10 +2154,16 @@ func _rhythm_is_hot(trap: Dictionary, action_turn: int) -> bool:
 	return posmod(action_turn + int(trap.get("phase", 0)), 3) == 0
 
 
-func _trigger_traps() -> void:
+func _trigger_traps(path: Array[Vector2i] = []) -> void:
+	var trap_path: Array[Vector2i] = []
+	if path.is_empty():
+		trap_path.append(player_position)
+	else:
+		for point in path:
+			trap_path.append(point)
 	for i in traps.size():
 		var trap: Dictionary = traps[i]
-		if not trap.get("armed", true) or trap.pos != player_position:
+		if not trap.get("armed", true) or not trap_path.has(trap.pos):
 			continue
 		if trap.get("type", "one_shot") == "rhythm":
 			if _rhythm_is_hot(trap, turn_number):
@@ -2415,6 +2701,10 @@ func _process(delta: float) -> void:
 	player_anim = minf(1.0, player_anim + delta / 0.115)
 	if previous_player_anim < 1.0 and player_anim >= 1.0 and game_state != "captured":
 		landing_feedback_time = 0.12
+	for i in crates.size():
+		var crate: Dictionary = crates[i]
+		crate["t"] = minf(1.0, float(crate.get("t", 1.0)) + delta / 0.17)
+		crates[i] = crate
 	for i in enemies.size():
 		var enemy: Dictionary = enemies[i]
 		enemy.t = minf(1.0, enemy.t + delta / 0.14)
@@ -2831,6 +3121,9 @@ func _draw() -> void:
 			_draw_powerup(item)
 	if view.grow(64.0).has_point(_cell_center(portal_position)):
 		_draw_portal()
+	for crate in crates:
+		if item_view.has_point(_crate_visual_position(crate)):
+			_draw_crate(crate)
 	for enemy in enemies:
 		if not _enemy_draw_visible(enemy, view):
 			continue
@@ -2888,10 +3181,18 @@ func _is_wall(pos: Vector2i) -> bool:
 
 
 func _is_floor(pos: Vector2i) -> bool:
+	return _terrain_is_floor(pos) and _crate_index_at(pos) < 0
+
+
+func _terrain_is_floor(pos: Vector2i) -> bool:
 	if not _inside(pos):
 		return false
 	var t: int = grid[pos.y][pos.x]
 	return t == TILE_FLOOR or t == TILE_WATER
+
+
+func _is_slippery_ice(pos: Vector2i) -> bool:
+	return get_biome_index(floor_number) == 3 and _terrain_is_floor(pos) and grid[pos.y][pos.x] == TILE_WATER and not broken_ice.has(pos)
 
 
 func _has_wall_front(pos: Vector2i) -> bool:
@@ -3377,6 +3678,20 @@ func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) ->
 		else:
 			start = top_left + Vector2(CELL - 3, 3); finish = top_left + Vector2(CELL - 3, CELL - 4)
 		target.draw_line(start, finish, shore, 2.2, true)
+	if water_current_dirs.has(point) and freeze_turns <= 0:
+		var current_color := Color("b5fff2", 0.62 + sin(animation_clock * 4.0 + point.x) * 0.12)
+		var arrow_y := CELL * 0.5
+		target.draw_line(top_left + Vector2(18, arrow_y), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+		target.draw_line(top_left + Vector2(31, arrow_y - 5), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+		target.draw_line(top_left + Vector2(31, arrow_y + 5), top_left + Vector2(37, arrow_y), current_color, 1.6, true)
+	if electrified_water.has(point) and freeze_turns <= 0:
+		var spark := Color("e4ffff", 0.7 + absf(sin(animation_clock * 10.0 + point.y)) * 0.3)
+		var center := top_left + Vector2(CELL * 0.5, CELL * 0.5)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-4, -8), center + Vector2(1, -2), center + Vector2(-2, 1), center + Vector2(5, 8)]), Color("36dfff", 0.35), 5.0, true)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-4, -8), center + Vector2(1, -2), center + Vector2(-2, 1), center + Vector2(5, 8)]), spark, 1.8, true)
+	if freeze_turns > 0:
+		target.draw_rect(Rect2(top_left + Vector2(4, 4), Vector2(CELL - 9, CELL - 9)), Color("b6edff", 0.25), true)
+		target.draw_line(top_left + Vector2(8, 12), top_left + Vector2(CELL - 10, 12), Color("f1fdff", 0.34), 1.2, true)
 
 
 func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
@@ -3396,6 +3711,19 @@ func _draw_ice_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> v
 
 func _draw_ice_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
 	var glow := Color("6ee3ff", 0.40)
+	if broken_ice.has(point):
+		var pool := Rect2(top_left + Vector2(6, 8), Vector2(CELL - 13, CELL - 17))
+		target.draw_rect(pool, Color("061b30", 0.62), true)
+		var ripple := 1.0 + sin(animation_clock * 3.5 + point.x) * 0.06
+		target.draw_arc(pool.get_center(), 9.0 * ripple, 0.2, TAU * 0.88, 20, Color("74d9f5", 0.46), 1.2, true)
+		return
+	var stress := int(ice_stress.get(point, 0))
+	if stress > 0:
+		var crack_color := Color("e5fbff", 0.42 + 0.16 * stress)
+		var center := top_left + Vector2(CELL * 0.51, CELL * 0.47)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-14, -18), center + Vector2(-4, -6), center + Vector2(-11, 0), center + Vector2(1, 7), center + Vector2(-2, 19)]), crack_color, 1.3 + float(stress) * 0.35, true)
+		target.draw_line(center + Vector2(-5, -5), center + Vector2(8, -11), crack_color, 1.0, true)
+		target.draw_line(center + Vector2(-9, 0), center + Vector2(5, 5), crack_color, 1.0, true)
 	# Brilho especular dinâmico que desliza sobre o gelo
 	var sweep := fposmod(animation_clock * 0.45 + point.x * 0.12 - point.y * 0.08, 1.8)
 	if sweep < 1.0:
@@ -3450,6 +3778,41 @@ func _draw_powerup(item: Dictionary) -> void:
 				var axis := Vector2.from_angle(float(i) * PI / 3.0) * 8.0
 				draw_line(center - axis, center + axis, bright, 1.7, true)
 			draw_circle(center, 2.2, tint)
+
+
+func _draw_crate(crate: Dictionary) -> void:
+	var center := _crate_visual_position(crate)
+	var t := clampf(float(crate.get("t", 1.0)), 0.0, 1.0)
+	var impact := 1.0 + sin((1.0 - t) * PI) * 0.08
+	var size := Vector2(31.0, 27.0) * impact
+	var floating: bool = crate.get("floating", false)
+	var bob := sin(animation_clock * 4.0 + center.x * 0.02) * 2.0 if floating else 0.0
+	center.y += bob
+	draw_colored_polygon(PackedVector2Array([
+		center + Vector2(-18, 9), center + Vector2(16, 8), center + Vector2(21, 13),
+		center + Vector2(16, 17), center + Vector2(-17, 17), center + Vector2(-22, 13)
+	]), Color("02070c", 0.52))
+	if floating:
+		draw_arc(center + Vector2(0, 14), 21.0 + sin(animation_clock * 4.0) * 1.5, 0.12, PI - 0.12, 24, Color("85f2df", 0.50), 1.4, true)
+	var left := center.x - size.x * 0.5
+	var right := center.x + size.x * 0.5
+	var top := center.y - size.y * 0.5
+	var bottom := center.y + size.y * 0.5
+	var depth := 6.0
+	var front := PackedVector2Array([Vector2(left, top + depth), Vector2(right, top + depth), Vector2(right, bottom), Vector2(left, bottom)])
+	var side := PackedVector2Array([Vector2(right, top + depth), Vector2(right + 3, top + depth + 2), Vector2(right + 3, bottom - 2), Vector2(right, bottom)])
+	var lid := PackedVector2Array([Vector2(left, top + depth), Vector2(left + 5, top), Vector2(right + 5, top), Vector2(right, top + depth)])
+	draw_colored_polygon(front, Color("79502d"))
+	draw_colored_polygon(side, Color("382d31"))
+	draw_colored_polygon(lid, Color("d3a45e"))
+	draw_polyline(PackedVector2Array([front[0], front[1], front[2], front[3], front[0]]), Color("f1c77d", 0.9), 1.6, true)
+	draw_polyline(PackedVector2Array([lid[0], lid[1], lid[2], lid[3], lid[0]]), Color("ffe2a4", 0.82), 1.2, true)
+	# Broad wood grain and two dark iron bands make the crate readable at tile scale.
+	draw_line(Vector2(left + 7, top + 14), Vector2(left + 10, bottom - 4), Color("3a2529", 0.76), 2.0, true)
+	draw_line(Vector2(right - 7, top + 14), Vector2(right - 10, bottom - 4), Color("3a2529", 0.76), 2.0, true)
+	draw_line(Vector2(left + 3, center.y + 3), Vector2(right - 2, center.y + 3), Color("e7ba70", 0.58), 1.4, true)
+	for nail in [Vector2(left + 4, top + 12), Vector2(right - 4, top + 12), Vector2(left + 4, bottom - 4), Vector2(right - 4, bottom - 4)]:
+		draw_circle(nail, 1.4, Color("f5d88e"))
 
 
 func _draw_coin(point: Vector2i) -> void:

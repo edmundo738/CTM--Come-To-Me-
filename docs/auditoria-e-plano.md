@@ -150,3 +150,9 @@ godot --headless --path . --script res://tools/shield_impact_benchmark.gd -- ite
 Para repetir a comparação, copiar o mesmo script para uma cópia da referência `8c0841b`, importar os recursos das duas versões e alternar execuções na mesma máquina. O cenário de 64 inimigos é um teste de esforço sintético, não a quantidade normal do gerador.
 
 **NOT TESTED:** a qualidade visual do arco e do impacto em janela real, som em dispositivo físico, GPU e equilíbrio por jogadores. Água/gelo funcionais e redesenhados, Sokoban, revisão do Peão, árvore e restantes sistemas continuam por implementar; este checkpoint não os apresenta como concluídos.
+
+## Atualização de implementação — 2026-11-03
+
+**FACT — implementado nesta data:** o primeiro recorte de ambiente já acrescenta caixas de madeira opcionais e sólidas, correntes marcadas no Jardim, gelo deslizante, placas frágeis que deixam de deslizar após três passagens e uma célula elétrica tardia apenas quando existe caminho alternativo. Congelar Tempo interrompe correntes e protege da eletricidade, mantendo as armadilhas ativas. Regras são aplicadas no turno e há eventos próprios para empurrão, fluxo, fissura e choque. A colocação opcional das caixas confirma que o portal continua alcançável. Os puzzles Sokoban com alvos continuam por implementar, pois precisam de solver e reset validados.
+
+**MEASURED:** `SELFTEST_PASS`, `PERFORMANCE_REGRESSION_PASS`, `CONTROLLER_TEST_PASS`, `TACTICAL_FEEDBACK_TEST_PASS` e `SWEEP_PASS` (piso 4, três seeds, bots; 225 ações, pico medido de 642 ms) no Godot oficial 4.7.2. A janela real mostrou o menu e a jornada guardada no andar 3; não iniciei outra campanha para preservar o progresso. **NOT TESTED:** leitura visual dos VFX dentro de gameplay, saída em colunas/auscultadores, equilíbrio e GPU; continuam verificações distintas conforme os critérios da secção 4.
