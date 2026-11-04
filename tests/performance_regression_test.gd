@@ -221,12 +221,15 @@ func _test_terrain_and_culling(game: DrawProbe) -> void:
 	_expect(not game._enemy_draw_visible(enemy, view), "distant enemy body is culled")
 	enemy.role = "warden"
 	enemy.alert = true
-	_expect(game._enemy_draw_visible(enemy, view), "offscreen alert Warden retains its targeting line and reticle")
+	_expect(not game._enemy_draw_visible(enemy, view), "offscreen alert Warden is culled now that its remote targeting graphic is removed")
+	enemy.from = view.get_center()
+	enemy.to = enemy.from
+	_expect(game._enemy_draw_visible(enemy, view), "alert Warden remains visible when its body is onscreen")
 	enemy.role = "sentry"
 	enemy.alert = true
 	enemy.from = Vector2(view.end.x + 110.0, view.get_center().y)
 	enemy.to = enemy.from
-	_expect(game._enemy_draw_visible(enemy, view), "sentry scan remains visible outside the viewport")
+	_expect(game._enemy_draw_visible(enemy, view), "culling margin preserves large silhouettes near the viewport")
 	enemy.from = game._cell_center(far)
 	enemy.to = view.get_center()
 	enemy.t = 0.9

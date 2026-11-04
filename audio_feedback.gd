@@ -23,7 +23,7 @@ var capture_duck := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "coin", "shield", "hit", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
+	for cue in ["step", "blocked", "crate_wood", "crate_metal", "coin", "shield", "hit", "heart_lost", "heart_recovered", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "break_glass", "break_metal", "break_ice", "enemy_crush", "shield_contact", "electric_contact", "electric_arc", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
 		var effect := _make_effect(cue)
 		effects[cue] = effect
 		haptic_envelopes[cue] = _analyze_haptic_envelope(effect)
@@ -100,7 +100,7 @@ func _process(delta: float) -> void:
 		threat_player.volume_db = lerpf(-48.0, -12.0, threat_level) - capture_duck * 15.0
 
 
-func play(cue: String) -> void:
+func play(cue: String, layer_gain_db: float = 0.0) -> void:
 	cue_played.emit(cue)
 	if not effects_enabled or not effects.has(cue):
 		return
@@ -112,7 +112,25 @@ func play(cue: String) -> void:
 		player.volume_db = -7.0
 	else:
 		player.volume_db = -5.0 if cue in ["coin", "switch", "portal"] else -10.0
+	# Optional supporting layers stay quieter than the primary cue.
+	player.volume_db += minf(0.0, layer_gain_db)
 	add_child(player)
+	player.finished.connect(player.queue_free)
+	player.play()
+
+
+# An ambient discharge is separate from tactical events and haptics. It uses
+# the same effects mute, a quiet spatial voice and the real arc position.
+func play_ambient_at(cue: String, world_position: Vector2) -> void:
+	if not effects_enabled or not effects.has(cue):
+		return
+	cue_played.emit(cue)
+	var player := AudioStreamPlayer2D.new()
+	player.stream = effects[cue]
+	player.volume_db = -23.0
+	player.max_distance = 300.0
+	add_child(player)
+	player.global_position = world_position
 	player.finished.connect(player.queue_free)
 	player.play()
 
@@ -133,6 +151,9 @@ func stop_all() -> void:
 	for child in get_children():
 		if child is AudioStreamPlayer:
 			child.stop()
+		elif child is AudioStreamPlayer2D:
+			child.stop()
+			child.queue_free()
 
 
 func reset_cinematic_mix() -> void:
@@ -163,6 +184,12 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"blocked":
 			duration = 0.16
 			notes = [{"at": 0.0, "length": 0.12, "from": 115.0, "to": 62.0, "gain": 0.28, "shape": "triangle"}, {"at": 0.0, "length": 0.07, "from": 800.0, "to": 260.0, "gain": 0.08, "shape": "noise"}]
+		"crate_wood":
+			duration = 0.18
+			notes = [{"at": 0.0, "length": 0.15, "from": 145.0, "to": 75.0, "gain": 0.19, "shape": "triangle"}, {"at": 0.015, "length": 0.09, "from": 610.0, "to": 220.0, "gain": 0.055, "shape": "noise"}]
+		"crate_metal":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.19, "from": 390.0, "to": 260.0, "gain": 0.11, "shape": "triangle"}, {"at": 0.015, "length": 0.16, "from": 1180.0, "to": 890.0, "gain": 0.055, "shape": "sine"}]
 		"coin":
 			duration = 0.28
 			notes = [{"at": 0.0, "length": 0.08, "from": 780.0, "to": 970.0, "gain": 0.22, "shape": "square"}, {"at": 0.07, "length": 0.16, "from": 1175.0, "to": 1640.0, "gain": 0.2, "shape": "sine"}, {"at": 0.12, "length": 0.1, "from": 2480.0, "to": 2100.0, "gain": 0.06, "shape": "sine"}]
@@ -172,6 +199,12 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"hit":
 			duration = 0.3
 			notes = [{"at": 0.0, "length": 0.22, "from": 160.0, "to": 48.0, "gain": 0.31, "shape": "square"}, {"at": 0.0, "length": 0.08, "from": 1000.0, "to": 180.0, "gain": 0.15, "shape": "noise"}]
+		"heart_lost":
+			duration = 0.38
+			notes = [{"at": 0.0, "length": 0.30, "from": 410.0, "to": 135.0, "gain": 0.23, "shape": "triangle"}, {"at": 0.08, "length": 0.22, "from": 270.0, "to": 110.0, "gain": 0.13, "shape": "sine"}]
+		"heart_recovered":
+			duration = 0.43
+			notes = [{"at": 0.0, "length": 0.16, "from": 440.0, "to": 670.0, "gain": 0.16, "shape": "sine"}, {"at": 0.14, "length": 0.24, "from": 670.0, "to": 1050.0, "gain": 0.15, "shape": "sine"}]
 		"explosion":
 			duration = 0.62
 			notes = [{"at": 0.0, "length": 0.44, "from": 230.0, "to": 35.0, "gain": 0.4, "shape": "noise"}, {"at": 0.0, "length": 0.54, "from": 92.0, "to": 24.0, "gain": 0.38, "shape": "saw"}, {"at": 0.03, "length": 0.22, "from": 1300.0, "to": 70.0, "gain": 0.18, "shape": "noise"}]
@@ -196,6 +229,29 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"break_wall":
 			duration = 0.52
 			notes = [{"at": 0.0, "length": 0.34, "from": 118.0, "to": 43.0, "gain": 0.33, "shape": "noise"}, {"at": 0.0, "length": 0.31, "from": 156.0, "to": 61.0, "gain": 0.28, "shape": "saw"}, {"at": 0.16, "length": 0.19, "from": 530.0, "to": 205.0, "gain": 0.09, "shape": "triangle"}]
+		"break_glass":
+			duration = 0.35
+			notes = [{"at": 0.0, "length": 0.08, "from": 2600.0, "to": 980.0, "gain": 0.12, "shape": "noise"}, {"at": 0.015, "length": 0.25, "from": 1880.0, "to": 1420.0, "gain": 0.11, "shape": "sine"}, {"at": 0.07, "length": 0.19, "from": 1320.0, "to": 970.0, "gain": 0.08, "shape": "triangle"}]
+		"break_ice":
+			duration = 0.36
+			notes = [{"at": 0.0, "length": 0.10, "from": 1500.0, "to": 450.0, "gain": 0.13, "shape": "noise"}, {"at": 0.02, "length": 0.25, "from": 1120.0, "to": 720.0, "gain": 0.10, "shape": "sine"}, {"at": 0.0, "length": 0.20, "from": 240.0, "to": 90.0, "gain": 0.12, "shape": "triangle"}]
+		"break_metal":
+			duration = 0.44
+			notes = [{"at": 0.0, "length": 0.18, "from": 220.0, "to": 90.0, "gain": 0.20, "shape": "triangle"}, {"at": 0.01, "length": 0.32, "from": 1020.0, "to": 720.0, "gain": 0.11, "shape": "sine"}, {"at": 0.03, "length": 0.20, "from": 1550.0, "to": 1110.0, "gain": 0.07, "shape": "sine"}]
+		"enemy_crush":
+			duration = 0.31
+			notes = [{"at": 0.0, "length": 0.21, "from": 190.0, "to": 54.0, "gain": 0.25, "shape": "triangle"}, {"at": 0.005, "length": 0.075, "from": 1150.0, "to": 250.0, "gain": 0.11, "shape": "noise"}]
+		"shield_contact":
+			duration = 0.26
+			notes = [{"at": 0.0, "length": 0.20, "from": 650.0, "to": 360.0, "gain": 0.16, "shape": "triangle"}, {"at": 0.015, "length": 0.16, "from": 1450.0, "to": 1070.0, "gain": 0.08, "shape": "sine"}]
+		"electric_contact":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.07, "from": 1900.0, "to": 420.0, "gain": 0.13, "shape": "noise"}, {"at": 0.07, "length": 0.10, "from": 1250.0, "to": 500.0, "gain": 0.10, "shape": "saw"}, {"at": 0.02, "length": 0.18, "from": 330.0, "to": 95.0, "gain": 0.10, "shape": "triangle"}]
+		"electric_arc":
+			# A short dry crackle plus a low electrical body; spatialised quietly
+			# and rate-limited by the presentation, never a loop or gameplay cue.
+			duration = 0.16
+			notes = [{"at": 0.0, "length": 0.055, "from": 2200.0, "to": 680.0, "gain": 0.18, "shape": "noise"}, {"at": 0.045, "length": 0.045, "from": 1500.0, "to": 440.0, "gain": 0.11, "shape": "noise"}, {"at": 0.0, "length": 0.14, "from": 170.0, "to": 125.0, "gain": 0.10, "shape": "saw"}]
 		"power_speed":
 			duration = 0.32
 			notes = [{"at": 0.0, "length": 0.24, "from": 350.0, "to": 1450.0, "gain": 0.18, "shape": "saw"}, {"at": 0.08, "length": 0.16, "from": 880.0, "to": 1760.0, "gain": 0.1, "shape": "sine"}]

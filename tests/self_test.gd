@@ -34,6 +34,7 @@ func _run_tests() -> void:
 	_expect(game.audio.effects.has("coin") and game.audio.effects.has("shield"), "action sound effects are synthesized")
 	_expect(game.audio.effects.has("inflate") and game.audio.effects.has("balloon_pop"), "capture has its own rising squeak and pop cues")
 	_expect(game.audio.effects.has("break_wall") and game.audio.effects.has("breaker"), "wall breaking and its power-up have separate sound cues")
+	_expect(game.audio.effects.has("crate_wood") and game.audio.effects.has("crate_metal") and game.audio.effects.crate_wood.data.size() > 0 and game.audio.effects.crate_metal.data.size() > 0, "wood and metal pushes have their own synthesized audio")
 	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
 		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "new action has synthesized audio: " + cue)
 	_expect(game.capture_overlay != null and game.capture_material != null, "capture has a camera-darkening overlay")
@@ -116,6 +117,8 @@ func _test_wfc() -> void:
 
 func _test_profile_roundtrip() -> void:
 	var path := "res://.godot/self_test_progress.cfg"
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.furthest_floor = 4
@@ -150,7 +153,8 @@ func _test_profile_roundtrip() -> void:
 	old_reader.free()
 	writer.free()
 	reader.free()
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 func _test_turn_loop(game: Node) -> void:
@@ -191,10 +195,11 @@ func _test_turn_loop(game: Node) -> void:
 	game.enemies[0].pos = Vector2i(3, 5)
 	var moves_before: int = game.moves_this_floor
 	game.player_position = Vector2i(0, 5)
+	game.shake_time = 0.0
 	game.try_move(-1, 0)
 	_expect(game.player_position == Vector2i(0, 5), "world edge blocks movement")
 	_expect(game.moves_this_floor == moves_before, "blocked move does not count as movement")
-	_expect(game.shake_time > 0.0 and game.audio.effects.has("blocked"), "invalid move triggers feedback")
+	_expect(game.shake_time == 0.0 and game.audio.effects.has("blocked") and game.last_notice != "", "invalid move gives feedback without camera shake")
 	game.enemies.clear()
 
 
@@ -509,6 +514,9 @@ func _test_shield_recoil(game: Node) -> void:
 	_expect(game.enemies[0].from == game._cell_center(Vector2i(5, 4)) and game.enemies[0].to == game._cell_center(Vector2i(7, 4)) and game.enemies[0].t == 0.0, "the pre-enemy-phase recoil retains its visual interpolation")
 	var board_turn: int = game.turn_number
 	game._process(0.035)
+	_expect(game.turn_number == board_turn and game.enemies[0].pos == Vector2i(7, 4) and is_zero_approx(float(game.enemies[0].t)), "shield recoil waits for the player's visual contact without changing the resolved cell")
+	game._process(0.105) # finish the committed approach and start contact
+	game._process(0.083) # consume the selective hold, then show the recoil arc
 	var recoil_visual: Vector2 = game._enemy_visual_position(game.enemies[0])
 	_expect(game.turn_number == board_turn and game.enemies[0].pos == Vector2i(7, 4) and game.enemies[0].t > 0.0, "animating recoil does not spend turns or change the resolved cell")
 	_expect(recoil_visual.y < game._cell_center(Vector2i(5, 4)).y and recoil_visual.x > game._cell_center(Vector2i(5, 4)).x, "shield recoil has a short visual arc while the board position stays fixed")
@@ -860,7 +868,14 @@ func _test_powerups(game: Node) -> void:
 
 func _test_puzzle_floor(game: Node) -> void:
 	game.active_seed = 77123
-	for number in [3, 8, 13]:
+	var sequence_floors: Array[int] = []
+	for number in range(3, 160):
+		if game.special_schedule.family_for(game.active_seed, number) == "sequence":
+			sequence_floors.append(number)
+		if sequence_floors.size() >= 3:
+			break
+	_expect(sequence_floors.size() == 3, "ordered sequences recur in the variable campaign schedule")
+	for number in sequence_floors:
 		game.generate_floor(number)
 		_expect(game.objective_type == "puzzle" and game.enemies.is_empty() and game.traps.is_empty(), "puzzle floors contain no enemies or traps")
 		_expect(game.switches.size() == 3 and not game.portal_open and game._estimate_route_length() >= 0, "puzzle has three ordered runes and a solvable route")

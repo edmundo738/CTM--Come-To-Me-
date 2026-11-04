@@ -18,6 +18,7 @@ const PATTERNS := {
 	"menu_confirm": {"priority": 1, "segments": [Vector3(0.42, 0.12, 0.075)]},
 	"step": {"priority": 1, "segments": [Vector3(0.56, 0.24, 0.085)]},
 	"wait": {"priority": 1, "segments": [Vector3(0.20, 0.38, 0.10)]},
+	"crate_push": {"priority": 2, "segments": [Vector3(0.20, 0.54, 0.09), Vector3(0.16, 0.28, 0.07)]},
 	"blocked": {"priority": 3, "segments": [Vector3(0.28, 0.90, 0.11), Vector3(0, 0, 0.055), Vector3(0.24, 0.48, 0.065)]},
 	"coin": {"priority": 2, "segments": [Vector3(0.55, 0.08, 0.055), Vector3(0, 0, 0.06), Vector3(0.74, 0.07, 0.065)]},
 	"shield": {"priority": 3, "segments": [Vector3(0.70, 0.28, 0.085), Vector3(0.48, 0.56, 0.12), Vector3(0.24, 0.20, 0.09)]},

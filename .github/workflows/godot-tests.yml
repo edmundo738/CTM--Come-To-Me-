@@ -30,19 +30,45 @@ jobs:
           executable="$RUNNER_TEMP/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64"
           chmod +x "$executable"
           echo "GODOT=$executable" >> "$GITHUB_ENV"
-      - name: Import assets
-        run: '"$GODOT" --headless --path . --editor --import'
-      - name: Gameplay regression tests
-        run: '"$GODOT" --headless --path . --script res://tests/self_test.gd'
-      - name: Gamepad and haptic routing tests
-        run: '"$GODOT" --headless --path . --script res://tests/controller_test.gd'
-      - name: Tactical feedback bus tests
-        run: '"$GODOT" --headless --path . --script res://tests/tactical_feedback_test.gd'
-      - name: Performance and rendering regressions
-        run: '"$GODOT" --headless --path . --script res://tests/performance_regression_test.gd'
-      - name: Generation and bot smoke test
-        run: |
-          "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=1-10 seeds=2 bots=1
-          "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=25-35 seeds=1 bots=1
-          "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=100-100 seeds=1 bots=0
-          "$GODOT" --headless --path . --script res://tests/sweep.gd -- floors=200-200 seeds=1 bots=0
+      - name: Import, gameplay, progression and generation tests
+        shell: bash
+        run: tools/test-godot.sh
+      - name: Install virtual display dependencies
+        run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri
+      - name: Real-renderer readability and skill UI tests
+        shell: bash
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          SKILL_RENDER_TEST_OUT: ${{ runner.temp }}/skill-ui-evidence
+          ENV_RENDER_TEST_OUT: ${{ runner.temp }}/environment-evidence
+          COMBAT_RENDER_TEST_OUT: ${{ runner.temp }}/combat-evidence
+          ELECTRIC_RENDER_TEST_OUT: ${{ runner.temp }}/electric-evidence
+        run: xvfb-run -a -s "-screen 0 1280x720x24" tools/test-godot.sh --graphics
+      - name: Save combat screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combat-evidence
+          path: ${{ runner.temp }}/combat-evidence/*.png
+          if-no-files-found: ignore
+      - name: Save environment screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-evidence
+          path: ${{ runner.temp }}/environment-evidence/*.png
+          if-no-files-found: ignore
+      - name: Save electric-light screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: electric-evidence
+          path: ${{ runner.temp }}/electric-evidence/*.png
+          if-no-files-found: ignore
+      - name: Save skill interface screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-ui-evidence
+          path: ${{ runner.temp }}/skill-ui-evidence/*.png
+          if-no-files-found: ignore
