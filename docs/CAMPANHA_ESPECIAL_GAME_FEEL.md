@@ -1,0 +1,18 @@
+# Campanha especial e game feel
+
+## Jogo e recuperação
+
+- A bola e as caixas resolvem imediatamente as posições e os turnos. A animação é uma apresentação limitada no tempo; um comando rápido não fica à espera dela. Madeira e metal têm sons diferentes e uma resposta de contacto; um empurrão bloqueado não gasta turno.
+- O andar 3 tem runas ordenadas. Depois, uma sequência derivada exclusivamente da seed propõe especiais a 3–9 andares de distância. Se um candidato não puder ser construído com segurança, é omitido e o intervalo efetivo pode ser maior. Duas famílias consecutivas não são iguais. Os andares de chefe (`% 5 == 0`), Guardião (`% 5 == 4`) e o marco opcional de corrente (`% 20 == 6`) não são substituídos. Não há teto artificial de andares.
+- A maioria dos andares, incluindo o híbrido, continua a usar WFC. As câmaras de caixas/portão/circuito são exceções construídas à mão, com reflexões por seed. São pequenas e deliberadamente repetem a estrutura; não são um gerador ilimitado de tabuleiros de Sokoban.
+- **Oficina de caixas**: uma ou duas caixas de madeira mantêm placas L. **Oficina do portão**: uma caixa de madeira e outra de metal mantêm placas L e M, abrindo o portão e o portal. **Ponte de energia**: uma caixa metálica liga duas casas de água; a placa E exige energia. **Híbrido**: três interruptores, perseguidores e pelo menos uma caixa; quando existe espaço seguro, a caixa pode interagir com corrente e uma placa opcional de escudo. **Interruptores**: três, em qualquer ordem, sem perseguidores. **Sequência**: três runas pela ordem apresentada. **Zona tranquila**: sem perseguidores ou armadilhas.
+- Caixas podem ficar presas em cantos. Usa **R** ou **Pausa → Reiniciar andar**: o andar e os recursos regressam ao checkpoint inicial; as recolhas e ações desse andar não são preservadas. Isso não apaga a campanha nem os pisos já concluídos. A solução inicial de cada câmara é procurada considerando caixa, material, portão e água eletrificada; se a pesquisa não puder verificá-la, o jogo recorre a um andar WFC em vez de oferecer a câmara.
+- Fontes de eletricidade são triângulos laranja. Apenas água explicitamente marcada e metal ligado à fonte conduzem; madeira e gelo não conduzem. Água eletrificada causa dano imediatamente segundo as regras existentes. Partículas, brilho e arcos ramificados são procedurais e não consomem o RNG do jogo. O perigo é assinalado de imediato; só o brilho decorativo faz transição. Filetes de água e partículas viajam na direção real, sem setas.
+
+## Seeds, perfis e compatibilidade
+
+A agenda usa um gerador aleatório separado e a seed da campanha; visitar os andares fora de ordem não altera a sequência. Os checkpoints existentes, recursos, habilidades e slots continuam a usar o armazenamento anterior. A geração de andares alterou-se: ao revisitar ou continuar um andar de uma versão anterior, o seu mapa/objetivo pode ser diferente. Nesta versão a mesma seed e andar são reproduzíveis; não se promete compatibilidade binária de layouts entre versões.
+
+## Verificação
+
+`tools/test-godot.sh` inclui testes de movimento, ambiente, progressão, geração, combate e `tests/special_content_test.gd`. Esta última verifica sequências longas, famílias, circuitos, soluções e ações reais do jogo, reinício e interação de perseguidores com caixa. Consulte o [relatório de combate](RELATORIO_COMBATE_GAME_FEEL_2026-11-04.md) para os resultados e limites atuais. Os testes gráficos exigem um backend de renderização real. Testes headless não comprovam aparência, legibilidade, som audível, sensação de comando, desempenho de GPU nem funcionamento em Windows; são necessárias sessões reais nesses ambientes.

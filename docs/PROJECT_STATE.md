@@ -1,5 +1,7 @@
 # Estado do Projeto
 
+> **Histórico da branch base:** este checkpoint descreve uma fase anterior e não é a autoridade para o estado integrado. Consulta [CHECKPOINT_GAME_FEEL.md](CHECKPOINT_GAME_FEEL.md) e o README para regras, testes e próximos passos atuais.
+
 ## PROJECT_STATE
 
 Jogo tático 2D em Godot 4.7.2. A campanha, WFC, salas, chefes, poderes, resultados, checkpoint e personagem Lia em forma de bola já existem. Esta fatia acrescenta objetos empurráveis e regras de água/gelo dentro do tabuleiro por turnos.

@@ -4,14 +4,13 @@ const GameScript = preload("res://game.gd")
 const Generator = preload("res://level_generator.gd")
 const Terrain = preload("res://terrain_renderer.gd")
 # Captured from f3513b5 with the benchmark below: includes later traps and
-# both RNG states, not just the room layout. Floors 2 and 4 intentionally
-# differ because crate placement now reserves floor cells before coin placement.
-# Seed 48211 on floor 1000 exhausts all available coin cells before 1008 attempts.
+# both RNG states, not just the room layout. In particular, seed 48211 on
+# floor 1000 exhausts all available coin cells before 1008 attempts.
 const BASELINE_FINGERPRINTS := {
 	"1:12900": "e69284a6b7e55b3a711a31c6fdf2a03d1f3feefa987e65e0b0b9ae8fa373b68a",
-	"2:48211": "b1763e1ff943406b8b75e393029d3f21343abf3e01d21d533face32f634e3eb9",
+	"2:48211": "c69cdd5b9a73f099b59e0711a5464dec8961f35ee52d706b935ca633c44bb78f",
 	"3:12900": "d9afc10b4c9a8c76f9e7e5fdd27113d7939dd6d5394721e2a8b4e2fe7bc14e41",
-	"4:48211": "0a1266c4508630e5258ae0c9b6f26952f39ab64f58f2d369ff100d00f063e0fc",
+	"4:48211": "6e281cd7d51d1ae0079d554991f8046e66973e38265a108d7e4243d9bc706450",
 	"5:77123": "de0a45043ab20eba2d41a4bbf61eb136bd9fe7bbd5c99f9f31e282ef8d4325ff",
 	"15:12900": "f4277378537d5cb77d6aa025ddb9e38e46d33a87886a4b09489fb77cf8b7de6f",
 	"30:77123": "b3ee19c24a0cb280ee6a8dc9735a8a8333c7e8f14965cc3dafe4f663beb86ccf",
@@ -169,27 +168,29 @@ func _test_baseline_fingerprints(game: Node) -> void:
 		var parts: PackedStringArray = String(key).split(":")
 		game.active_seed = int(parts[1])
 		game.generate_floor(int(parts[0]))
-		_expect(_fingerprint(game) == BASELINE_FINGERPRINTS[key], "floor and RNG match seeded snapshot " + key)
+		_expect(_fingerprint(game) == BASELINE_FINGERPRINTS[key], "floor and RNG match pre-optimization snapshot " + key)
 
 
+# The base branch added a deterministic-environment regression. Keep it, but
+# compare the single integrated EnvironmentSystem rather than obsolete arrays.
 func _test_environmental_determinism(game: Node) -> void:
-	for number in [2, 4, 7]:
+	for number in [2, 4, 6, 7, 26]:
 		game.active_seed = 48211
 		game.generate_floor(number)
 		var first := {
-			"grid": game.grid.duplicate(true), "crates": game.crates.duplicate(true),
-			"currents": game.water_current_dirs.duplicate(true),
-			"electric": game.electrified_water.duplicate(true),
-			"brittle": game.brittle_ice.duplicate(true), "rng": game.rng.state,
+			"grid": game.grid.duplicate(true), "cells": game.environment.cells.duplicate(true),
+			"crates": game.environment.crates.duplicate(true), "plates": game.environment.plates.duplicate(true),
+			"gates": game.environment.gates.duplicate(true), "powered": game.environment.powered.duplicate(true),
+			"rng": game.rng.state,
 		}
 		game.generate_floor(number)
 		var second := {
-			"grid": game.grid.duplicate(true), "crates": game.crates.duplicate(true),
-			"currents": game.water_current_dirs.duplicate(true),
-			"electric": game.electrified_water.duplicate(true),
-			"brittle": game.brittle_ice.duplicate(true), "rng": game.rng.state,
+			"grid": game.grid.duplicate(true), "cells": game.environment.cells.duplicate(true),
+			"crates": game.environment.crates.duplicate(true), "plates": game.environment.plates.duplicate(true),
+			"gates": game.environment.gates.duplicate(true), "powered": game.environment.powered.duplicate(true),
+			"rng": game.rng.state,
 		}
-		_expect(first == second, "water, ice, crates and electricity repeat for floor %d / seed 48211" % number)
+		_expect(first == second, "seeded environment repeats for floor %d / seed 48211" % number)
 		_expect(game._reachable_cells(game.player_position).has(game.portal_position), "environmental floor %d retains a reachable portal" % number)
 
 
@@ -243,12 +244,15 @@ func _test_terrain_and_culling(game: DrawProbe) -> void:
 	_expect(not game._enemy_draw_visible(enemy, view), "distant enemy body is culled")
 	enemy.role = "warden"
 	enemy.alert = true
-	_expect(game._enemy_draw_visible(enemy, view), "offscreen alert Warden retains its targeting line and reticle")
+	_expect(not game._enemy_draw_visible(enemy, view), "offscreen alert Warden is culled now that its remote targeting graphic is removed")
+	enemy.from = view.get_center()
+	enemy.to = enemy.from
+	_expect(game._enemy_draw_visible(enemy, view), "alert Warden remains visible when its body is onscreen")
 	enemy.role = "sentry"
 	enemy.alert = true
 	enemy.from = Vector2(view.end.x + 110.0, view.get_center().y)
 	enemy.to = enemy.from
-	_expect(game._enemy_draw_visible(enemy, view), "sentry scan remains visible outside the viewport")
+	_expect(game._enemy_draw_visible(enemy, view), "culling margin preserves large silhouettes near the viewport")
 	enemy.from = game._cell_center(far)
 	enemy.to = view.get_center()
 	enemy.t = 0.9

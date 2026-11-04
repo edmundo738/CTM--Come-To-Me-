@@ -341,7 +341,11 @@ func _test_game_integration(fake: FakeInput) -> void:
 	_expect(game.dev_noclip and game.hud.focus_action == "dev_noclip", "developer modal is navigable and activated with a gamepad")
 	_tap(game.controller, 2, JOY_BUTTON_B)
 	_expect(not game.dev_menu_open, "cancel closes the developer modal")
-
+	# Leaving dev restores the campaign before the journal is populated. Do not
+	# manufacture unlocked floors inside the isolated dev state and expect them
+	# to survive the transition back to the real campaign.
+	game.handle_hud_action("menu")
+	_expect(not game.dev_sandbox_active, "returning to the menu exits the isolated dev sandbox")
 	game.game_state = "level_select"
 	game.furthest_floor = 2
 	_prime_menu(game, [["floor:1", Rect2(0, 0, 100, 100)], ["floor:2", Rect2(110, 0, 100, 100)], ["menu", Rect2(0, 120, 100, 30)]], "floor:1")
@@ -372,8 +376,14 @@ func _test_game_integration(fake: FakeInput) -> void:
 	game.queue_free()
 
 
+func _cleanup_profile_test(path: String) -> void:
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak", ".campaign-2.cfg", ".campaign-2.cfg.bak", ".campaign-3.cfg", ".campaign-3.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
+
+
 func _test_profile_settings() -> void:
 	var path := "user://controller_test_profile.cfg"
+	_cleanup_profile_test(path)
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.controller_vibration_enabled = false
@@ -396,6 +406,8 @@ func _test_profile_settings() -> void:
 	_expect(bool(changed.get_value("controller", "vibration", false)) and is_equal_approx(float(changed.get_value("controller", "vibration_intensity", -1.0)), 0.6) and int(changed.get_value("progress", "furthest_floor", 0)) == 8, "changing vibration saves preferences without losing progress")
 	live.audio.stop_all()
 	live.queue_free()
+	# Exercise legacy migration independently from the slot created above.
+	_cleanup_profile_test(path)
 	var old := ConfigFile.new()
 	old.set_value("progress", "furthest_floor", 3)
 	old.save(path)
@@ -453,7 +465,7 @@ func _test_profile_settings() -> void:
 	chosen.free()
 	legacy_reduced.free()
 	legacy_off.free()
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	_cleanup_profile_test(path)
 
 
 func _test_rendered_menus(fake: FakeInput) -> void:
@@ -469,7 +481,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	game.furthest_floor = 2
 	game.has_resume = true
 	var menus := [
-		{"state": "title", "expected": ["continue", "new_run", "levels", "music", "controller_settings"]},
+		{"state": "title", "expected": ["continue", "new_run", "levels", "experimental", "music", "controller_settings"]},
 		{"state": "level_select", "expected": ["floor:1", "floor:2", "menu"]},
 		{"state": "paused", "expected": ["resume", "restart_floor", "levels", "controller_settings", "menu"]},
 		{"state": "controller_settings", "expected": ["controller_device", "controller_vibration", "controller_intensity", "controller_test", "controller_calibrate", "controller_reset", "controller_back"]},
@@ -500,6 +512,9 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	await process_frame
 	await process_frame
 	for _step in 3:
+		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_expect(game.hud.focus_action == "experimental", "experimental chambers are reachable with the D-pad")
+	for _step in 2:
 		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_expect(game.hud.focus_action == "controller_settings", "real title buttons navigate to controller settings")
 	_dispatch_tap(2, JOY_BUTTON_A)
@@ -591,6 +606,21 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	await process_frame
 	_dispatch_tap(2, JOY_BUTTON_B)
 	_expect(game.game_state == "title", "cancel returns from the rendered settings screen to title")
+	await process_frame
+	await process_frame
+	for _step in 3:
+		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_dispatch_tap(2, JOY_BUTTON_A)
+	_expect(game.game_state == "playing" and game.lab_active and game.lab_index == 0, "controller confirm opens the environmental chamber")
+	_dispatch_tap(2, JOY_BUTTON_DPAD_RIGHT)
+	_expect(game.turn_number == 1 and game.environment.crates[0].pos == Vector2i(5, 4), "controller movement performs the real environmental push")
+	_dispatch_tap(2, JOY_BUTTON_B)
+	_expect(game.game_state == "paused", "controller pauses the chamber")
+	await process_frame
+	await process_frame
+	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_dispatch_tap(2, JOY_BUTTON_A)
+	_expect(game.game_state == "playing" and game.turn_number == 0 and game.environment.crates[0].pos == Vector2i(3, 4), "controller can restart the chamber through pause")
 	game.audio.stop_all()
 	game.queue_free()
 	await process_frame

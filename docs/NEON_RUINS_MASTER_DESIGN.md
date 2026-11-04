@@ -1,6 +1,6 @@
 # Neon Ruins — Master Design
 
-**Estado:** direção viva do projeto; distingue o que está implementado do que continua planeado.
+**Estado:** direção de design preservada da branch base; as regras atuais e evidências estão no [README](../README.md) e no [checkpoint vivo](CHECKPOINT_GAME_FEEL.md). As propostas abaixo não substituem testes com jogadores.
 
 ## Identidade
 
@@ -25,11 +25,11 @@ As animações e o som apresentam resultados que a lógica já decidiu. Uma anim
 
 ## Interações ambientais implementadas
 
-- **Jardim de Vidro:** setas marcam as correntes. Ao terminar uma ação numa célula corrente, a bola pode ser levada uma casa se o destino estiver livre. Uma caixa de madeira empurrada para a água flutua e percorre uma célula por turno, sem atravessar atores ou sair da água.
-- **Catedral de Gelo:** o movimento sobre uma faixa de gelo desliza na direção escolhida até ao primeiro piso seguro ou a um obstáculo. Algumas placas frágeis ganham fissuras e deixam de deslizar após três passagens.
-- **Água elétrica:** surge em andares posteriores do Jardim apenas numa célula marcada para a qual a geração encontra uma rota alternativa. O contacto usa a resolução de dano já existente e consome no máximo um recurso por ação.
-- **Congelar Tempo:** mantém a regra existente de imobilizar inimigos e também suspende correntes e água elétrica durante o tempo restante. Armadilhas continuam ativas.
-- **Caixas:** são objetos opcionais, sólidos para o jogador e os inimigos. A posição inicial preserva uma rota para o portal; caixa não pode ocupar portal nem interruptor. Ainda não são objetivos de Sokoban.
+- **Correntes:** filetes animados indicam o fluxo, sem setas. Ao terminar uma ação numa célula corrente, a bola pode ser levada uma casa se o destino estiver livre. Uma caixa de madeira empurrada para a água flutua e percorre uma célula por turno, sem atravessar atores; a caixa pode assentar na casa livre seguinte.
+- **Catedral de Gelo:** o movimento sobre gelo explicitamente marcado desliza no máximo uma casa adicional na direção escolhida, se livre. Algumas placas frágeis ganham fissuras e deixam de deslizar após três passagens.
+- **Água elétrica:** propaga-se pela água explicitamente marcada e pelo metal; câmaras de circuito têm rotas verificadas. O contacto usa a resolução de dano já existente e consome no máximo um recurso por ação.
+- **Congelar Tempo:** mantém a regra existente de imobilizar inimigos e também suspende correntes e protege o jogador da água elétrica durante o tempo restante; o circuito continua ativo para os inimigos. Armadilhas continuam ativas.
+- **Caixas:** são sólidos para jogador e inimigos. Nas câmaras especiais, os objetivos de Sokoban usam placas mantidas, solução inicial verificada, desfazer e reinício; os desafios ambientais em mapas normais são opcionais.
 
 O estado ambiental é calculado durante o turno. Os indicadores de corrente, carga elétrica, gelo rachado e caixa flutuante são visuais; não são usados para decidir movimento ou dano.
 
@@ -37,9 +37,9 @@ O estado ambiental é calculado durante o turno. Os indicadores de corrente, car
 
 - Escudos absorvem um impacto ou podem ser gastos num salto de duas casas; o contra-ataque dos chefes mantém a sua regra própria.
 - Cada inimigo deve ter comportamento previsível, uma ameaça comunicada e oportunidade justa de resposta. Chefes não precisam de ser derrotados para escapar pelo portal.
-- Moedas são a moeda atual do jogo, estrelas avaliam o desempenho por andar e os desafios concedem uma recompensa única. Uma loja, cosméticos e uma árvore de habilidades ainda precisam de sistemas de inventário e saves completos.
+- Moedas e estrelas acompanham o desempenho, desafios dão recompensa única e uma árvore de 36 habilidades usa pontos próprios. Loja e cosméticos jogáveis continuam por implementar.
 - Corações adicionais são uma habilidade de sobrevivência, não vidas gratuitas. Não adicionar pickups ou ícones de coração isolados: ligar o sistema a desbloqueio/ativação de habilidades, persistência por campanha e regras de contacto antes de expô-lo no HUD.
-- A campanha atual tem checkpoint e diário de andares. Vários saves independentes e preservação completa de recursos ao revisitar um andar permanecem trabalho futuro.
+- A campanha tem checkpoint e diário de andares; existem três campanhas independentes, com recursos e habilidades preservados nos revisitos.
 
 ## Game feel, imagem e som
 
@@ -51,11 +51,9 @@ O estado ambiental é calculado durante o turno. Os indicadores de corrente, car
 
 ## Próximas fatias
 
-1. Inspecionar visualmente as novas superfícies e ajustar contraste, movimento das caixas e feedback em janela real.
-2. Criar uma sala de caixas com objetivos somente depois de validar soluções por busca de estados e garantir reset sem bloqueio.
-3. Desenhar estados de ataque/recuperação distintos para chefes e testar combate por turno.
-4. Fazer progressão de habilidades, corações e inventário por campanhas com migração e testes de saves.
-5. Evoluir loja, cosméticos, variação de salas, níveis laterais especiais, VFX e trilha com testes de uso, não apenas conteúdo em lista.
+1. Avaliar o estado integrado em jogo, incluindo leitura das superfícies, colisões, desempenho e conforto em hardware real.
+2. Rever equilíbrio das habilidades, chefes e câmaras com jogadores.
+3. Evoluir loja, cosméticos, variação de salas e trilha com testes de uso, não apenas conteúdo em lista.
 
 ## Verificação
 

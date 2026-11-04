@@ -1,3 +1,17 @@
+## Entrega e pull requests
+
+- No fim de cada tarefa, fornece um link direto para descarregar o trabalho atualizado; para alterações ao projeto, inclui também alterações locais ainda não enviadas, por exemplo num ZIP sem caches nem `.git`.
+- Apresenta o download antes de abrir ou fazer merge de um pull request. Como o utilizador pode pedir um PR por engano, se o download dessa tarefa ainda não tiver sido entregue, envia-o primeiro e pede confirmação antes de avançar com o PR.
+- Nunca faças commit sem autorização explícita do proprietário. Apresenta um plano antes de alterar código e obtém aprovação prévia para alterações estruturais ou destrutivas.
+
+## Game Feel e comunicação com o jogador
+
+- Consulta [Game Feel & Gameplay — Guia de referência](docs/GAME_FEEL_GAMEPLAY_GUIDE.md) ao analisar ou alterar experiência, apresentação e mecânicas. O guia é referência e não autoriza implementar tudo de uma vez.
+- Antes de alterar gameplay ou apresentação, lê [o checkpoint vivo](docs/CHECKPOINT_GAME_FEEL.md), confirma-o contra o código e atualiza estado, decisões, evidências e próximo passo depois do trabalho. Distingue factos, medições, observações, hipóteses e o que não foi testado.
+- Não culpes o jogador por falhas de comunicação: investiga primeiro a mecânica, os comportamentos e as pistas do mundo, evitando instruções ou efeitos redundantes. Mantém a informação essencial acessível.
+- Não revelar antecipadamente trajetórias, caminhos ou próximas células dos inimigos — sobretudo dos básicos — através de linhas, setas, células destacadas ou previsões. Comunica ameaça pela própria entidade, distância, orientação, postura, comportamento e consequências; reserva indicadores explícitos a exceções comprovadamente necessárias para compreensão ou justiça. Os dados internos de planeamento continuam a pertencer à lógica.
+- Para movimento, a direção escolhida é **Expressive + Hybrid**: a lógica por turnos e grelha decide os resultados; a apresentação comunica-os sem alterar ou atrasar as regras. Segue o plano aprovado para cada tarefa, sem presumir que esta direção autoriza alterações de código.
+
 <!-- ai-memory:start -->
 ## Long-term memory (ai-memory)
 
