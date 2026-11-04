@@ -16,7 +16,7 @@
 1. **História:** a primeira visita ao andar 5 apresenta o Capturador e Lia, uma esfera da mesma linguagem visual do jogador, com paleta própria. É possível avançar e não se processam ações de jogo durante a cena. A flag é opcional e independente por campanha. O andar 5 não soma um resgate; o 100 soma uma vez, mesmo em revisita.
 2. **Sandbox dev:** operações de desenvolvimento isolam gravações, exibem um aviso persistente e restauram a campanha ao sair. Um recorde legítimo pendente é guardado antes da entrada; se o save falhar, a entrada é recusada. A arena limpa objetivos e contadores herdados. Continuar regressa ao checkpoint guardado, não ao mapa experimental.
 3. **Freeze e gelo:** congelar suspende a corrente do jogador e da madeira, incluindo a ação de recolha, e protege o jogador da eletricidade; armadilhas e circuito continuam ativos. Gelo frágil explicitamente marcado parte à terceira ação sobre a célula, sem abrir um buraco; depois não desliza nem abranda inimigos. A colocação opcional mantém conectividade e determinismo.
-4. **Desfazer:** `Z`, botão no HUD e cancel do comando quando há botão de pausa separado revertem uma ação em Sokoban. São guardados no máximo 128 snapshots: tabuleiro, ambiente, caixas, recursos, pickups, contadores, portal e RNG. O histórico é descartado ao sair ou concluir o andar.
+4. **Desfazer:** `Z`, botão no HUD e cancel do comando quando há botão de pausa separado revertem uma ação em Sokoban. São guardados no máximo 128 snapshots: tabuleiro, ambiente, caixas, recursos, pickups, contadores, portal e RNG. Ao concluir o andar deixa de ser possível desfazer; o histórico é descartado ao gerar o andar seguinte ou outra arena.
 
 ## Verificação desta integração
 
