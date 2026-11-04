@@ -43,6 +43,9 @@ const FLOOR_NAMES := ["AS RUINAS DE NEON", "JARDIM DE VIDRO", "FORNALHA VIOLETA"
 const LEVELS_PER_PAGE := 5
 const CAPTURE_POP_TIME := 0.92
 const CAPTURE_END_TIME := 1.95
+const CAPTOR_FLYOVER_SECONDS := 5.5
+const DIVINE_CAPTOR_TEXTURE = preload("res://assets/story/divine_captor.svg")
+const CAPTIVE_CAGE_TEXTURE = preload("res://assets/story/captive_cage.svg")
 const Generator = preload("res://level_generator.gd")
 const HudScript = preload("res://hud.gd")
 const AudioScript = preload("res://audio_feedback.gd")
@@ -72,6 +75,10 @@ var special_family := ""
 var special_hint := ""
 var special_spec: Dictionary = {}
 var special_route_cache: Dictionary = {}
+# Bounded undo applies only to actual Sokoban chambers, not campaign combat.
+var sokoban_history: Array[Dictionary] = []
+var sokoban_pushes := 0
+const SOKOBAN_HISTORY_LIMIT := 128
 # At most the handful of reflected, hand-authored templates in this version.
 var special_template_plans: Dictionary = {}
 var lab_active := false
@@ -128,6 +135,7 @@ var rooms: Array[Dictionary] = []
 var room_graph_edges: Array[Dictionary] = []
 var nav_chevrons: Array[Dictionary] = []
 var player_sphere_texture: ImageTexture = null
+var lia_sphere_texture: ImageTexture = null
 var radial_light_texture: ImageTexture = null
 var electric_presentation: Node2D
 var particles: Array[Dictionary] = []
@@ -201,6 +209,8 @@ var level_select_source := "title"
 # Dictionary identity is stable within a floor without changing enemy data or RNG.
 var unresolved_contacts: Array[Dictionary] = []
 var dev_menu_open: bool = false
+var dev_sandbox_active := false
+var dev_profile_snapshot: Dictionary = {}
 var dev_god_mode: bool = false
 var dev_noclip: bool = false
 var controller_vibration_enabled := true
@@ -215,6 +225,9 @@ var profile_path := "user://come_to_me_profile.cfg"
 var flash_time := 0.0
 var flash_color := Color.WHITE
 var game_state := "ready"
+# Persisted separately per campaign. The visual scene does not advance turns.
+var captor_intro_seen := false
+var captor_flyover_time := 0.0
 var damage_this_turn := false
 var objective_type := "escape"
 var challenge_kind := "no_jump"
@@ -310,6 +323,7 @@ func _ready() -> void:
 
 
 func new_game(seed_value: int = -1) -> void:
+	_leave_dev_sandbox()
 	if persistence_enabled:
 		campaign_storage.profile_path = profile_path
 		if profile_blocked or campaign_storage.read_slot(active_slot).status not in ["empty", "ok"]:
@@ -329,6 +343,8 @@ func new_game(seed_value: int = -1) -> void:
 	best_score = 0
 	best_score_dirty = false
 	rescues_completed = 0
+	captor_intro_seen = false
+	captor_flyover_time = 0.0
 	furthest_floor = 1
 	floor_stars.clear()
 	skills.load_state({})
@@ -356,6 +372,7 @@ func new_game(seed_value: int = -1) -> void:
 
 
 func continue_game() -> void:
+	_leave_dev_sandbox()
 	if lab_active:
 		_load_lab_chamber(lab_index)
 		return
@@ -373,9 +390,11 @@ func continue_game() -> void:
 	_reset_capture_state()
 	generate_floor(resume_floor)
 	game_state = "playing"
+	_begin_captor_flyover_if_needed()
 
 
 func start_level(number: int) -> void:
+	_leave_dev_sandbox()
 	if number < 1 or number > furthest_floor:
 		return
 	if not has_resume and number == 1 and furthest_floor == 1 and floor_stars.is_empty():
@@ -397,9 +416,31 @@ func start_level(number: int) -> void:
 	generate_floor(number)
 	game_state = "playing"
 	_save_resume(number, total_coins, charges, breach_charges, floor_history, facing)
+	_begin_captor_flyover_if_needed()
+
+
+func _begin_captor_flyover_if_needed() -> void:
+	captor_flyover_time = 0.0
+	if floor_number != 5 or captor_intro_seen or lab_active:
+		return
+	captor_intro_seen = true
+	captor_flyover_time = CAPTOR_FLYOVER_SECONDS
+	last_notice = "LIA NA JAULA — O CAPTURADOR ATRAVESSA AS RUINAS!"
+	notice_timer = CAPTOR_FLYOVER_SECONDS
+	if audio != null:
+		audio.play("captor_reveal")
+	_save_profile()
+
+
+func _finish_captor_flyover() -> void:
+	captor_flyover_time = 0.0
+	last_notice = "ENCONTRA LIA NO ANDAR 100"
+	notice_timer = 2.0
+	queue_redraw()
 
 
 func _reset_capture_state() -> void:
+	captor_flyover_time = 0.0
 	capture_time = 0.0
 	capture_darkness = 0.0
 	capture_flash = 0.0
@@ -474,6 +515,10 @@ func restart_floor() -> void:
 
 
 func handle_hud_action(action: String) -> void:
+	if captor_flyover_time > 0.0 and game_state == "playing":
+		if action == "skip_captor_flyover":
+			_finish_captor_flyover()
+		return
 	if action == "experimental":
 		start_environment_lab()
 	elif action == "new_run":
@@ -541,6 +586,7 @@ func handle_hud_action(action: String) -> void:
 		level_page_start = mini(maxi(1, furthest_floor - LEVELS_PER_PAGE + 1), level_page_start + LEVELS_PER_PAGE)
 		hud.focus_action = "floor:%d" % level_page_start
 	elif action == "menu":
+		_leave_dev_sandbox()
 		lab_active = false
 		environment.reset()
 		capture_darkness = 0.0
@@ -557,6 +603,8 @@ func handle_hud_action(action: String) -> void:
 		restart_floor()
 	elif action == "wait":
 		wait_turn()
+	elif action == "undo_sokoban":
+		undo_sokoban_move()
 	elif action == "blink":
 		try_blink()
 	elif action == "music":
@@ -754,6 +802,55 @@ func _apply_skill_toggle(id: String) -> void:
 	_save_skill_choice()
 
 
+func _begin_dev_sandbox() -> bool:
+	if dev_sandbox_active:
+		return true
+	# Preserve a legitimate unsaved record before isolating dev changes. If
+	# saving fails, refuse the experiment rather than risk losing that record.
+	if best_score_dirty and not _save_profile():
+		last_notice = "TESTE DEV CANCELADO: NAO FOI POSSIVEL GUARDAR O RECORDE"
+		notice_timer = 3.0
+		return false
+	dev_profile_snapshot = {
+		"campaign": _campaign_payload().duplicate(true),
+		"best_score_dirty": best_score_dirty,
+		"floor_number": floor_number,
+		"active_seed": active_seed,
+		"coins": total_coins,
+		"charges": charges,
+		"breach_charges": breach_charges,
+		"powers": _capture_power_state(),
+		"hearts": hearts_current,
+		"history": floor_history.duplicate(),
+		"facing": facing,
+		"god": dev_god_mode,
+		"noclip": dev_noclip,
+	}
+	dev_sandbox_active = true
+	return true
+
+
+func _leave_dev_sandbox() -> void:
+	if not dev_sandbox_active:
+		return
+	var saved := dev_profile_snapshot
+	_apply_campaign_payload(saved.campaign)
+	best_score_dirty = bool(saved.best_score_dirty)
+	floor_number = int(saved.floor_number)
+	active_seed = int(saved.active_seed)
+	total_coins = int(saved.coins)
+	charges = int(saved.charges)
+	breach_charges = int(saved.breach_charges)
+	_restore_power_state(saved.powers)
+	hearts_current = int(saved.hearts)
+	floor_history.assign(saved.history)
+	facing = saved.facing
+	dev_god_mode = bool(saved.god)
+	dev_noclip = bool(saved.noclip)
+	dev_sandbox_active = false
+	dev_profile_snapshot = {}
+
+
 func dev_toggle_menu() -> void:
 	dev_menu_open = not dev_menu_open
 	last_notice = "MENU DEV: %s [F1]" % ("ABERTO" if dev_menu_open else "FECHADO")
@@ -762,6 +859,8 @@ func dev_toggle_menu() -> void:
 
 
 func dev_toggle_god_mode() -> void:
+	if not _begin_dev_sandbox():
+		return
 	dev_god_mode = not dev_god_mode
 	last_notice = "MODO DEUS: %s" % ("ATIVADO (IMORTAL)" if dev_god_mode else "DESATIVADO")
 	notice_timer = 2.0
@@ -769,6 +868,8 @@ func dev_toggle_god_mode() -> void:
 
 
 func dev_toggle_noclip() -> void:
+	if not _begin_dev_sandbox():
+		return
 	dev_noclip = not dev_noclip
 	last_notice = "NO-CLIP: %s" % ("ATIVADO (ATRAVESSA PAREDES)" if dev_noclip else "DESATIVADO")
 	notice_timer = 2.0
@@ -776,6 +877,8 @@ func dev_toggle_noclip() -> void:
 
 
 func dev_jump_floor(target_floor: int) -> void:
+	if not _begin_dev_sandbox():
+		return
 	target_floor = clampi(target_floor, 1, 200)
 	floor_number = target_floor
 	generate_floor(target_floor)
@@ -787,6 +890,8 @@ func dev_jump_floor(target_floor: int) -> void:
 
 
 func dev_spawn_enemy(role: String) -> void:
+	if not _begin_dev_sandbox():
+		return
 	var spawn_pos: Vector2i = player_position + facing
 	if not _is_floor(spawn_pos) or _enemy_at(spawn_pos):
 		spawn_pos = Vector2i(-1, -1)
@@ -815,6 +920,8 @@ func dev_spawn_enemy(role: String) -> void:
 
 
 func dev_clear_enemies() -> void:
+	if not _begin_dev_sandbox():
+		return
 	enemies.clear()
 	last_notice = "INIMIGOS ELIMINADOS"
 	notice_timer = 2.0
@@ -822,6 +929,8 @@ func dev_clear_enemies() -> void:
 
 
 func dev_give_resources() -> void:
+	if not _begin_dev_sandbox():
+		return
 	total_coins += 10
 	charges = maxi(charges, mini(charges + 1, shield_capacity()))
 	breach_charges = maxi(breach_charges, mini(breach_charges + 1, 3))
@@ -833,6 +942,8 @@ func dev_give_resources() -> void:
 
 
 func dev_open_portal() -> void:
+	if not _begin_dev_sandbox():
+		return
 	portal_open = true
 	last_notice = "PORTAL DESTRANCADO"
 	notice_timer = 2.5
@@ -841,6 +952,10 @@ func dev_open_portal() -> void:
 
 
 func dev_load_sandbox_arena() -> void:
+	if not _begin_dev_sandbox():
+		return
+	sokoban_history.clear()
+	sokoban_pushes = 0
 	special_family = ""
 	special_hint = ""
 	special_spec.clear()
@@ -862,6 +977,20 @@ func dev_load_sandbox_arena() -> void:
 	_reset_player_visual(_cell_center(player_position))
 	portal_position = Vector2i(15, 7)
 	portal_open = true
+	objective_type = "escape"
+	challenge_kind = "no_hit"
+	challenge_par = 0
+	challenge_complete = false
+	environment_bonus_available = false
+	environment_bonus_claimed = false
+	turn_number = 0
+	moves_this_floor = 0
+	jumps_this_floor = 0
+	hits_this_floor = 0
+	coins_this_floor = 0
+	coins_spawned_this_floor = 0
+	rooms.clear()
+	room_graph_edges.clear()
 	enemies.clear()
 	enemies.append({"pos": Vector2i(5, 5), "from": _cell_center(Vector2i(5, 5)), "to": _cell_center(Vector2i(5, 5)), "next": Vector2i(5, 5), "t": 1.0, "role": "hunter", "phase": 0})
 	enemies.append({"pos": Vector2i(13, 5), "from": _cell_center(Vector2i(13, 5)), "to": _cell_center(Vector2i(13, 5)), "next": Vector2i(13, 5), "t": 1.0, "role": "sentry", "phase": 0})
@@ -925,6 +1054,9 @@ func _handle_swipe(start_pos: Vector2, end_pos: Vector2) -> void:
 
 
 func open_level_select() -> void:
+	if dev_sandbox_active:
+		_leave_dev_sandbox()
+		game_state = "title"
 	level_select_source = game_state
 	capture_darkness = 0.0
 	capture_flash = 0.0
@@ -999,11 +1131,14 @@ func _restore_power_state(raw: Variant) -> void:
 # Experimental chambers deliberately bypass campaign generation/checkpoints.
 # They use the same actions, collision, hazards and portal loop as normal play.
 func start_environment_lab() -> void:
+	_leave_dev_sandbox()
 	lab_active = true
 	_load_lab_chamber(0)
 
 
 func _load_lab_chamber(index: int) -> void:
+	sokoban_history.clear()
+	sokoban_pushes = 0
 	special_family = ""
 	special_hint = ""
 	special_spec.clear()
@@ -1098,7 +1233,7 @@ func _sync_environment_mechanisms() -> void:
 # pickups and contacts are resolved on both cells before enemy movement.
 func _resolve_environment_displacement(action_direction: Vector2i) -> void:
 	var surface: String = environment.kind_at(player_position)
-	if (surface == "ice" and _skill_effect("ice_grip") > 0) or (surface == "current" and _skill_effect("current_anchor") > 0):
+	if (surface == "ice" and _skill_effect("ice_grip") > 0) or (surface == "current" and (freeze_turns > 0 or _skill_effect("current_anchor") > 0)):
 		return
 	var direction: Vector2i = environment.forced_direction(player_position, action_direction)
 	if direction == Vector2i.ZERO or _enemy_at(player_position):
@@ -1108,6 +1243,8 @@ func _resolve_environment_displacement(action_direction: Vector2i) -> void:
 		return
 	var movement_surface: String = environment.kind_at(player_position)
 	_begin_player_move(destination, movement_surface)
+	if movement_surface == "current":
+		_emit_feedback("CURRENT_DRIFT")
 	# The semantic event was already emitted; align only its visual ring with
 	# the actual final cell, including a current that moves a waiting player.
 	turn_pulse_position = _cell_center(player_position)
@@ -1117,13 +1254,21 @@ func _resolve_environment_displacement(action_direction: Vector2i) -> void:
 	notice_timer = 1.2
 	_collect_pickups()
 	_trigger_traps(direction)
-	if game_state == "playing" and environment.is_electrified(player_position):
+	if game_state == "playing" and freeze_turns <= 0 and environment.is_electrified(player_position):
 		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"), -direction)
 	if game_state != "playing":
 		return
 	_activate_switches()
 	_sync_environment_mechanisms()
 	_check_enemy_collision(direction)
+
+
+func _stress_brittle_ice(visited: Array[Vector2i]) -> void:
+	for point in environment.stress_brittle(visited):
+		_spawn_burst(_cell_center(point), Color("b5f5ff"), 12, 104.0)
+		last_notice = "GELO FRAGIL PARTIU — JA NAO DESLIZA"
+		notice_timer = 1.8
+		_emit_feedback("ICE_CRACK")
 
 
 # Water hazards affect enemies too. Ordinary enemies are defeated; elites lose
@@ -1201,7 +1346,31 @@ func _place_environment_bonus(walkable: Array[Vector2i], occupied: Dictionary) -
 	environment.reset()
 
 
+# Optional brittle ice on a legacy ice patch. Avoiding the cell must still
+# leave the complete reachable area connected, so it cannot gate progression.
+# Deterministic scan consumes no WFC or enemy RNG and adds no new grid layer.
+func _place_brittle_ice(occupied: Dictionary) -> void:
+	if get_biome_index(floor_number) != 3:
+		return
+	var reachable := _reachable_cells(player_position)
+	for point in reachable:
+		if grid[point.y][point.x] != TILE_WATER or occupied.has(point) or environment.kind_at(point) != "":
+			continue
+		if _manhattan(point, player_position) < 3 or _manhattan(point, portal_position) < 3:
+			continue
+		if _reachable_without_cell(player_position, point) != reachable.size() - 1:
+			continue
+		environment.cells[point] = {"kind": "ice", "brittle": true, "stress": 0, "broken": false}
+		generation_report += "; gelo fragil opcional"
+		return
+
+
 func generate_floor(number: int) -> void:
+	sokoban_history.clear()
+	sokoban_pushes = 0
+	# A previous cinematic cannot leak into a newly generated floor. Entry
+	# points explicitly start the floor-five flyover after generation.
+	captor_flyover_time = 0.0
 	lab_active = false
 	_clear_transient_motion_effects()
 	environment.reset()
@@ -1378,6 +1547,9 @@ func generate_floor(number: int) -> void:
 	elif special_family == "quiet":
 		special_hint = "SETOR TRANQUILO: EXPLORA E ALCANCA O PORTAL."
 	_place_heart_pickup(number, occupied)
+	for point in heart_pickups:
+		occupied[point] = true
+	_place_brittle_ice(occupied)
 	_build_nav_chevrons()
 	moves_this_floor = 0
 	turn_number = 0
@@ -1403,6 +1575,8 @@ func generate_floor(number: int) -> void:
 # A special chamber is a designed, validated exception; the normal campaign
 # and all reserved boss/warden floors continue to use the WFC generator.
 func _generate_special_room(spec: Dictionary, initial_plan: Dictionary, level_seed: int) -> void:
+	sokoban_history.clear()
+	sokoban_pushes = 0
 	special_spec = spec.duplicate(true)
 	special_route_cache.clear()
 	_cache_special_route(spec.start, spec.crates, initial_plan)
@@ -1753,6 +1927,11 @@ func _init_radial_light_texture() -> void:
 
 
 func _init_player_sphere_texture() -> void:
+	player_sphere_texture = _make_orb_sphere_texture(Color("380410"), Color("d81636"), Color("ff3b5c"), Color("ff8ca3"))
+	lia_sphere_texture = _make_orb_sphere_texture(Color("32103d"), Color("a92eaa"), Color("ee70e4"), Color("ffc3f5"))
+
+
+func _make_orb_sphere_texture(col_deep: Color, col_mid: Color, col_bright: Color, col_rim: Color) -> ImageTexture:
 	var size := 96
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var center := Vector2(float(size) * 0.5, float(size) * 0.5)
@@ -1760,10 +1939,6 @@ func _init_player_sphere_texture() -> void:
 	var light_dir := Vector3(-0.55, -0.62, 0.56).normalized()
 	var view_dir := Vector3(0.0, 0.0, 1.0)
 	var half_vec := (light_dir + view_dir).normalized()
-	var col_deep := Color("380410")
-	var col_mid := Color("d81636")
-	var col_bright := Color("ff3b5c")
-	var col_rim := Color("ff8ca3")
 	
 	for y in size:
 		for x in size:
@@ -1799,7 +1974,7 @@ func _init_player_sphere_texture() -> void:
 			if dist > radius - 1.0:
 				alpha = clampf((radius + 1.0 - dist) / 2.0, 0.0, 1.0)
 			img.set_pixel(x, y, Color(final_rgb.r, final_rgb.g, final_rgb.b, alpha))
-	player_sphere_texture = ImageTexture.create_from_image(img)
+	return ImageTexture.create_from_image(img)
 
 
 func _add_biome_landmarks(number: int) -> void:
@@ -2126,7 +2301,7 @@ func _update_enemy_intents() -> void:
 		enemy["path"] = []
 		# Ice delays enemies on even-numbered actions. Plan the stationary
 		# result internally; no animation decides or displays the next step.
-		if environment.kind_at(origin) == "ice" and posmod(turn_number + 1, 2) == 0:
+		if environment.is_slippery_ice(origin) and posmod(turn_number + 1, 2) == 0:
 			enemy.next = origin
 			continue
 		if role == "chess_boss":
@@ -2208,7 +2383,7 @@ func _plan_reactive_mirrors(action_direction: Vector2i) -> void:
 		if enemy.get("role", "") != "mirror" or int(enemy.get("shield_repel_turn", -1)) == turn_number:
 			continue
 		var origin: Vector2i = enemy.pos
-		if environment.kind_at(origin) == "ice" and posmod(turn_number, 2) == 0:
+		if environment.is_slippery_ice(origin) and posmod(turn_number, 2) == 0:
 			enemy.next = origin
 			enemy["path"] = []
 			continue
@@ -2268,8 +2443,9 @@ func _nearest_inactive_switch(origin: Vector2i) -> Vector2i:
 
 
 func try_move(dx: int, dy: int) -> void:
-	if game_state != "playing" or absi(dx) + absi(dy) != 1:
+	if game_state != "playing" or captor_flyover_time > 0.0 or absi(dx) + absi(dy) != 1:
 		return
+	var undo_before := _snapshot_sokoban()
 	facing = Vector2i(dx, dy)
 	var next := player_position + facing
 	var crate_pushed := false
@@ -2296,6 +2472,9 @@ func try_move(dx: int, dy: int) -> void:
 			_queue_contact_feedback("BLOCKED", "block", _cell_center(player_position) + Vector2(facing) * CELL * 0.5, Vector2(facing), _contact_delay(0.04), "wall")
 			queue_redraw()
 			return
+	_remember_sokoban(undo_before)
+	if crate_pushed and not undo_before.is_empty():
+		sokoban_pushes += 1
 	_begin_player_move(next, "push" if crate_pushed else "walk")
 	moves_this_floor += 1
 	_emit_feedback("MOVE", {"material": _current_haptic_material(), "audio_already_played": crate_pushed, "suppress_haptic": crate_pushed})
@@ -2311,13 +2490,100 @@ func try_move(dx: int, dy: int) -> void:
 
 
 func wait_turn() -> void:
-	if game_state != "playing":
+	if game_state != "playing" or captor_flyover_time > 0.0:
 		return
+	_remember_sokoban(_snapshot_sokoban())
 	moves_this_floor += 1
 	last_notice = "ESPERASTE UM TURNO — OS INIMIGOS AVANCAM"
 	notice_timer = 1.0
 	_emit_feedback("WAIT")
 	_take_turn()
+
+
+# Capture every reversible gameplay fact, not just box coordinates. The
+# chamber can contain loot and powers and players can jump, blink or demolish;
+# undo must not duplicate those resources or leave stale electricity/gates.
+func _snapshot_sokoban() -> Dictionary:
+	if special_family != "sokoban" or special_spec.is_empty() or lab_active:
+		return {}
+	return {
+		"player": player_position, "facing": facing, "grid": grid.duplicate(true),
+		"cells": environment.cells.duplicate(true), "crates": environment.crates.duplicate(true),
+		"plates": environment.plates.duplicate(true), "gates": environment.gates.duplicate(true),
+		"portal_open": portal_open, "enemies": enemies.duplicate(true),
+		"coins": coins.duplicate(), "shields": shields.duplicate(), "hearts_on_floor": heart_pickups.duplicate(),
+		"breakers": breakers.duplicate(), "powerups": powerups.duplicate(true),
+		"switches": switches.duplicate(true), "traps": traps.duplicate(true),
+		"coins_total": total_coins, "best_score": best_score, "best_dirty": best_score_dirty,
+		"charges": charges, "breach": breach_charges, "hearts": hearts_current,
+		"powers": _capture_power_state(), "turn": turn_number, "moves": moves_this_floor,
+		"jumps": jumps_this_floor, "hits": hits_this_floor, "collected": coins_this_floor,
+		"pushes": sokoban_pushes, "challenge": challenge_complete,
+		"bonus_claimed": environment_bonus_claimed, "rng": rng.state,
+		"shield_notice": shield_full_notice_turn,
+	}
+
+
+func _remember_sokoban(snapshot: Dictionary) -> void:
+	if snapshot.is_empty():
+		return
+	if sokoban_history.size() >= SOKOBAN_HISTORY_LIMIT:
+		sokoban_history.pop_front()
+	sokoban_history.append(snapshot)
+
+
+func undo_sokoban_move() -> void:
+	if game_state != "playing" or special_family != "sokoban" or special_spec.is_empty() or captor_flyover_time > 0.0:
+		return
+	if sokoban_history.is_empty():
+		last_notice = "AINDA NAO HA MOVIMENTOS PARA DESFAZER"
+		notice_timer = 1.4
+		_emit_feedback("BLOCKED")
+		return
+	var saved: Dictionary = sokoban_history.pop_back()
+	_clear_transient_motion_effects()
+	particles.clear()
+	unresolved_contacts.clear()
+	grid = saved.grid.duplicate(true)
+	environment.reset({"cells": saved.cells, "crates": saved.crates, "plates": saved.plates, "gates": saved.gates})
+	player_position = saved.player
+	facing = saved.facing
+	_reset_player_visual(_cell_center(player_position))
+	portal_open = bool(saved.portal_open)
+	enemies.assign(saved.enemies.duplicate(true))
+	coins.assign(saved.coins)
+	shields.assign(saved.shields)
+	heart_pickups.assign(saved.hearts_on_floor)
+	breakers.assign(saved.breakers)
+	powerups.assign(saved.powerups.duplicate(true))
+	switches.assign(saved.switches.duplicate(true))
+	traps.assign(saved.traps.duplicate(true))
+	total_coins = int(saved.coins_total)
+	best_score = int(saved.best_score)
+	best_score_dirty = bool(saved.best_dirty)
+	charges = int(saved.charges)
+	breach_charges = int(saved.breach)
+	hearts_current = int(saved.hearts)
+	_restore_power_state(saved.powers)
+	turn_number = int(saved.turn)
+	moves_this_floor = int(saved.moves)
+	jumps_this_floor = int(saved.jumps)
+	hits_this_floor = int(saved.hits)
+	coins_this_floor = int(saved.collected)
+	sokoban_pushes = int(saved.pushes)
+	challenge_complete = bool(saved.challenge)
+	environment_bonus_claimed = bool(saved.bonus_claimed)
+	rng.state = int(saved.rng)
+	shield_full_notice_turn = int(saved.shield_notice)
+	damage_this_turn = false
+	if terrain_renderer != null:
+		terrain_renderer.rebuild()
+	_update_enemy_intents()
+	_update_camera(1.0)
+	last_notice = "ULTIMA ACAO DESFEITA"
+	notice_timer = 1.2
+	_emit_feedback("UNDO")
+	queue_redraw()
 
 
 func _clear_transient_motion_effects() -> void:
@@ -2510,7 +2776,7 @@ func _advance_transient_motion_effects(delta: float) -> void:
 
 
 func try_jump() -> void:
-	if game_state != "playing":
+	if game_state != "playing" or captor_flyover_time > 0.0:
 		return
 	if charges <= 0:
 		last_notice = "Sem escudo para saltar"
@@ -2529,6 +2795,7 @@ func try_jump() -> void:
 		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
+	_remember_sokoban(_snapshot_sokoban())
 	charges -= 1
 	jumps_this_floor += 1
 	moves_this_floor += 1
@@ -2541,7 +2808,7 @@ func try_jump() -> void:
 # Blink ignores intermediate walls, traps, pickups and enemies, but may only
 # land on floor and cannot cross the indestructible map boundary.
 func try_blink() -> void:
-	if game_state != "playing":
+	if game_state != "playing" or captor_flyover_time > 0.0:
 		return
 	if blink_charges <= 0:
 		last_notice = "SEM CARGAS DE BLINK"
@@ -2562,6 +2829,7 @@ func try_blink() -> void:
 		notice_timer = 1.6
 		_emit_feedback("BLOCKED")
 		return
+	_remember_sokoban(_snapshot_sokoban())
 	blink_charges -= 1
 	moves_this_floor += 1
 	_spawn_burst(_cell_center(origin), Color("91faff"), 18, 140.0)
@@ -2573,7 +2841,7 @@ func try_blink() -> void:
 
 
 func try_break_wall() -> void:
-	if game_state != "playing":
+	if game_state != "playing" or captor_flyover_time > 0.0:
 		return
 	var target := player_position + facing
 	if not _inside(target):
@@ -2593,6 +2861,7 @@ func try_break_wall() -> void:
 			_emit_feedback("BLOCKED")
 			queue_redraw()
 			return
+		_remember_sokoban(_snapshot_sokoban())
 		breach_charges -= 1
 		var enemy: Dictionary = enemies[enemy_idx]
 		var dead_role: String = enemy.get("role", "hunter")
@@ -2642,6 +2911,7 @@ func try_break_wall() -> void:
 		_emit_feedback("BLOCKED")
 		queue_redraw()
 		return
+	_remember_sokoban(_snapshot_sokoban())
 	breach_charges -= 1
 	grid[target.y][target.x] = TILE_FLOOR
 	if terrain_renderer != null:
@@ -2661,16 +2931,28 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool =
 	turn_number += 1
 	_emit_feedback("TURN_COMMITTED", {"cell": player_position, "turn": turn_number})
 	var environmental_turn: bool = environment.is_active()
+	var visited_surface: Array[Vector2i] = [player_position]
 	var update_navigation := false
 	if environmental_turn:
-		var floated: Array[Dictionary] = environment.advance_currents(Callable(self, "_crate_destination_free"))
+		# A freeze pickup on the entry tile takes effect during this action,
+		# before the current moves either the player or any floating wood.
+		var entry_freezes := freeze_turns > 0
+		for item in powerups:
+			if item.pos == player_position and item.kind == "time_freeze":
+				entry_freezes = true
+				break
+		var floated: Array[Dictionary] = []
+		if not entry_freezes:
+			floated = environment.advance_currents(Callable(self, "_crate_destination_free"))
 		for movement in floated:
 			_queue_crate_visual(int(movement.index), movement.from, movement.to, "current")
+		if not floated.is_empty():
+			_emit_feedback("CURRENT_DRIFT")
 		_sync_environment_mechanisms()
 		update_navigation = not lab_active and (crate_pushed or not floated.is_empty())
 	_collect_pickups()
 	_trigger_traps(action_direction)
-	if game_state == "playing" and environmental_turn and environment.is_electrified(player_position):
+	if game_state == "playing" and environmental_turn and freeze_turns <= 0 and environment.is_electrified(player_position):
 		_apply_damage("AGUA ELETRIFICADA!", Color("ffe46a"), -action_direction)
 	if game_state != "playing":
 		_tick_power_effects()
@@ -2688,6 +2970,8 @@ func _take_turn(action_direction: Vector2i = Vector2i.ZERO, crate_pushed: bool =
 		return
 	if environmental_turn:
 		_resolve_environment_displacement(action_direction)
+		visited_surface.append(player_position)
+		_stress_brittle_ice(visited_surface)
 		if game_state != "playing":
 			_tick_power_effects()
 			queue_redraw()
@@ -3472,10 +3756,10 @@ func _check_portal() -> void:
 	if rescue_milestone:
 		game_state = "rescued"
 		if floor_number == 5:
-			rescues_completed += 1
 			last_notice = "LIA AVISTADA EM ESTASE — LIBERTA-A NO ANDAR 100!"
 		elif floor_number == 100:
-			rescues_completed += 1
+			if not floor_stars.has("100"):
+				rescues_completed += 1
 			last_notice = "LIA FOI LIBERTADA! CAMPANHA CONTINUA ATE AO ANDAR 200"
 		else:
 			last_notice = "CICLO %d CONCLUIDO — SETOR SEGUINTE DESBLOQUEADO" % (floori(float(floor_number - 1) / 5.0) + 1)
@@ -3499,6 +3783,7 @@ func advance_floor() -> void:
 	if game_state == "floor_clear" or game_state == "rescued":
 		generate_floor(floor_number + 1)
 		game_state = "playing"
+		_begin_captor_flyover_if_needed()
 
 
 func _stars_for_floor() -> int:
@@ -3533,13 +3818,15 @@ func _campaign_payload() -> Dictionary:
 		"resume_floor": resume_floor, "resume_coins": resume_coins, "resume_charges": resume_charges,
 		"resume_breach_charges": resume_breach_charges, "resume_powers": _normalized_power_state(resume_powers),
 		"resume_facing": resume_facing, "resume_seed": resume_seed, "resume_history": Array(resume_history),
-		"resume_hearts": resume_hearts, "skills": skills.serialize(),
+		"resume_hearts": resume_hearts, "skills": skills.serialize(), "captor_intro_seen": captor_intro_seen,
 	}
 
 
 func _apply_campaign_payload(data: Dictionary) -> void:
 	best_score = int(data.get("best_score", 0))
 	rescues_completed = int(data.get("rescues", 0))
+	captor_intro_seen = bool(data.get("captor_intro_seen", false))
+	captor_flyover_time = 0.0
 	furthest_floor = maxi(1, int(data.get("furthest_floor", 1)))
 	var stars: Variant = data.get("floor_stars", {})
 	floor_stars = stars.duplicate(true) if stars is Dictionary else {}
@@ -3590,6 +3877,7 @@ func _legacy_campaign(profile: ConfigFile) -> Dictionary:
 		"resume_facing": saved_facing if saved_facing is Vector2i and saved_facing in FOUR_WAY else Vector2i.RIGHT,
 		"resume_seed": int(profile.get_value("progress", "resume_seed", 0)), "resume_history": Array(history),
 		"resume_hearts": 0, "skills": old_skills.serialize(),
+		"captor_intro_seen": bool(profile.get_value("progress", "captor_intro_seen", false)),
 	}
 
 
@@ -3664,6 +3952,9 @@ func _load_campaign_slot(slot: int) -> bool:
 
 
 func _save_profile() -> bool:
+	# Dev experiments must not overwrite real slots, backups, or transient slots.
+	if dev_sandbox_active:
+		return true
 	if not persistence_enabled:
 		transient_campaigns[active_slot] = _campaign_payload() if has_resume or furthest_floor > 1 or not floor_stars.is_empty() else {}
 		return true
@@ -3716,7 +4007,7 @@ func _save_profile() -> bool:
 	profile.set_value("controller", "mappings", controller_mappings)
 	# Mirror old progress fields for tools/older readers. The authoritative saves
 	# are the three independently backed-up campaign files.
-	for key in ["best_score", "rescues", "furthest_floor", "floor_stars", "has_resume", "resume_floor", "resume_coins", "resume_charges", "resume_breach_charges", "resume_powers", "resume_facing", "resume_seed", "resume_history"]:
+	for key in ["best_score", "rescues", "furthest_floor", "floor_stars", "has_resume", "resume_floor", "resume_coins", "resume_charges", "resume_breach_charges", "resume_powers", "resume_facing", "resume_seed", "resume_history", "captor_intro_seen"]:
 		profile.set_value("progress", key, payload[key])
 	var saved_global := campaign_storage.save_global(profile)
 	if not saved_global.ok:
@@ -3743,6 +4034,7 @@ func campaign_status(slot: int) -> Dictionary:
 
 
 func select_campaign(slot: int) -> bool:
+	_leave_dev_sandbox()
 	if slot < 0 or slot > 2:
 		return false
 	var target := campaign_status(slot)
@@ -3762,6 +4054,7 @@ func select_campaign(slot: int) -> bool:
 
 
 func restore_campaign(slot: int, kind: String = "checkpoint") -> bool:
+	_leave_dev_sandbox()
 	campaign_storage.profile_path = profile_path
 	var result := campaign_storage.restore_slot(slot, kind)
 	if not result.ok:
@@ -3794,11 +4087,13 @@ func _notification(what: int) -> void:
 
 func _exit_tree() -> void:
 	# A record earned mid-floor should survive quitting without writing per coin.
-	if best_score_dirty:
+	if best_score_dirty and not dev_sandbox_active:
 		_save_profile()
 
 
 func _process(delta: float) -> void:
+	if captor_flyover_time > 0.0 and game_state == "playing":
+		captor_flyover_time = maxf(0.0, captor_flyover_time - delta)
 	# Only the presentation clock is held. Input, turns, game timers, capture,
 	# audio/haptic drivers, collision and logical positions still use real time.
 	var presentation: Dictionary = impact_presentation.advance(delta, game_state == "paused" or not _world_is_visible())
@@ -3976,6 +4271,10 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _on_controller_action(action: String) -> void:
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if action in ["confirm", "cancel", "pause"]:
+			_finish_captor_flyover()
+		return
 	if game_state in ["captured", "controller_mapping"]:
 		return
 	var directions := {"up": Vector2i.UP, "down": Vector2i.DOWN, "left": Vector2i.LEFT, "right": Vector2i.RIGHT}
@@ -4002,6 +4301,8 @@ func _on_controller_action(action: String) -> void:
 			wait_turn()
 		elif action == "blink":
 			try_blink()
+		elif action == "cancel" and special_family == "sokoban" and controller.button_label("pause") != "--":
+			undo_sokoban_move()
 		elif action in ["pause", "cancel"]:
 			controller.feedback("menu_confirm")
 			game_state = "paused"
@@ -4195,6 +4496,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		return
 	if not event.pressed or event.echo:
 		return
+	if game_state == "playing" and captor_flyover_time > 0.0:
+		if event.keycode in [KEY_ESCAPE, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+			_finish_captor_flyover()
+		return
 	if game_state == "controller_mapping":
 		if event.keycode == KEY_ESCAPE:
 			controller.cancel_calibration()
@@ -4308,6 +4613,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_B: try_break_wall()
 		KEY_Q: try_blink()
 		KEY_X: wait_turn()
+		KEY_Z: undo_sokoban_move()
 		KEY_R: restart_floor()
 		KEY_N:
 			if not lab_active:
@@ -4422,7 +4728,43 @@ func _draw() -> void:
 	_draw_player()
 	_draw_particles()
 	impact_presentation.draw(self, view)
+	if floor_number == 5 and captor_flyover_time > 0.0:
+		_draw_captor_flyover(view)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+func _draw_captor_flyover(view: Rect2) -> void:
+	var progress := clampf(1.0 - captor_flyover_time / CAPTOR_FLYOVER_SECONDS, 0.0, 1.0)
+	var eased_progress := 1.0 - pow(1.0 - progress, 2.0)
+	var body_size := clampf(view.size.x * 0.25, 210.0, 330.0)
+	var drift_x := lerpf(view.position.x - body_size * 0.8, view.end.x + body_size * 0.8, eased_progress)
+	var body_center := Vector2(drift_x, view.position.y + view.size.y * 0.31 + sin(animation_clock * 2.0) * 9.0)
+	var body_rect := Rect2(body_center - Vector2.ONE * body_size * 0.5, Vector2.ONE * body_size)
+	var glow_pulse := 0.11 + sin(animation_clock * 4.0) * 0.025
+	draw_circle(body_center + Vector2(0.0, body_size * 0.35), body_size * 0.32, Color("a444ff", 0.11))
+	draw_circle(body_center, body_size * 0.27, Color("ef69ff", glow_pulse))
+	draw_texture_rect(DIVINE_CAPTOR_TEXTURE, body_rect, false)
+	var cage_size := Vector2(body_size * 0.32, body_size * 0.46)
+	var cage_center := body_center + Vector2(body_size * 0.35, body_size * 0.52 + sin(animation_clock * 3.2) * 7.0)
+	var cage_top := cage_center + Vector2(0.0, -cage_size.y * 0.45)
+	var tether := body_center + Vector2(body_size * 0.32, body_size * 0.14)
+	draw_line(tether, cage_top, Color("f054ff", 0.48), 8.0, true)
+	draw_line(tether, cage_top, Color("ffe8ff", 0.9), 2.0, true)
+	var cage_rotation := sin(animation_clock * 2.7) * 0.075
+	draw_set_transform(cage_center, cage_rotation, Vector2.ONE)
+	var lia_bob := sin(animation_clock * 3.2 + 0.7) * 1.2
+	var lia_center := Vector2.ZERO
+	var lia_sphere_center := lia_center + Vector2(0.0, lia_bob)
+	draw_circle(lia_sphere_center + Vector2(0.0, 10.0), 11.0, Color("080616", 0.48))
+	draw_circle(lia_sphere_center, 22.0, Color("e75ce4", 0.14 + sin(animation_clock * 4.0) * 0.035))
+	if lia_sphere_texture != null:
+		draw_texture_rect(lia_sphere_texture, Rect2(lia_sphere_center - Vector2(16.0, 16.0), Vector2(32.0, 32.0)), false)
+	else:
+		draw_circle(lia_sphere_center, 15.5, Color("e75ce4"))
+	_draw_orb_face(lia_center, 1.0, Vector2i.LEFT, true, 1.0, 0.0, lia_bob, false, true)
+	draw_texture_rect(CAPTIVE_CAGE_TEXTURE, Rect2(-cage_size * 0.5, cage_size), false)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
 
 
 func _is_wall(pos: Vector2i) -> bool:
@@ -5040,12 +5382,22 @@ func _draw_environment_surface(target: CanvasItem, point: Vector2i, top_left: Ve
 		var crystal := top_left + Vector2(11, 11)
 		for axis in [Vector2(5, 0), Vector2(2.5, 4.3), Vector2(-2.5, 4.3)]:
 			target.draw_line(crystal - axis, crystal + axis, frost, 1.5, true)
+		var ice: Dictionary = environment.cells.get(point, {})
+		if bool(ice.get("brittle", false)):
+			var stress := int(ice.get("stress", 0))
+			var crack := PackedVector2Array([center + Vector2(-13, -13), center + Vector2(-4, -5), center + Vector2(-8, 3), center + Vector2(5, 8), center + Vector2(13, 15)])
+			target.draw_polyline(crack, Color("21566c", 0.95), 3.2, true)
+			target.draw_polyline(crack, Color("e6ffff", 0.95), 1.4, true)
+			if stress > 0:
+				target.draw_line(center + Vector2(-4, -5), center + Vector2(11, -12), frost, 1.5, true)
+			if stress > 1:
+				target.draw_line(center + Vector2(5, 8), center + Vector2(-14, 14), frost, 1.5, true)
 	elif kind == "current":
 		var direction: Vector2i = environment.cells[point].get("flow", Vector2i.ZERO)
 		if direction in FOUR_WAY:
 			# Moving streaks and droplets, never arrowheads. Their travel follows
 			# the exact direction used by forced_direction and floating wood.
-			for mote in EnvironmentVFX.current_particles(center, direction, CELL, animation_clock, point.x * 37 + point.y * 79):
+			for mote in EnvironmentVFX.current_particles(center, direction, CELL, 0.0 if freeze_turns > 0 else animation_clock, point.x * 37 + point.y * 79):
 				target.draw_line(mote.tail, mote.position, Color("b5fff5", float(mote.alpha)), 1.6, true)
 				target.draw_circle(mote.position, 1.3, Color("defefa", float(mote.alpha)))
 	var live: bool = environment.is_electrified(point)
@@ -6137,8 +6489,12 @@ func _draw_player() -> void:
 		draw_polyline(seam, Color("63142d", 0.18 * movement * visibility), 1.0, true)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	
+	_draw_orb_face(center, size_scale, facing, frightened, visibility, hop, bob, moving)
+
+
+func _draw_orb_face(center: Vector2, size_scale: float, face_direction: Vector2i, frightened: bool, visibility: float, hop: float, bob: float, moving: bool = false, lia_palette: bool = false) -> void:
 	# Olhos cibernéticos expressivos
-	var eye_offset := Vector2(facing) * (2.0 * size_scale)
+	var eye_offset := Vector2(face_direction) * (2.0 * size_scale)
 	var eye_y := -2.6 - hop + bob
 	var eye_radius := 4.0 if frightened else 3.3
 	var eye_left := center + Vector2(-5.1, eye_y) * size_scale + eye_offset
@@ -6147,7 +6503,7 @@ func _draw_player() -> void:
 	var sclera := Color("fff5e6", face_visibility)
 	var pupil := Color("2a0814", face_visibility)
 	
-	var gaze := Vector2(facing) * (1.05 if frightened else 0.72) * size_scale
+	var gaze := Vector2(face_direction) * (1.05 if frightened else 0.72) * size_scale
 	if frightened:
 		# Tremor de pânico nos olhos
 		var panic_jitter := Vector2(sin(animation_clock * 32.0), cos(animation_clock * 28.0)) * (0.6 * size_scale)
@@ -6162,13 +6518,13 @@ func _draw_player() -> void:
 		draw_circle(eye_right + panic_jitter + Vector2(-0.8, -0.8), 0.7 * size_scale, Color("ffffff", face_visibility))
 		
 		# Sobrancelhas levantadas em ângulo de aflição ( \   / )
-		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
-		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, Color("521426", visibility), 1.8 * size_scale, true)
+		draw_line(eye_left + Vector2(-3.2, -6.2) * size_scale, eye_left + Vector2(2.5, -4.5) * size_scale, Color("381541" if lia_palette else "521426", visibility), 1.8 * size_scale, true)
+		draw_line(eye_right + Vector2(-2.5, -4.5) * size_scale, eye_right + Vector2(3.2, -6.2) * size_scale, Color("381541" if lia_palette else "521426", visibility), 1.8 * size_scale, true)
 		
 		# Boca aberta de espanto (elipse vertical com fundo escuro e dentes/grito)
 		var mouth_pos := center + Vector2(0.0, 6.2 - hop + bob) * size_scale
-		draw_circle(mouth_pos, (2.6 + sin(animation_clock * 14.0) * 0.4) * size_scale, Color("4a0f1d", visibility))
-		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, Color("ff8aa5", visibility * 0.8))
+		draw_circle(mouth_pos, (2.6 + sin(animation_clock * 14.0) * 0.4) * size_scale, Color("3b174b" if lia_palette else "4a0f1d", visibility))
+		draw_circle(mouth_pos + Vector2(0, 0.8), 1.2 * size_scale, Color("ffb0f4" if lia_palette else "ff8aa5", visibility * 0.8))
 		
 		# Gota de suor ciano de pânico no lado da cabeça
 		var sweat_pos := center + Vector2(10.5 * size_scale, (-5.5 - hop + bob + sin(animation_clock * 10.0) * 1.0) * size_scale)
@@ -6177,8 +6533,8 @@ func _draw_player() -> void:
 			sweat_pos + Vector2(2.2 * size_scale, 1.8 * size_scale),
 			sweat_pos + Vector2(-2.2 * size_scale, 1.8 * size_scale)
 		])
-		draw_colored_polygon(sweat_pts, Color("7ae7ff", visibility * 0.95))
-		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("7ae7ff", visibility * 0.95))
+		draw_colored_polygon(sweat_pts, Color("ff9cf0" if lia_palette else "7ae7ff", visibility * 0.95))
+		draw_circle(sweat_pos + Vector2(0, 1.6 * size_scale), 2.2 * size_scale, Color("ff9cf0" if lia_palette else "7ae7ff", visibility * 0.95))
 		draw_circle(sweat_pos + Vector2(-0.7, 0.8) * size_scale, 0.8 * size_scale, Color("ffffff", visibility))
 	else:
 		# A brief deterministic idle blink adds life without consuming game RNG.
@@ -6195,7 +6551,7 @@ func _draw_player() -> void:
 			# Ponto especular na pupila
 			draw_circle(eye_left + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
 			draw_circle(eye_right + gaze + Vector2(-0.5, -0.5), 0.6 * size_scale, Color("ffffff", face_visibility))
-		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("78243e", visibility), 1.3 * size_scale, true)
+		draw_arc(center + Vector2(0, 4.5 - hop + bob) * size_scale, 3.0 * size_scale, 0.15, PI - 0.15, 16, Color("61296d" if lia_palette else "78243e", visibility), 1.3 * size_scale, true)
 
 
 func _draw_blood_puddle(target: CanvasItem) -> void:

@@ -171,6 +171,29 @@ func _test_baseline_fingerprints(game: Node) -> void:
 		_expect(_fingerprint(game) == BASELINE_FINGERPRINTS[key], "floor and RNG match pre-optimization snapshot " + key)
 
 
+# The base branch added a deterministic-environment regression. Keep it, but
+# compare the single integrated EnvironmentSystem rather than obsolete arrays.
+func _test_environmental_determinism(game: Node) -> void:
+	for number in [2, 4, 6, 7, 26]:
+		game.active_seed = 48211
+		game.generate_floor(number)
+		var first := {
+			"grid": game.grid.duplicate(true), "cells": game.environment.cells.duplicate(true),
+			"crates": game.environment.crates.duplicate(true), "plates": game.environment.plates.duplicate(true),
+			"gates": game.environment.gates.duplicate(true), "powered": game.environment.powered.duplicate(true),
+			"rng": game.rng.state,
+		}
+		game.generate_floor(number)
+		var second := {
+			"grid": game.grid.duplicate(true), "cells": game.environment.cells.duplicate(true),
+			"crates": game.environment.crates.duplicate(true), "plates": game.environment.plates.duplicate(true),
+			"gates": game.environment.gates.duplicate(true), "powered": game.environment.powered.duplicate(true),
+			"rng": game.rng.state,
+		}
+		_expect(first == second, "seeded environment repeats for floor %d / seed 48211" % number)
+		_expect(game._reachable_cells(game.player_position).has(game.portal_position), "environmental floor %d retains a reachable portal" % number)
+
+
 func _counts(terrain: Node) -> Dictionary:
 	var result := {}
 	for key in terrain.chunks:
@@ -340,6 +363,7 @@ func _run() -> void:
 	root.add_child(game)
 	game.audio.effects_enabled = false
 	_test_baseline_fingerprints(game)
+	_test_environmental_determinism(game)
 	await _test_terrain_and_culling(game)
 	await _test_biomes_and_capture(game)
 	game.queue_free()

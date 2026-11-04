@@ -37,12 +37,14 @@ if [[ "${1:-}" == "--graphics" ]]; then
   run_check ELECTRIC_RENDER_PASS --path . --display-driver x11 --rendering-method gl_compatibility --audio-driver Dummy --script res://tests/electric_render_test.gd
   run_check ENEMY_INTENTION_RENDER_PASS --path . --display-driver x11 --rendering-method gl_compatibility --audio-driver Dummy --script res://tests/enemy_intention_render_test.gd
   run_check SKILL_TREE_RENDER_PASS --path . --display-driver x11 --rendering-method gl_compatibility --audio-driver Dummy --script res://tests/skill_tree_render_test.gd
+  run_check MERGE_RENDER_PASS --path . --display-driver x11 --rendering-method gl_compatibility --audio-driver Dummy --script res://tests/merge_render_test.gd
 elif [[ $# -eq 0 ]]; then
   run_check "" --headless --path . --editor --import
   run_check SELFTEST_PASS --headless --path . --script res://tests/self_test.gd
   run_check ENVIRONMENT_TEST_PASS --headless --path . --script res://tests/environment_test.gd
   run_check ELECTRIC_PRESENTATION_TEST_PASS --headless --path . --script res://tests/electric_presentation_test.gd
   run_check SPECIAL_CONTENT_TEST_PASS --headless --path . --script res://tests/special_content_test.gd
+  run_check MERGE_INTEGRATION_TEST_PASS --headless --path . --script res://tests/merge_integration_test.gd
   run_check CONTROLLER_TEST_PASS --headless --path . --script res://tests/controller_test.gd
   run_check TACTICAL_FEEDBACK_TEST_PASS --headless --path . --script res://tests/tactical_feedback_test.gd
   run_check PERFORMANCE_REGRESSION_PASS --headless --path . --script res://tests/performance_regression_test.gd

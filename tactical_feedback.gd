@@ -7,6 +7,7 @@ signal event_emitted(event: String, context: Dictionary)
 const EVENTS := {
 	"MOVE": {"audio": "step", "haptic": "step"},
 	"WAIT": {"haptic": "wait"},
+	"UNDO": {"audio": "switch", "haptic": "menu_move"},
 	"CRATE_PUSH_WOOD": {"audio": "crate_wood", "haptic": "crate_push"},
 	"CRATE_PUSH_METAL": {"audio": "crate_metal", "haptic": "crate_push"},
 	"BLOCKED": {"audio": "blocked", "haptic": "blocked"},
@@ -33,6 +34,10 @@ const EVENTS := {
 	"POWER_TIME_FREEZE": {"audio": "power_time_freeze", "haptic": "power_time_freeze"},
 	"PUZZLE_ERROR": {"audio": "puzzle_error", "haptic": "puzzle_error"},
 	"RHYTHM_TRAP": {"audio": "rhythm_trap", "haptic": "rhythm_trap"},
+	"CRATE_PUSH": {"audio": "crate_push", "haptic": "crate_push"},
+	"CURRENT_DRIFT": {"audio": "current", "haptic": "current"},
+	"ICE_CRACK": {"audio": "ice_crack", "haptic": "ice_crack"},
+	"ELECTRIC_WATER": {"audio": "electric_water", "haptic": "shield_impact"},
 	"TURN_COMMITTED": {},
 	"NEAR_MISS": {"audio": "near_miss", "haptic": "near_miss"},
 	"ENEMY_NEAR": {"haptic": "heartbeat"},
@@ -50,6 +55,8 @@ const AUDIO_EVENTS := {
 	"power_magnet": "POWER_MAGNET", "power_blink": "POWER_BLINK",
 	"power_time_freeze": "POWER_TIME_FREEZE", "puzzle_error": "PUZZLE_ERROR",
 	"rhythm_trap": "RHYTHM_TRAP", "near_miss": "NEAR_MISS",
+	"crate_push": "CRATE_PUSH", "current": "CURRENT_DRIFT",
+	"ice_crack": "ICE_CRACK", "electric_water": "ELECTRIC_WATER",
 }
 
 var audio: Node

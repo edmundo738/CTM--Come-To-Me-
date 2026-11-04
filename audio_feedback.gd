@@ -23,7 +23,7 @@ var capture_duck := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "crate_wood", "crate_metal", "coin", "shield", "hit", "heart_lost", "heart_recovered", "explosion", "portal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "break_glass", "break_metal", "break_ice", "enemy_crush", "shield_contact", "electric_contact", "electric_arc", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
+	for cue in ["step", "blocked", "crate_wood", "crate_metal", "crate_push", "current", "ice_crack", "electric_water", "coin", "shield", "hit", "heart_lost", "heart_recovered", "explosion", "portal", "captor_reveal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "break_glass", "break_metal", "break_ice", "enemy_crush", "shield_contact", "electric_contact", "electric_arc", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
 		var effect := _make_effect(cue)
 		effects[cue] = effect
 		haptic_envelopes[cue] = _analyze_haptic_envelope(effect)
@@ -211,6 +211,9 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"portal":
 			duration = 0.9
 			notes = [{"at": 0.0, "length": 0.8, "from": 480.0, "to": 55.0, "gain": 0.19, "shape": "sine"}, {"at": 0.05, "length": 0.52, "from": 950.0, "to": 130.0, "gain": 0.06, "shape": "triangle"}]
+		"captor_reveal":
+			duration = 1.55
+			notes = [{"at": 0.0, "length": 1.35, "from": 74.0, "to": 42.0, "gain": 0.24, "shape": "sine"}, {"at": 0.0, "length": 1.1, "from": 148.0, "to": 96.0, "gain": 0.16, "shape": "triangle"}, {"at": 0.12, "length": 0.95, "from": 390.0, "to": 1120.0, "gain": 0.095, "shape": "sine"}, {"at": 0.42, "length": 0.72, "from": 1180.0, "to": 310.0, "gain": 0.06, "shape": "noise"}]
 		"switch":
 			duration = 0.48
 			notes = [{"at": 0.0, "length": 0.12, "from": 530.0, "to": 530.0, "gain": 0.14, "shape": "sine"}, {"at": 0.11, "length": 0.14, "from": 790.0, "to": 790.0, "gain": 0.15, "shape": "sine"}, {"at": 0.23, "length": 0.2, "from": 1060.0, "to": 1320.0, "gain": 0.18, "shape": "sine"}]
@@ -276,6 +279,18 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"near_miss":
 			duration = 0.19
 			notes = [{"at": 0.0, "length": 0.15, "from": 1500.0, "to": 300.0, "gain": 0.075, "shape": "noise"}, {"at": 0.01, "length": 0.12, "from": 560.0, "to": 230.0, "gain": 0.045, "shape": "sine"}]
+		"crate_push":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.12, "from": 180.0, "to": 95.0, "gain": 0.25, "shape": "triangle"}, {"at": 0.025, "length": 0.08, "from": 680.0, "to": 310.0, "gain": 0.09, "shape": "noise"}]
+		"current":
+			duration = 0.3
+			notes = [{"at": 0.0, "length": 0.24, "from": 280.0, "to": 540.0, "gain": 0.12, "shape": "sine"}, {"at": 0.04, "length": 0.18, "from": 860.0, "to": 420.0, "gain": 0.045, "shape": "noise"}]
+		"ice_crack":
+			duration = 0.33
+			notes = [{"at": 0.0, "length": 0.09, "from": 1450.0, "to": 720.0, "gain": 0.19, "shape": "noise"}, {"at": 0.025, "length": 0.22, "from": 310.0, "to": 64.0, "gain": 0.2, "shape": "triangle"}]
+		"electric_water":
+			duration = 0.28
+			notes = [{"at": 0.0, "length": 0.22, "from": 930.0, "to": 220.0, "gain": 0.19, "shape": "noise"}, {"at": 0.0, "length": 0.17, "from": 165.0, "to": 95.0, "gain": 0.16, "shape": "square"}]
 	return _render_notes(duration, notes, false)
 
 

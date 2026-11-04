@@ -82,9 +82,34 @@ func forced_direction(point: Vector2i, action_direction: Vector2i) -> Vector2i:
 	if data.get("kind", "") == "current":
 		var flow: Vector2i = data.get("flow", Vector2i.ZERO)
 		return flow if flow in DIRECTIONS else Vector2i.ZERO
-	if data.get("kind", "") == "ice" and action_direction in DIRECTIONS:
+	if data.get("kind", "") == "ice" and not bool(data.get("broken", false)) and action_direction in DIRECTIONS:
 		return action_direction
 	return Vector2i.ZERO
+
+
+func is_slippery_ice(point: Vector2i) -> bool:
+	var data: Dictionary = cells.get(point, {})
+	return data.get("kind", "") == "ice" and not bool(data.get("broken", false))
+
+
+# Thin ice remains an explicitly marked tile; after three contacts it is still
+# solid and walkable, but no longer causes a slide. No second map is kept.
+func stress_brittle(points: Array[Vector2i]) -> Array[Vector2i]:
+	var broken: Array[Vector2i] = []
+	var seen: Dictionary = {}
+	for point in points:
+		if seen.has(point):
+			continue
+		seen[point] = true
+		var cell: Dictionary = cells.get(point, {})
+		if cell.get("kind", "") != "ice" or not bool(cell.get("brittle", false)) or bool(cell.get("broken", false)):
+			continue
+		cell["stress"] = mini(3, int(cell.get("stress", 0)) + 1)
+		if int(cell.stress) == 3:
+			cell["broken"] = true
+			broken.append(point)
+		cells[point] = cell
+	return broken
 
 
 func push(index: int, direction: Vector2i, destination_free: Callable) -> bool:

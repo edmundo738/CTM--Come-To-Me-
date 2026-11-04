@@ -61,6 +61,8 @@ func valid_payload(data: Variant) -> bool:
 			return false
 		if field != "resume_seed" and int(data[field]) < 0:
 			return false
+	if data.has("captor_intro_seen") and typeof(data.captor_intro_seen) != TYPE_BOOL:
+		return false
 	if data.furthest_floor < 1 or data.resume_floor < 1 or typeof(data.get("has_resume")) != TYPE_BOOL:
 		return false
 	if not data.get("floor_stars") is Dictionary or not data.get("resume_powers") is Dictionary or not data.get("resume_history") is Array:

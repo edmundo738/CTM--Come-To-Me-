@@ -300,6 +300,8 @@ func _test_large_camera_and_rescue(game: Node) -> void:
 
 
 func _test_arena(game: Node) -> void:
+	# This synthetic arena replaces the previous floor without generate_floor().
+	game.captor_flyover_time = 0.0
 	game.world_size = Vector2i(12, 10)
 	game.grid.clear()
 	for y in game.world_size.y:

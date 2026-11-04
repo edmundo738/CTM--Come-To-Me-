@@ -66,3 +66,9 @@ This block and the installed ai-memory Agent Skills are managed together.
 
 Refreshes are idempotent: only the content delimited by the ai-memory start/end HTML-comment markers is replaced.
 <!-- ai-memory:end -->
+
+## Direção visual do jogo
+
+- Trate as imagens de referência enviadas pelo utilizador como conceitos, não como arte final a copiar.
+- Antes de alterar personagens, inimigos ou cenário, confira a perspetiva e a escala na execução real do jogo.
+- Lia é uma esfera com o mesmo volume, luz, acabamento e linguagem facial do jogador; use a paleta rosa e violeta e nunca a transforme numa personagem humana ou humanoide.

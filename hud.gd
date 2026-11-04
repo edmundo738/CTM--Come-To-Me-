@@ -169,6 +169,10 @@ func _draw() -> void:
 		elif game.environment_bonus_available and not game.environment_bonus_claimed:
 			_draw_environment_bonus_guide(screen)
 		_draw_effect_strip(screen)
+		if game.dev_sandbox_active:
+			_draw_dev_sandbox_banner(screen)
+		if game.captor_flyover_time > 0.0:
+			_draw_captor_flyover_hint(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
 	elif game.game_state == "rescued":
@@ -421,6 +425,24 @@ func _draw_effect_strip(screen: Vector2) -> void:
 		draw_string(font, rect.position + Vector2(6, 17), chip.label, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 12, 9, chip.color)
 
 
+func _draw_dev_sandbox_banner(screen: Vector2) -> void:
+	var width := minf(310.0, screen.x - 24.0)
+	var panel := Rect2(screen.x - width - 12.0, 138.0, width, 26.0)
+	draw_rect(panel, Color("261512", 0.95))
+	draw_rect(panel, Color("ffb66c", 0.8), false, 1.0)
+	draw_string(font, panel.position + Vector2(8, 18), "MODO DEV  /  PROGRESSO NAO GUARDADO", HORIZONTAL_ALIGNMENT_CENTER, width - 16.0, 10, Color("ffd6a4"))
+
+
+func _draw_captor_flyover_hint(screen: Vector2) -> void:
+	var panel_width := minf(560.0, screen.x - 28.0)
+	var panel := Rect2(Vector2((screen.x - panel_width) * 0.5, maxf(82.0, screen.y - 154.0)), Vector2(panel_width, 70.0))
+	_draw_panel(panel, Color("dc83ff", 0.52))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 22), "PRIMEIRO SINAL  /  CAPTURADOR DIVINO", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 10, Color("f6e5ff"))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 43), "Lia esta na jaula. Segue o rastro ate ao portal.", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 9, Color("c9b8df"))
+	_draw_button(Rect2(panel.end.x - 126, panel.position.y + 19, 112, 32), "AVANCAR", "skip_captor_flyover", "secondary")
+
+
+
 func _draw_minimap(rect: Rect2) -> void:
 	# Fundo do mini-mapa
 	draw_rect(rect.grow(2), Color("c060ff", 0.25), true)
@@ -497,7 +519,13 @@ func _draw_footer(screen: Vector2) -> void:
 		wait_label = game.controller.button_label("wait")
 	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 246.0, 9, Color("8070b8"))
 	if game.game_state == "playing":
-		_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s BLINK %d" % [blink_label, game.blink_charges], "blink", "primary" if game.blink_charges > 0 else "secondary")
+		if game.special_family == "sokoban":
+			var undo_label := "Z"
+			if game.controller.using_gamepad and game.controller.button_label("pause") != "--":
+				undo_label = game.controller.button_label("cancel")
+			_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s DESFAZER" % undo_label, "undo_sokoban", "secondary")
+		else:
+			_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s BLINK %d" % [blink_label, game.blink_charges], "blink", "primary" if game.blink_charges > 0 else "secondary")
 		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "%s ESPERAR" % wait_label, "wait", "secondary")
 
 	# ── Aviso / Notícia central ─────────────────────────────────────────────────
@@ -907,10 +935,10 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 	if rescued:
 		if game.floor_number == 5:
 			title = "LIA FOI AVISTADA!"
-			subtitle = "Presa numa capsula pelo Warden-Prime! Ele foge: 'Ela pertence ao abismo... so no Andar 100 a salvaras!'."
+			subtitle = "O capturador levou Lia. Chega ao andar 100 para a libertar."
 		elif game.floor_number == 100:
 			title = "LIA FOI LIBERTADA!"
-			subtitle = "A capsula quebrou-se! Lia esta a salvo e junta-se a ti! A jornada continua ate ao Andar 200!"
+			subtitle = "Lia foi libertada! A jornada continua ate ao andar 200 e depois."
 		else:
 			title = "SETOR %02d CONCLUIDO" % game.floor_number
 			subtitle = "Mais perto de libertar Lia no Andar 100. Novos desafios e inimigos desbloqueados."
@@ -971,7 +999,9 @@ func _draw_special_guide(screen: Vector2) -> void:
 	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
 	draw_string(font, rect.position + Vector2(12, 20), game.special_hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("f2e5c7"))
 	var detail := "R OU PAUSA > REINICIAR: RESTAURA O INVENTARIO DO INICIO" if game.objective_type == "environment" else "O PORTAL E OS OBJETIVOS CONTINUAM A USAR AS REGRAS NORMAIS"
-	if game.special_family == "circuit":
+	if game.special_family == "sokoban":
+		detail = "Z / BOTAO DESFAZER  |  R REINICIA  |  EMPURROES %d" % game.sokoban_pushes
+	elif game.special_family == "circuit":
 		detail = "E = ENERGIA / AGUA AMARELA CAUSA DANO  |  R OU PAUSA > REINICIAR"
 	elif game.special_family == "hybrid" and game.environment_bonus_available:
 		detail = "OPCIONAL: MADEIRA NA CORRENTE ATE A PLACA L CONCEDE ESCUDO +1"

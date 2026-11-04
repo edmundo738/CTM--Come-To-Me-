@@ -30,8 +30,8 @@ static func chamber(index: int) -> Dictionary:
 			common.plates = [{"pos": Vector2i(6, 4), "required": "metal"}]
 		2:
 			common["name"] = "GELO / RITMO"
-			common["hint"] = "Gelo desliza 1 casa e atrasa inimigos; armadilha pulsa a cada 3 turnos."
-			common.cells[Vector2i(3, 4)] = {"kind": "ice"}
+			common["hint"] = "Gelo fragil desliza 1 casa; parte apos tres passagens. Armadilha mantem ritmo."
+			common.cells[Vector2i(3, 4)] = {"kind": "ice", "brittle": true, "stress": 0, "broken": false}
 			common.walls = [Vector2i(2, 3), Vector2i(3, 3), Vector2i(2, 5), Vector2i(3, 5)]
 			# Dangerous on the first action; wait once before entering.
 			common.traps = [{"pos": Vector2i(3, 4), "type": "rhythm", "phase": 2, "armed": true, "revealed": true}]

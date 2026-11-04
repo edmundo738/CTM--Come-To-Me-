@@ -2,7 +2,7 @@
 
 **Data:** 4 de novembro de 2026
 
-**Estado:** alterações locais integradas para avaliação; não é aprovação artística, teste de áudio real nem exportação final. O checkpoint vivo é `CHECKPOINT_GAME_FEEL.md`.
+**Estado histórico:** revisão de game feel anterior à reconciliação do PR #10; não é aprovação artística, teste de áudio real nem exportação final. Para a integração posterior, consultar `RELATORIO_INTEGRACAO_PR10_2026-11-04.md` e o checkpoint vivo `CHECKPOINT_GAME_FEEL.md`.
 
 ## 1. Como esta revisão tratou as versões
 

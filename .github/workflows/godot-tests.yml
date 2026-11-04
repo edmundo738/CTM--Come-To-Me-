@@ -43,6 +43,7 @@ jobs:
           ENV_RENDER_TEST_OUT: ${{ runner.temp }}/environment-evidence
           COMBAT_RENDER_TEST_OUT: ${{ runner.temp }}/combat-evidence
           ELECTRIC_RENDER_TEST_OUT: ${{ runner.temp }}/electric-evidence
+          MERGE_RENDER_TEST_OUT: ${{ runner.temp }}/merge-evidence
         run: xvfb-run -a -s "-screen 0 1280x720x24" tools/test-godot.sh --graphics
       - name: Save combat screenshots
         if: always()
@@ -71,4 +72,11 @@ jobs:
         with:
           name: skill-ui-evidence
           path: ${{ runner.temp }}/skill-ui-evidence/*.png
+          if-no-files-found: ignore
+      - name: Save story and integration screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: merge-evidence
+          path: ${{ runner.temp }}/merge-evidence/*.png
           if-no-files-found: ignore

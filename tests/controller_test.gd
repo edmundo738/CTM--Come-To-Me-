@@ -341,7 +341,11 @@ func _test_game_integration(fake: FakeInput) -> void:
 	_expect(game.dev_noclip and game.hud.focus_action == "dev_noclip", "developer modal is navigable and activated with a gamepad")
 	_tap(game.controller, 2, JOY_BUTTON_B)
 	_expect(not game.dev_menu_open, "cancel closes the developer modal")
-
+	# Leaving dev restores the campaign before the journal is populated. Do not
+	# manufacture unlocked floors inside the isolated dev state and expect them
+	# to survive the transition back to the real campaign.
+	game.handle_hud_action("menu")
+	_expect(not game.dev_sandbox_active, "returning to the menu exits the isolated dev sandbox")
 	game.game_state = "level_select"
 	game.furthest_floor = 2
 	_prime_menu(game, [["floor:1", Rect2(0, 0, 100, 100)], ["floor:2", Rect2(110, 0, 100, 100)], ["menu", Rect2(0, 120, 100, 30)]], "floor:1")

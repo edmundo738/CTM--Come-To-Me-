@@ -1,6 +1,7 @@
 extends RefCounted
 
 const Rules = preload("res://environment_system.gd")
+const Sokoban = preload("res://sokoban_generator.gd")
 const DIRECTIONS := [Vector2i.RIGHT, Vector2i.LEFT, Vector2i.DOWN, Vector2i.UP]
 const MAX_SEARCH_STATES := 120000
 
@@ -12,6 +13,25 @@ static func make(family: String, seed_number: int, floor_number: int) -> Diction
 		"size": Vector2i(11, 7), "start": Vector2i(2, 3), "portal": Vector2i(8, 3),
 		"name": "", "hint": "", "walls": [], "cells": {}, "crates": [], "plates": [], "gates": [],
 	}
+	# The campaign scheduler remains authoritative. On some later Sokoban
+	# events, adapt the other branch's authored modules into the SAME held-plate
+	# environment rules and subject them to the normal bounded solver below.
+	if family == "sokoban" and floor_number >= 12 and posmod(seed_number + floor_number, 2) == 0:
+		var module: Dictionary = Sokoban.new().generate(floor_number, seed_number ^ (floor_number * 7919))
+		spec.size = module.size
+		spec.start = module.start
+		spec.portal = module.portal
+		spec.name = str(module.title)
+		spec.hint = "EMPURRA CADA CAIXA A UMA PLACA L; Z DESFAZ."
+		for y in range(1, spec.size.y - 1):
+			for x in range(1, spec.size.x - 1):
+				if module.grid[y][x] == Sokoban.TILE_WALL:
+					spec.walls.append(Vector2i(x, y))
+		for point in module.boxes:
+			spec.crates.append({"pos": point, "material": "wood"})
+		for point in module.goals:
+			spec.plates.append({"pos": point, "required": "wood"})
+		return spec
 	match family:
 		"sokoban":
 			spec.name = "OFICINA DE CAIXAS"

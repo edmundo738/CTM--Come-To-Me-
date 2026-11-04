@@ -41,6 +41,8 @@ const PATTERNS := {
 	"puzzle_error": {"priority": 3, "segments": [Vector3(0.25, 0.68, 0.11), Vector3(0, 0, 0.07), Vector3(0.25, 0.68, 0.11)]},
 	"rhythm_trap": {"priority": 4, "segments": [Vector3(0.64, 0.84, 0.13), Vector3(0, 0, 0.07), Vector3(0.42, 0.58, 0.09)]},
 	"near_miss": {"priority": 3, "segments": [Vector3(0.62, 0.20, 0.06), Vector3(0, 0, 0.07), Vector3(0.34, 0.44, 0.07)]},
+	"current": {"priority": 1, "segments": [Vector3(0.25, 0.18, 0.12), Vector3(0.40, 0.22, 0.08)]},
+	"ice_crack": {"priority": 3, "segments": [Vector3(0.72, 0.55, 0.08), Vector3(0.25, 0.82, 0.10)]},
 	"heartbeat": {"priority": 1, "segments": [Vector3(0.20, 0.64, 0.07), Vector3(0, 0, 0.09), Vector3(0.14, 0.42, 0.065)]},
 	"test": {"priority": 7, "segments": [Vector3(0.85, 1.0, 0.20), Vector3(0, 0, 0.08), Vector3(1.0, 0.38, 0.13)]},
 }

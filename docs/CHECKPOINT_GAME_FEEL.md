@@ -21,7 +21,7 @@ A primeira prioridade é complementar os raios existentes com iluminação local
 
 ## CURRENT_TASK
 
-A integração de raios, reflexos, som, movimento, contacto e colisões está implementada e coberta pelos testes descritos abaixo; continua dependente de avaliação humana e de hardware real. As alterações e evidências foram reunidas num ZIP, com integridade, extração e launcher headless verificados, e entregues por HTTPS. O proprietário autorizou explicitamente um commit local; não solicitou push nem alteração ou merge do PR.
+O proprietário autorizou reconciliar os históricos e mecânicas do PR #10, testar, publicar a branch sem force push e tentar o merge. A integração local preserva o game feel do HEAD e incorpora seletivamente história, gelo frágil, congelamento ambiental, módulos de Sokoban e ferramentas de desenvolvimento da base. **FACT:** a árvore foi testada como descrito em `RELATORIO_INTEGRACAO_PR10_2026-11-04.md`; estado de Git, CI e merge deve ser confirmado no remoto. A entrega atualizada tem de preceder a confirmação final e o merge, conforme `AGENTS.md`.
 
 ## ACTIVE_DESIGN_RULES
 
@@ -47,6 +47,9 @@ A integração de raios, reflexos, som, movimento, contacto e colisões está im
 
 ## LATEST_CHANGES
 
+- **FACT — integração:** a introdução de Lia no andar 5 é opcionalmente guardada por campanha, bloqueia movimentos e pode ser avançada; o resgate do andar 100 é contabilizado uma única vez. O sandbox de F1 isola gravações e restaura a campanha; um recorde legítimo pendente é guardado ou a entrada é recusada.
+- **FACT — ambiente:** Congelar Tempo suspende corrente para a bola e madeira, protege a bola de eletricidade e não desativa armadilhas nem o circuito. Gelo frágil parte na terceira ação sobre a casa, com estado em `environment.cells`.
+- **FACT — Sokoban:** os módulos da base usam o agendador, solver, caixas e placas já existentes. Desfazer é limitado a 128 snapshots e restaura estado, pickups, recursos, contadores e RNG; Blink, salto e demolição mantêm-se. O par de empurrões dos modelos não altera a pontuação e desafios anteriores.
 - **FACT:** implementação e integração de luz, partículas e áudio elétrico; listener posicionado no jogador; limpeza dos recursos nas transições; desenho do arco por cima do marcador da fonte.
 - **FACT:** correção do reflexo da bola, marcas de contacto sem setas, partículas e camadas de som, resposta de câmara, preservação das silhuetas de criaturas durante escudo e testes dedicados.
 - **FACT:** adicionados `tests/electric_presentation_test.gd`, `tests/electric_render_test.gd`, ampliações de combate/ambiente, integração no runner e workflow, e `tools/game_feel_timeline.gd` para sequências reproduzíveis.
@@ -71,6 +74,10 @@ A integração de raios, reflexos, som, movimento, contacto e colisões está im
 
 ## LATEST_EVIDENCE
 
+- **MEASURED — integração atual:** 12 suites nativas e quatro sweeps passaram, incluindo `MERGE_INTEGRATION_TEST_PASS` **74**, `SPECIAL_CONTENT_TEST_PASS` **12.242**, performance com snapshots originais e determinismo ambiental, campanhas **191** e combate **122**. O teste de comandos foi ajustado para sair do sandbox antes de fabricar progresso de campanha; passou após a correção.
+- **MEASURED — renderer atual:** Web/Chromium/SwiftShader: cena de Lia, avançar, desfazer e indicador dev **14**, ambiente **5**, elétrica **13**, combate **94**, intenções **26**, árvore **66**; teste lógico de apresentação elétrica **36**, todos PASS. A cena alterou **80.887 pixels** face ao controlo na captura 1280×720. SVGs foram rasterizados e recursos carregados diretamente apenas no staging temporário, não no projeto.
+- **FACT — limites atuais:** a importação do Godot custom terminou com código 0 mas dez erros de fontconfig; física e áudio nativos Dummy. A execução individual não é um PASS do runner estrito, que corretamente rejeita esses erros. Testes Web tiveram avisos de áudio. CI no commit integrado, audição, Windows, dispositivos físicos, GPU e teste humano são verificações distintas.
+- **HISTÓRICO:** os resultados de game feel e pacote anteriores, registados abaixo, não substituem os testes do estado integrado.
 - **MEASURED — lógica nativa:** após a otimização, 11 suites passaram individualmente no Godot 4.7.2 custom headless, incluindo `ELECTRIC_PRESENTATION_TEST_PASS` **37** verificações com exportação de WAV, `COMBAT_FEEL_TEST_PASS` **122**, `EXPRESSIVE_MOVEMENT_TEST_PASS` **200**, conteúdos especiais **12.232**, árvore **379** e campanhas **191**. Física e áudio do motor estavam em Dummy; estas regras não dependem da física do motor.
 - **MEASURED — sweeps:** andares 1–10 com duas seeds e bots (**2.752 ações**), andares 25–35 com uma seed e bots (**1.286 ações**), mais 100 e 200 sem bots: todos `SWEEP_PASS` (**4.038 ações** no total).
 - **MEASURED — renderer:** após a otimização, Godot Web 4.7.2, Chromium/WebGL2/SwiftShader: ambiente **5**, luz elétrica **13**, combate **94**, intenções **26**, árvore **66** verificações, todas PASS; lógica elétrica no Web **36**. O staging carregou as mesmas fontes de jogo e recursos, mas converteu os SVGs das peças para PNG e carregou imagens/WAV diretamente; não é um PCK final. Áudio Dummy.
@@ -84,6 +91,6 @@ A integração de raios, reflexos, som, movimento, contacto e colisões está im
 
 ## NEXT_ACTION
 
-1. Pedir avaliação interativa e auditiva ao proprietário: sensação de peso, contactos, flashes, mistura, pausa/transições e conforto em hardware real.
-2. Investigar com essa avaliação o caso de contacto completamente cercado, o propósito das placas opcionais e o desempenho em circuitos grandes no hardware alvo.
-3. Não fazer push, alterar ou fundir o PR sem novo pedido.
+1. Fornecer o ZIP atualizado da integração e pedir confirmação antes do merge; confirmar o estado real do PR e dos checks no GitHub.
+2. Após autorização necessária e checks, tentar o merge do PR #10 sem force push e informar o resultado real.
+3. Pedir avaliação interativa e auditiva: peso, contactos, flashes, mistura, desempenho e conforto em hardware real; investigar o contacto completamente cercado e o propósito das placas opcionais com essa avaliação.
