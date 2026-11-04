@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+<defs>
+ <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#667a96"/><stop offset=".35" stop-color="#283249"/><stop offset=".72" stop-color="#0d1321"/><stop offset="1" stop-color="#050913"/></linearGradient>
+ <linearGradient id="armor" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#e2ffea"/><stop offset=".19" stop-color="#84f3bd"/><stop offset=".49" stop-color="#28795f"/><stop offset="1" stop-color="#101123"/></linearGradient>
+ <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#e2ffea"/><stop offset=".5" stop-color="#84f3bd"/><stop offset="1" stop-color="#28795f"/></linearGradient>
+ <radialGradient id="core" cx=".38" cy=".32" r=".72"><stop stop-color="#ffffff"/><stop offset=".32" stop-color="#e2ffea"/><stop offset=".72" stop-color="#84f3bd"/><stop offset="1" stop-color="#28795f"/></radialGradient>
+</defs>
+<!-- Grounded, layered plinth; body is deliberately unique to each piece. -->
+<ellipse cx="96" cy="165" rx="65" ry="16" fill="#030510" opacity=".58"/>
+<ellipse cx="96" cy="159" rx="57" ry="12" fill="#84f3bd" opacity=".14"/>
+<path d="M45 139 Q48 133 58 132 H134 Q144 133 147 139 L153 149 147 161 Q96 171 45 161 L39 149Z" fill="url(#metal)" stroke="#060912" stroke-width="5" stroke-linejoin="round"/>
+<path d="M46 145 Q96 151 146 145 L145 155 Q96 163 47 155Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M55 151 Q96 156 137 151" fill="none" stroke="#e2ffea" stroke-opacity=".65" stroke-width="2"/>
+
+<!-- A tall split mitre and long angular mantle form the bishop. -->
+<path d="M96 19 Q117 34 121 58 L114 74 124 84 132 116 147 140 45 140 60 116 68 84 78 74 71 58 Q75 34 96 19Z" fill="url(#metal)" stroke="#060d17" stroke-width="5" stroke-linejoin="round"/>
+<path d="M96 25 Q113 37 116 58 L109 72 83 72 76 58 Q79 38 96 25Z" fill="url(#armor)" stroke="url(#edge)" stroke-width="2.5"/>
+<path d="M107 35 L85 60" stroke="#07161b" stroke-width="8" stroke-linecap="round"/>
+<path d="M107 35 L85 60" stroke="#9bffcd" stroke-width="2" stroke-linecap="round"/>
+<circle cx="96" cy="69" r="5" fill="url(#core)"/>
+<path d="M72 84 L96 77 120 84 127 116 138 135 H54 L65 116Z" fill="url(#armor)" stroke="#12302d" stroke-width="3"/>
+<path d="M72 89 L85 91 79 119 63 133 57 132 67 113Z" fill="#b8ffe0" opacity=".26"/>
+<path d="M120 89 L107 91 113 119 129 133 135 132 125 113Z" fill="#061e20" opacity=".6"/>
+<path d="M96 89 L108 104 96 123 84 104Z" fill="#081d22" stroke="#70f8c4" stroke-width="2"/>
+<path d="M96 94 L102 104 96 115 90 104Z" fill="url(#core)"/>
+<path d="M77 127 H115" stroke="#adffdf" stroke-width="2.5"/>
+
+</svg>

@@ -6,6 +6,16 @@ var game: Node
 var font: Font
 var buttons: Array[Dictionary] = []
 var pointer := Vector2(-1000, -1000)
+var drag_start := Vector2.ZERO
+var dragging := false
+var slider_mouse_dragging := false
+var slider_touch_index := -1
+var intensity_track := Rect2()
+var focus_action := ""
+var focus_context := ""
+var buttons_context := ""
+var focus_visible := false
+const SWIPE_THRESHOLD := 28.0
 
 
 func _ready() -> void:
@@ -19,19 +29,99 @@ func _process(_delta: float) -> void:
 
 
 func _gui_input(event: InputEvent) -> void:
-	if not event is InputEventMouseButton or event.button_index != MOUSE_BUTTON_LEFT or not event.pressed:
+	if event is InputEventMouseButton or event is InputEventScreenTouch or (event is InputEventMouseMotion and event.relative.length_squared() > 0.0):
+		focus_visible = false
+	if buttons_context != _focus_context():
+		cancel_pointer_drag()
 		return
-	for index in range(buttons.size() - 1, -1, -1):
-		var button: Dictionary = buttons[index]
-		if button.rect.has_point(event.position):
+	if event is InputEventMouseMotion and slider_mouse_dragging:
+		_set_intensity_at(event.position)
+		accept_event()
+		return
+	if event is InputEventScreenDrag and event.index == slider_touch_index:
+		_set_intensity_at(event.position)
+		accept_event()
+		return
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		var mouse_event := event as InputEventMouseButton
+		if mouse_event.pressed:
+			for index in range(buttons.size() - 1, -1, -1):
+				var button: Dictionary = buttons[index]
+				if button.rect.has_point(mouse_event.position):
+					accept_event()
+					if button.action == "controller_intensity":
+						focus_action = button.action
+						slider_mouse_dragging = true
+						_set_intensity_at(mouse_event.position)
+					else:
+						game.handle_hud_action(button.action)
+					return
+			drag_start = mouse_event.position
+			dragging = true
+		elif slider_mouse_dragging:
+			slider_mouse_dragging = false
+			_set_intensity_at(mouse_event.position)
 			accept_event()
-			game.handle_hud_action(button.action)
 			return
+		elif dragging:
+			dragging = false
+			var diff: Vector2 = mouse_event.position - drag_start
+			if diff.length() >= SWIPE_THRESHOLD:
+				game._handle_swipe(drag_start, mouse_event.position)
+			else:
+				game._handle_world_click(mouse_event.position)
+	elif event is InputEventScreenTouch:
+		var touch_event := event as InputEventScreenTouch
+		if touch_event.pressed:
+			for index in range(buttons.size() - 1, -1, -1):
+				var button: Dictionary = buttons[index]
+				if button.rect.has_point(touch_event.position):
+					accept_event()
+					if button.action == "controller_intensity":
+						focus_action = button.action
+						slider_touch_index = touch_event.index
+						_set_intensity_at(touch_event.position)
+					else:
+						game.handle_hud_action(button.action)
+					return
+			drag_start = touch_event.position
+			dragging = true
+		elif touch_event.index == slider_touch_index:
+			slider_touch_index = -1
+			_set_intensity_at(touch_event.position)
+			accept_event()
+			return
+		elif dragging:
+			dragging = false
+			var diff: Vector2 = touch_event.position - drag_start
+			if diff.length() >= SWIPE_THRESHOLD:
+				game._handle_swipe(drag_start, touch_event.position)
+			else:
+				game._handle_world_click(touch_event.position)
+
+
+func cancel_pointer_drag() -> void:
+	dragging = false
+	slider_mouse_dragging = false
+	slider_touch_index = -1
+
+
+func _set_intensity_at(position: Vector2) -> void:
+	if intensity_track.size.x <= 0.0 or game.game_state != "controller_settings":
+		return
+	var position_ratio := (position.x - intensity_track.position.x) / intensity_track.size.x
+	game.set_controller_vibration_intensity(position_ratio * game.controller.MAX_VIBRATION_INTENSITY)
+	queue_redraw()
 
 
 func _draw() -> void:
 	if game == null:
 		return
+	var context := _focus_context()
+	if focus_context != context:
+		focus_context = context
+		focus_action = _default_focus_action()
+	buttons_context = context
 	buttons.clear()
 	var screen := size
 	match game.game_state:
@@ -41,14 +131,48 @@ func _draw() -> void:
 		"level_select":
 			_draw_level_select(screen)
 			return
+		"campaign_select":
+			_draw_campaign_select(screen)
+			return
+		"campaign_confirm":
+			_draw_campaign_confirm(screen)
+			return
+		"skill_tree":
+			_draw_skill_tree(screen)
+			return
+		"skill_confirm":
+			_draw_skill_confirm(screen)
+			return
+		"controller_settings":
+			_draw_controller_settings(screen)
+			return
+		"controller_mapping":
+			_draw_controller_mapping(screen)
+			return
 		"paused":
 			_draw_header(screen)
 			_draw_footer(screen)
 			_draw_pause(screen)
+			_draw_save_warning(screen)
 			return
 		"playing", "floor_clear", "rescued", "captured", "game_over":
 			_draw_header(screen)
 			_draw_footer(screen)
+	if game.game_state == "playing":
+		_draw_boss_bar(screen)
+		if game.objective_type == "puzzle":
+			_draw_puzzle_guide()
+		if game.lab_active:
+			_draw_lab_guide(screen)
+		elif game.special_hint != "":
+			_draw_special_guide(screen)
+		elif game.environment_bonus_available and not game.environment_bonus_claimed:
+			_draw_environment_bonus_guide(screen)
+		_draw_effect_strip(screen)
+		if game.dev_sandbox_active:
+			_draw_dev_sandbox_banner(screen)
+		if game.captor_flyover_time > 0.0:
+			_draw_captor_flyover_hint(screen)
 	if game.game_state == "floor_clear":
 		_draw_result(screen, false)
 	elif game.game_state == "rescued":
@@ -58,62 +182,389 @@ func _draw() -> void:
 	if game.flash_time > 0.0:
 		var alpha: float = 0.16 * minf(1.0, game.flash_time / 0.14)
 		draw_rect(Rect2(Vector2.ZERO, screen), Color(game.flash_color, alpha))
+	if game.dev_menu_open:
+		# Behind the developer modal, gameplay buttons are not focusable/clickable.
+		buttons.clear()
+		_draw_dev_menu(screen)
+	_draw_save_warning(screen)
+
+
+func _draw_save_warning(screen: Vector2) -> void:
+	if game.profile_message.is_empty():
+		return
+	# Never conceal a failed checkpoint behind a result or pause modal.
+	var warning := Rect2(8, 6, screen.x - 16, 28)
+	draw_rect(warning, Color("471726", 0.98))
+	draw_string(font, warning.position + Vector2(8, 19), "AVISO DE SAVE: " + game.profile_message, HORIZONTAL_ALIGNMENT_LEFT, warning.size.x - 16, 10, Color("ffe7eb"))
+
+
+func _focus_context() -> String:
+	if game == null:
+		return ""
+	return game.game_state + (":dev" if game.dev_menu_open and game.game_state == "playing" else "")
+
+
+func _default_focus_action() -> String:
+	if game.dev_menu_open and game.game_state == "playing":
+		return "dev_god"
+	match game.game_state:
+		"title": return "continue" if game.has_resume else "new_run"
+		"level_select": return "floor:%d" % game.level_page_start
+		"paused": return "resume"
+		"floor_clear", "rescued": return "next_floor"
+		"game_over": return "continue"
+		"controller_settings": return "controller_device"
+		"campaign_select": return "campaign:%d" % game.active_slot
+		"campaign_confirm": return "campaign_cancel"
+		"skill_tree": return "skill_node:" + game.skill_selected
+		"skill_confirm": return "skill_remove_cancel"
+	return ""
+
+
+func _focus_index() -> int:
+	for index in buttons.size():
+		if buttons[index].action == focus_action:
+			return index
+	return -1
+
+
+func _focus_is_valid() -> bool:
+	if buttons_context != _focus_context() or buttons.is_empty():
+		return false
+	if _focus_index() < 0:
+		focus_action = buttons[0].action
+	return true
+
+
+func _is_focused(action: String) -> bool:
+	return not action.is_empty() and action == focus_action and (focus_visible or (game.controller != null and game.controller.using_gamepad))
+
+
+func move_focus(direction: Vector2i) -> bool:
+	focus_visible = true
+	if not _focus_is_valid():
+		return false
+	if game.game_state == "controller_settings" and focus_action == "controller_intensity" and direction.x != 0:
+		game.set_controller_vibration_intensity(game.controller.vibration_intensity + 0.05 * direction.x)
+		queue_redraw()
+		return true
+	var origin: Vector2 = buttons[_focus_index()].rect.get_center()
+	var best := -1
+	var best_score := INF
+	var axis := Vector2(direction)
+	for index in buttons.size():
+		if index == _focus_index():
+			continue
+		var delta: Vector2 = buttons[index].rect.get_center() - origin
+		var forward := delta.dot(axis)
+		if forward <= 0.0:
+			continue
+		var sideways := absf(delta.x * axis.y - delta.y * axis.x)
+		var score := forward + sideways * 2.5
+		if score < best_score:
+			best_score = score
+			best = index
+	if best < 0:
+		# Wrap at the edge, preferring the same row or column.
+		for index in buttons.size():
+			if index == _focus_index():
+				continue
+			var delta: Vector2 = buttons[index].rect.get_center() - origin
+			var sideways := absf(delta.x * axis.y - delta.y * axis.x)
+			var score := delta.dot(axis) + sideways * 2.5
+			if score < best_score:
+				best_score = score
+				best = index
+	if best < 0:
+		return false
+	focus_action = buttons[best].action
+	queue_redraw()
+	return true
+
+
+func activate_focus() -> bool:
+	focus_visible = true
+	if not _focus_is_valid():
+		return false
+	var action := focus_action
+	game.handle_hud_action(action)
+	queue_redraw()
+	return true
 
 
 func _draw_header(screen: Vector2) -> void:
-	draw_rect(Rect2(Vector2.ZERO, Vector2(screen.x, 78)), Color("080d1c", 0.91))
-	draw_rect(Rect2(Vector2(0, 76), Vector2(screen.x, 2)), Color("48ddec", 0.52))
-	draw_string(font, Vector2(23, 31), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 205, 18, Color("edfaff"))
-	draw_string(font, Vector2(24, 54), "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)], HORIZONTAL_ALIGNMENT_LEFT, 235, 10, Color("68e8f4"))
-	var stats_width := 344.0
-	var stat_gap := 5.0
-	var stat_width := (stats_width - stat_gap * 3.0) / 4.0
-	var stat_x := screen.x - stats_width - 18.0
-	var objective_x := 275.0
-	var objective_width := maxf(160.0, stat_x - objective_x - 14.0)
-	draw_string(font, Vector2(objective_x, 30), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, objective_width, 9, Color("7789a8"))
-	draw_string(font, Vector2(objective_x, 52), game.get_objective_text(), HORIZONTAL_ALIGNMENT_LEFT, objective_width, 12, Color("dce8fa"))
-	_draw_stat_chip(Rect2(stat_x, 17, stat_width, 44), "shield", "%d" % game.charges, Color("8cf4ff"))
-	_draw_stat_chip(Rect2(stat_x + stat_width + stat_gap, 17, stat_width, 44), "coin", "%03d" % game.total_coins, Color("ffe17a"))
-	var switch_value := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
-	_draw_stat_chip(Rect2(stat_x + (stat_width + stat_gap) * 2.0, 17, stat_width, 44), "switch", switch_value, Color("b9f39c"))
-	_draw_stat_chip(Rect2(stat_x + (stat_width + stat_gap) * 3.0, 17, stat_width, 44), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
+	# ── Fundo translúcido do header ──────────────────────────────────────────────
+	draw_rect(Rect2(Vector2.ZERO, Vector2(screen.x, 74)), Color("06091a", 0.93))
+	# Linha neon inferior do header
+	draw_rect(Rect2(Vector2(0, 72), Vector2(screen.x, 2)), Color("b060ff", 0.7))
+	draw_rect(Rect2(Vector2(0, 73), Vector2(screen.x, 1)), Color("e0a0ff", 0.25))
+	
+	# ── LOGO top-left: Diamante Neon + COME TO ME / NEON RUINS ───────────────────
+	var logo_cx := 22.0
+	var logo_cy := 36.0
+	# Diamante (dois triângulos)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(logo_cx, logo_cy - 12), Vector2(logo_cx + 9, logo_cy), Vector2(logo_cx, logo_cy + 12), Vector2(logo_cx - 9, logo_cy)
+	]), Color("c060ff", 0.9))
+	draw_polyline(PackedVector2Array([
+		Vector2(logo_cx, logo_cy - 12), Vector2(logo_cx + 9, logo_cy), Vector2(logo_cx, logo_cy + 12), Vector2(logo_cx - 9, logo_cy), Vector2(logo_cx, logo_cy - 12)
+	]), Color("eeb0ff"), 1.5, true)
+	draw_circle(Vector2(logo_cx, logo_cy), 3.5, Color("ffffff", 0.9))
+	
+	# Texto principal
+	draw_string(font, Vector2(38, 30), "COME TO ME", HORIZONTAL_ALIGNMENT_LEFT, 180, 15, Color("f0e8ff"))
+	draw_string(font, Vector2(38, 49), "NEON RUINS", HORIZONTAL_ALIGNMENT_LEFT, 180, 10, Color("c060ff"))
+	# Subtítulo: andar e bioma
+	var location_label: String = "CAMARA %d / %s" % [game.lab_index + 1, game.lab_name] if game.lab_active else "ANDAR %02d  /  %s" % [game.floor_number, game.get_floor_name(game.floor_number)]
+	draw_string(font, Vector2(38, 66), location_label, HORIZONTAL_ALIGNMENT_LEFT, 240 if screen.x >= 1100 else 165, 9, Color("9060d0"))
+	
+	# ── OBJETIVO (centro) ─────────────────────────────────────────────────────────
+	# On smaller windows, hide the minimap and give the objective its own space
+	# instead of letting the stat chips overlap it.
+	var show_minimap := screen.x >= 1100.0
+	var chip_w := 70.0
+	var chip_h := 40.0
+	var chip_gap := 4.0
+	var chip_start_x := screen.x - (chip_w + chip_gap) * 5 - (120.0 if show_minimap else 10.0)
+	var obj_x := 300.0 if show_minimap else 210.0
+	var obj_w := maxf(150.0, chip_start_x - obj_x - 20.0)
+	# Caixa de objetivo chanfrada
+	var obj_rect := Rect2(obj_x - 8, 8, obj_w + 16, 58)
+	draw_rect(obj_rect, Color("08061a", 0.85), true)
+	draw_rect(Rect2(obj_x - 8, 8, obj_w + 16, 2), Color("5030a0", 0.8), true)
+	draw_string(font, Vector2(obj_x, 23), "OBJETIVO", HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, Color("7050c0"))
+	var objective: String = game.get_objective_text()
+	var objective_detail: String = "LABORATORIO / SEM RECOMPENSAS" if game.lab_active else "DESAFIO +5 / " + game.get_challenge_text()
+	if screen.x < 1100.0:
+		# Preserve the essential objective and the complete challenge at the
+		# minimum width rather than clipping either behind the stat chips.
+		if game.objective_type == "environment":
+			objective = "PLACAS %d/%d / PORTAL %s" % [game.environment.active_plate_count(), game.environment.plates.size(), "ABERTO" if game.portal_open else "FECHADO"]
+			if game.lab_active:
+				objective_detail = "LABORATORIO / SEM RECOMPENSAS"
+		elif game.objective_type == "puzzle":
+			objective = "RUNAS %d/3 / %s" % [game._active_switches(), "PORTAL ABERTO" if game.portal_open else "SEGUIR ORDEM"]
+		elif game.objective_type == "switches":
+			objective = "INTERRUPT. %d/%d / PORTAL %s" % [game._active_switches(), game.switches.size(), "ABERTO" if game.portal_open else "FECHADO"]
+		else:
+			objective = "ALCANCA O PORTAL / ENCONTRA LIA"
+		if not game.lab_active:
+			match game.challenge_kind:
+				"no_jump": objective_detail = "DESAFIO +5 / SEM SALTAR"
+				"no_hit": objective_detail = "DESAFIO +5 / SEM SOFRER DANO"
+				"moves": objective_detail = "DESAFIO +5 / ATE %d ACOES (%d)" % [game.challenge_par, game.moves_this_floor]
+				"all_coins": objective_detail = "DESAFIO +5 / MOEDAS: %d RESTANTES" % game.coins.size()
+	draw_string(font, Vector2(obj_x, 40), objective, HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9 if screen.x < 1100.0 else 10, Color("d0b0ff"))
+	var challenge_color := Color("ff8b90") if game.is_challenge_failed() else Color("f0cf7a")
+	draw_string(font, Vector2(obj_x, 57), objective_detail, HORIZONTAL_ALIGNMENT_LEFT, obj_w, 9, challenge_color)
+	
+	# ── STATS top-right: Shield | Coin | Switch | Key ─────────────────────────────
+	_draw_stat_chip(Rect2(chip_start_x, 16, chip_w, chip_h), "heart", "%d/%d" % [game.hearts_current if not game.lab_active else 0, game.heart_capacity()], Color("ff96ab"))
+	draw_string(font, Vector2(chip_start_x, 67), "EXTRAS", HORIZONTAL_ALIGNMENT_CENTER, chip_w, 8, Color("e6aabb"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap), 16, chip_w, chip_h), "shield", "%d/%d" % [game.charges, game.shield_capacity()], Color("8cf4ff"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 2.0, 16, chip_w, chip_h), "coin", "%03d" % game.total_coins, Color("ffe17a"))
+	var sw_val := "%d/%d" % [game._active_switches(), game.switches.size()] if game.switches.size() > 0 else "--"
+	if game.lab_active:
+		sw_val = "%d/%d" % [game.environment.active_plate_count(), game.environment.plates.size()]
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 3.0, 16, chip_w, chip_h), "switch", sw_val, Color("b9f39c"))
+	_draw_stat_chip(Rect2(chip_start_x + (chip_w + chip_gap) * 4.0, 16, chip_w, chip_h), "breaker", "%d" % game.breach_charges, Color("ffc58c"))
+	
+	# ── MINI-MAP top-right corner ──────────────────────────────────────────────────
+	if show_minimap:
+		var map_size := 96.0
+		var map_x := screen.x - map_size - 10.0
+		var map_y := 8.0
+		_draw_minimap(Rect2(map_x, map_y, map_size, map_size))
+
+
+func _draw_boss_bar(screen: Vector2) -> void:
+	var boss: Dictionary = game.get_active_boss()
+	if boss.is_empty():
+		return
+	var width := minf(330.0, screen.x * 0.42)
+	var rect := Rect2((screen.x - width) * 0.5, 81, width, 47)
+	draw_rect(rect, Color("100820", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(width, 1.5)), Color("e263ff", 0.8))
+	var max_hp := maxi(1, int(boss.get("max_hp", 2)))
+	var hp := clampi(int(boss.get("hp", max_hp)), 0, max_hp)
+	draw_string(font, rect.position + Vector2(10, 15), "CHEFE / %s   %d/%d" % [boss.get("boss_name", "GUARDIAO"), hp, max_hp], HORIZONTAL_ALIGNMENT_LEFT, width - 20, 10, Color("f5c5ff"))
+	var demolition: String = game.controller.button_label("break") if game.controller.using_gamepad else "B"
+	draw_string(font, rect.position + Vector2(10, 29), "%s   |   %s OU ESCUDO: -1 VIDA" % [boss.get("rule", "1 CASA"), demolition], HORIZONTAL_ALIGNMENT_LEFT, width - 20, 8, Color("c9a9dc"))
+	var bar := Rect2(rect.position + Vector2(10, 36), Vector2(width - 20, 5))
+	draw_rect(bar, Color("3a204d"))
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(hp) / float(max_hp), bar.size.y)), Color("e85cff"))
+
+
+func _draw_puzzle_guide() -> void:
+	var panel := Rect2(8, 81, 285, 51)
+	draw_rect(panel, Color("080d1c", 0.94))
+	draw_rect(Rect2(panel.position, Vector2(panel.size.x, 2)), Color("92e9ef", 0.8))
+	draw_string(font, panel.position + Vector2(9, 16), "PUZZLE / ATIVA NA ORDEM:", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 18, 9, Color("c6e5f3"))
+	for index in 3:
+		var x := panel.position.x + 12.0 + float(index) * 91.0
+		var color := Color(game.PUZZLE_COLORS[index])
+		var active: bool = index < game.switches.size() and bool(game.switches[index].get("active", false))
+		for dot in index + 1:
+			draw_circle(Vector2(x + float(dot) * 4.5, panel.position.y + 27), 1.8, Color("ffffff") if active else Color(color, 0.9))
+		draw_string(font, Vector2(x, panel.position.y + 43), game.PUZZLE_NAMES[index], HORIZONTAL_ALIGNMENT_LEFT, 85, 9, color if active else Color(color, 0.7))
+
+
+func _draw_effect_strip(screen: Vector2) -> void:
+	var chips: Array[Dictionary] = []
+	if game.speed_turns > 0:
+		chips.append({"label": "VELOCIDADE %d" % game.speed_turns, "color": Color("ffce5c")})
+	if game.magnet_turns > 0:
+		chips.append({"label": "IMA %d" % game.magnet_turns, "color": Color("ff68aa")})
+	if game.freeze_turns > 0:
+		chips.append({"label": "TEMPO %d" % game.freeze_turns, "color": Color("a6c6ff")})
+	for index in chips.size():
+		var chip: Dictionary = chips[index]
+		var rect := Rect2(8 + index * 112, screen.y - 125, 106, 25)
+		draw_rect(rect, Color("080d1c", 0.94))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(chip.color, 0.85))
+		draw_string(font, rect.position + Vector2(6, 17), chip.label, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 12, 9, chip.color)
+
+
+func _draw_dev_sandbox_banner(screen: Vector2) -> void:
+	var width := minf(310.0, screen.x - 24.0)
+	var panel := Rect2(screen.x - width - 12.0, 138.0, width, 26.0)
+	draw_rect(panel, Color("261512", 0.95))
+	draw_rect(panel, Color("ffb66c", 0.8), false, 1.0)
+	draw_string(font, panel.position + Vector2(8, 18), "MODO DEV  /  PROGRESSO NAO GUARDADO", HORIZONTAL_ALIGNMENT_CENTER, width - 16.0, 10, Color("ffd6a4"))
+
+
+func _draw_captor_flyover_hint(screen: Vector2) -> void:
+	var panel_width := minf(560.0, screen.x - 28.0)
+	var panel := Rect2(Vector2((screen.x - panel_width) * 0.5, maxf(82.0, screen.y - 154.0)), Vector2(panel_width, 70.0))
+	_draw_panel(panel, Color("dc83ff", 0.52))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 22), "PRIMEIRO SINAL  /  CAPTURADOR DIVINO", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 10, Color("f6e5ff"))
+	draw_string(font, Vector2(panel.position.x + 14, panel.position.y + 43), "Lia esta na jaula. Segue o rastro ate ao portal.", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 152, 9, Color("c9b8df"))
+	_draw_button(Rect2(panel.end.x - 126, panel.position.y + 19, 112, 32), "AVANCAR", "skip_captor_flyover", "secondary")
+
+
+
+func _draw_minimap(rect: Rect2) -> void:
+	# Fundo do mini-mapa
+	draw_rect(rect.grow(2), Color("c060ff", 0.25), true)
+	draw_rect(rect, Color("05030f", 0.95), true)
+	draw_rect(rect, Color("8040c0", 0.6), false, 1.5)
+	
+	if game.world_size == Vector2i.ZERO:
+		return
+	
+	# Escala para caber na caixa
+	var scale_x := rect.size.x / float(game.world_size.x)
+	var scale_y := rect.size.y / float(game.world_size.y)
+	
+	# Desenhar salas como retângulos de cor
+	for r in game.rooms:
+		var rx := rect.position.x + float(r.rect.position.x) * scale_x
+		var ry := rect.position.y + float(r.rect.position.y) * scale_y
+		var rw := float(r.rect.size.x) * scale_x
+		var rh := float(r.rect.size.y) * scale_y
+		draw_rect(Rect2(rx, ry, rw, rh), Color("2a1850", 0.9), true)
+		draw_rect(Rect2(rx, ry, rw, rh), Color("6040a0", 0.5), false, 1.0)
+	
+	# Linhas de ligação entre salas (corredor graph)
+	for edge in game.room_graph_edges:
+		var ra: Dictionary = game.rooms[edge.from]
+		var rb: Dictionary = game.rooms[edge.to]
+		var ca := rect.position + Vector2(float(ra.center.x) * scale_x, float(ra.center.y) * scale_y)
+		var cb := rect.position + Vector2(float(rb.center.x) * scale_x, float(rb.center.y) * scale_y)
+		draw_line(ca, cb, Color("4020a0", 0.6), 1.0, true)
+	
+	# Portal (ponto vermelho/magenta)
+	var portal_px := rect.position + Vector2(float(game.portal_position.x) * scale_x, float(game.portal_position.y) * scale_y)
+	draw_circle(portal_px, 3.5, Color("ff3090"))
+	draw_circle(portal_px, 2.0, Color("ffb0e0"))
+	
+	# Jogador (ponto azul ciano)
+	var player_px := rect.position + Vector2(float(game.player_position.x) * scale_x, float(game.player_position.y) * scale_y)
+	draw_circle(player_px, 3.5, Color("40c8ff"))
+	draw_circle(player_px, 1.8, Color("ffffff"))
 
 
 func _draw_stat_chip(rect: Rect2, icon: String, value: String, tint: Color) -> void:
-	draw_rect(rect, Color("111a2c", 0.96))
-	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 1)), Color(tint, 0.22))
-	var icon_center := Vector2(rect.position.x + 17, rect.position.y + rect.size.y * 0.5)
+	# Caixa do chip com borda neon sutil
+	draw_rect(rect, Color("0b0d20", 0.96), true)
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 1.5)), Color(tint, 0.55), true)
+	draw_rect(rect, Color(tint, 0.08), false, 1.0)
+	var icon_center := Vector2(rect.position.x + 15, rect.position.y + rect.size.y * 0.5)
 	match icon:
-		"shield": _draw_shield_icon(icon_center.x, icon_center.y, 0.72)
-		"coin": _draw_coin_icon(icon_center.x, icon_center.y, 0.72)
-		"switch": _draw_switch_icon(icon_center.x, icon_center.y, 0.72)
-		"breaker": _draw_breaker_icon(icon_center.x, icon_center.y, 0.72)
-	draw_string(font, Vector2(rect.position.x + 31, rect.position.y + 28), value, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 35, 14, tint)
+		"heart": _draw_heart(icon_center, game.hearts_current > 0 and not game.lab_active)
+		"shield": _draw_shield_icon(icon_center.x, icon_center.y, 0.68)
+		"coin": _draw_coin_icon(icon_center.x, icon_center.y, 0.68)
+		"switch": _draw_switch_icon(icon_center.x, icon_center.y, 0.68)
+		"breaker": _draw_breaker_icon(icon_center.x, icon_center.y, 0.68)
+	draw_string(font, Vector2(rect.position.x + 28, rect.position.y + 26), value, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 32, 13, tint)
 
 
 func _draw_footer(screen: Vector2) -> void:
-	var footer_height := 34.0
-	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("080d1c", 0.78))
-	draw_string(font, Vector2(18, screen.y - 12), "WASD / SETAS  MOVER     ESPACO  SALTAR     B  DEMOLIR     ESC  PAUSA     R  REPETIR ANDAR     M  MUSICA", HORIZONTAL_ALIGNMENT_CENTER, screen.x - 36, 10, Color("aab8d0"))
+	var footer_height := 38.0
+	# Fundo footer
+	draw_rect(Rect2(0, screen.y - footer_height, screen.x, footer_height), Color("06091a", 0.92))
+	draw_rect(Rect2(0, screen.y - footer_height, screen.x, 1.5), Color("8040c0", 0.6))
+	
+	# The displayed controls correspond to actual actions; the old decorative
+	# "x 3" life counter was misleading. Waiting is also available via touch.
+	var controls := "WASD / SETAS  MOVER    ESPACO  SALTAR    B  DEMOLIR    R  REPETIR    ESC  PAUSA"
+	var blink_label := "Q"
+	var wait_label := "X"
+	if game.controller.using_gamepad:
+		var pause_label: String = game.controller.button_label("pause")
+		if pause_label == "--":
+			pause_label = game.controller.button_label("cancel")
+		controls = "ANALOGICO / DIRECIONAL  MOVER    %s  SALTAR    %s  DEMOLIR    %s  PAUSA" % [game.controller.button_label("confirm"), game.controller.button_label("break"), pause_label]
+		blink_label = game.controller.button_label("blink")
+		wait_label = game.controller.button_label("wait")
+	draw_string(font, Vector2(8, screen.y - 12), controls, HORIZONTAL_ALIGNMENT_CENTER, screen.x - 246.0, 9, Color("8070b8"))
+	if game.game_state == "playing":
+		if game.special_family == "sokoban":
+			var undo_label := "Z"
+			if game.controller.using_gamepad and game.controller.button_label("pause") != "--":
+				undo_label = game.controller.button_label("cancel")
+			_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s DESFAZER" % undo_label, "undo_sokoban", "secondary")
+		else:
+			_draw_button(Rect2(screen.x - 232.0, screen.y - 33.0, 108.0, 28.0), "%s BLINK %d" % [blink_label, game.blink_charges], "blink", "primary" if game.blink_charges > 0 else "secondary")
+		_draw_button(Rect2(screen.x - 116.0, screen.y - 33.0, 108.0, 28.0), "%s ESPERAR" % wait_label, "wait", "secondary")
+
+	# ── Aviso / Notícia central ─────────────────────────────────────────────────
 	if game.last_notice != "" and game.game_state == "playing":
-		var center := Vector2(screen.x * 0.5, screen.y - footer_height - 36.0)
-		var width := minf(screen.x - 48.0, 690.0)
-		draw_rect(Rect2(center.x - width * 0.5, center.y - 17, width, 34), Color("101a30", 0.95))
-		draw_rect(Rect2(center.x - width * 0.5, center.y - 17, width, 1.5), Color("4bdbea", 0.62))
-		draw_string(font, Vector2(center.x - width * 0.5 + 14, center.y + 5), game.last_notice, HORIZONTAL_ALIGNMENT_CENTER, width - 28, 12, Color("f2f5ff"))
+		var center := Vector2(screen.x * 0.5, screen.y - footer_height - 32.0)
+		var width := minf(screen.x - 48.0, 720.0)
+		draw_rect(Rect2(center.x - width * 0.5, center.y - 16, width, 32), Color("08061a", 0.96))
+		draw_rect(Rect2(center.x - width * 0.5, center.y - 16, width, 1.5), Color("c060ff", 0.75))
+		# Ícone de exclamação
+		draw_circle(Vector2(center.x - width * 0.5 + 14, center.y), 5.0, Color("c060ff", 0.4))
+		draw_string(font, Vector2(center.x - width * 0.5 + 9, center.y + 4), "!", HORIZONTAL_ALIGNMENT_LEFT, 12, 11, Color("e090ff"))
+		draw_string(font, Vector2(center.x - width * 0.5 + 28, center.y + 5), game.last_notice, HORIZONTAL_ALIGNMENT_CENTER, width - 42, 11, Color("e0d0ff"))
+
+
+func _draw_heart(pos: Vector2, filled: bool) -> void:
+	# Coração estilo pixel art usando polígono
+	var col := Color("ff3060") if filled else Color("3d1830")
+	var out_col := Color("ff80a0") if filled else Color("2a0f22")
+	# Coração aproximado com círculos e triângulo
+	draw_circle(pos + Vector2(-5, -3), 5.5, col)
+	draw_circle(pos + Vector2(5, -3), 5.5, col)
+	draw_colored_polygon(PackedVector2Array([
+		pos + Vector2(-10, 0), pos + Vector2(10, 0), pos + Vector2(0, 11)
+	]), col)
+	if filled:
+		# Brilho especular
+		draw_circle(pos + Vector2(-5, -5), 2.0, Color("ffb0c0", 0.7))
 
 
 func _draw_title(screen: Vector2) -> void:
 	_draw_cinematic_backdrop(screen, 0.12)
 	var menu_x := maxf(112.0, screen.x * 0.10)
 	var menu_width := minf(340.0, screen.x * 0.33)
-	var menu_top := screen.y * 0.315
+	var menu_top := screen.y * 0.275
 	draw_string(font, Vector2(menu_x, menu_top), "/// SINAL DE RESGATE  /  SETOR 01", HORIZONTAL_ALIGNMENT_LEFT, menu_width, 9, Color("77e8f1", 0.86))
 	draw_rect(Rect2(menu_x, menu_top + 12, 56, 2), Color("ffe600", 0.86))
 	var button_y := menu_top + 28.0
-	var button_height := 38.0
-	var gap := 7.0
+	var button_height := 31.0 if screen.y < 620.0 else 35.0
+	var gap := 3.0 if screen.y < 620.0 else 5.0
 	if game.has_resume:
 		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CONTINUAR JORNADA   [ANDAR %02d]" % game.resume_floor, "continue", "menu_primary")
 		button_y += button_height + gap
@@ -121,12 +572,195 @@ func _draw_title(screen: Vector2) -> void:
 	else:
 		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "INICIAR EXPEDICAO", "new_run", "menu_primary")
 	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CAMPANHAS  /  ATUAL %d" % (game.active_slot + 1), "campaigns", "menu")
+	if game.has_resume:
+		button_y += button_height + gap
+		_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "HABILIDADES  /  PONTOS %d" % game.skills.points, "skills", "menu")
+	button_y += button_height + gap
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "MATRIZ DE ANDARES", "levels", "menu")
+	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "CAMARAS EXPERIMENTAIS  [C]", "experimental", "menu")
 	button_y += button_height + gap
 	var music_label := "MUSICA  /  LIGADA" if not game.audio.music_muted else "MUSICA  /  DESLIGADA"
 	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), music_label, "music", "menu")
-	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), "CLIQUE  SELECIONAR     ENTER  JOGAR / CONTINUAR     N  NOVO JOGO     M  SOM", HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
+	button_y += button_height + gap
+	_draw_button(Rect2(menu_x, button_y, menu_width, button_height), "COMANDOS / VIBRACAO", "controller_settings", "menu")
+	var controller_status: String = "COMANDO: %s" % game.controller.device_name() if game.controller.active_device >= 0 else "COMANDO: NAO LIGADO"
+	if not game.profile_message.is_empty():
+		draw_string(font, Vector2(22, screen.y - 22), game.profile_message, HORIZONTAL_ALIGNMENT_LEFT, screen.x - 44, 10, Color("ff889e"))
+	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 78), controller_status, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.65, 9, Color("77e8f1", 0.9))
+	var menu_hint := "CLIQUE  SELECIONAR     ENTER  JOGAR     C  CAMARAS     N  NOVO JOGO     M  SOM"
+	if game.controller.using_gamepad:
+		menu_hint = "DIRECIONAL / ANALOGICO  NAVEGAR     %s  CONFIRMAR     %s  VOLTAR" % [game.controller.button_label("confirm"), game.controller.button_label("cancel")]
+	draw_string(font, Vector2(maxf(46.0, screen.x * 0.045), screen.y - 55), menu_hint, HORIZONTAL_ALIGNMENT_LEFT, screen.x * 0.75, 9, Color("a7b5ce", 0.84))
 	draw_string(font, Vector2(screen.x - 22, 30), "%d ANDARES DESBLOQUEADOS" % game.furthest_floor, HORIZONTAL_ALIGNMENT_RIGHT, 280, 9, Color("d7e5ef", 0.78))
+
+
+func _draw_campaign_select(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.82)
+	var panel := Rect2(Vector2(24, 24), screen - Vector2(48, 48))
+	_draw_panel(panel, Color("70e5f0", 0.65))
+	draw_string(font, panel.position + Vector2(25, 42), "CAMPANHAS", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 50, 25, Color("f2f8ff"))
+	draw_string(font, panel.position + Vector2(26, 65), "ESCOLHER NOVA EXPEDICAO" if game.slot_select_mode == "new" else "ESCOLHER OU CONTINUAR", HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 52, 11, Color("8be8f1"))
+	var card_gap := 14.0
+	var card_width := (panel.size.x - 60.0 - card_gap * 2.0) / 3.0
+	var card_y := panel.position.y + 100.0
+	var card_height := minf(225.0, panel.size.y - 220.0)
+	for index in 3:
+		var x := panel.position.x + 30.0 + index * (card_width + card_gap)
+		var rect := Rect2(x, card_y, card_width, card_height)
+		var info: Dictionary = game.campaign_status(index)
+		var status: String = info.status
+		var active: bool = index == game.active_slot
+		var accent := Color("70e5f0") if status in ["ok", "empty"] else Color("ff708c")
+		draw_rect(rect, Color("101c30", 0.98))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 3)), accent)
+		draw_string(font, rect.position + Vector2(14, 30), "CAMPANHA %d%s" % [index + 1, " / ATUAL" if active else ""], HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 13, Color("eef8ff"))
+		var line := "VAZIA / PRONTA PARA INICIAR"
+		var detail := "SEM PONTOS OU HABILIDADES"
+		if status == "ok":
+			var data: Dictionary = info.data
+			line = "CHECKPOINT: ANDAR %d" % int(data.resume_floor) if data.has_resume else "SEM CHECKPOINT"
+			detail = "MAXIMO %d  /  MOEDAS %d" % [int(data.furthest_floor), int(data.resume_coins)]
+		elif status == "corrupt":
+			line = "DADOS DANIFICADOS"
+			detail = "ORIGINAL PRESERVADO"
+		elif status == "future":
+			line = "VERSAO MAIS RECENTE"
+			detail = "ORIGINAL PRESERVADO"
+		draw_string(font, rect.position + Vector2(14, 65), line, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 10, accent)
+		draw_string(font, rect.position + Vector2(14, 86), detail, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 28, 9, Color("b3c3d8"))
+		if status in ["ok", "empty"]:
+			var label := "NOVA CAMPANHA" if game.slot_select_mode == "new" else "INICIAR" if status == "empty" else "CONTINUAR"
+			_draw_button(Rect2(x + 12, rect.end.y - 120, card_width - 24, 32), label, "campaign:%d" % index, "primary")
+		if bool(info.get("backup", false)):
+			_draw_button(Rect2(x + 12, rect.end.y - 80, card_width - 24, 30), "REST. CHECKPOINT", "campaign_restore:%d" % index, "secondary")
+		if bool(info.get("replaced_backup", false)):
+			_draw_button(Rect2(x + 12, rect.end.y - 42, card_width - 24, 30), "REST. SUBSTITUIDA", "campaign_restore_replaced:%d" % index, "secondary")
+		elif not bool(info.get("backup", false)):
+			draw_string(font, Vector2(x + 12, rect.end.y - 22), "SEM BACKUP ANTERIOR", HORIZONTAL_ALIGNMENT_CENTER, card_width - 24, 9, Color("71829e"))
+	var message: String = game.slot_message if not game.slot_message.is_empty() else game.profile_message
+	draw_string(font, panel.position + Vector2(30, panel.size.y - 91), message, HORIZONTAL_ALIGNMENT_LEFT, panel.size.x - 60, 10, Color("ffd28a"))
+	_draw_button(Rect2(panel.position.x + 30, panel.end.y - 55, 150, 35), "VOLTAR", "menu", "secondary")
+	game.campaign_storage.profile_path = game.profile_path
+	if game.profile_blocked and game.campaign_storage.global_backup_available():
+		_draw_button(Rect2(panel.position.x + 195, panel.end.y - 55, 225, 35), "RESTAURAR PERFIL GLOBAL", "profile_restore", "secondary")
+
+
+func _draw_campaign_confirm(screen: Vector2) -> void:
+	_draw_campaign_select(screen)
+	buttons.clear()
+	_draw_modal_backdrop(screen, Color("070916", 0.85))
+	var panel_size := Vector2(minf(590.0, screen.x - 48.0), 230.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ffb36c", 0.8))
+	var title := "CONFIRMAR NOVA CAMPANHA"
+	var line := "CAMPANHA %d SERA SUBSTITUIDA. O BACKUP FICA DISPONIVEL." % (game.slot_pending + 1)
+	if game.slot_pending_action in ["restore", "restore_replaced"]:
+		title = "RESTAURAR BACKUP?"
+		line = "CAMPANHA %d SERA RESTAURADA. O FICHEIRO ATUAL SERA ARQUIVADO." % (game.slot_pending + 1)
+	elif game.slot_pending_action == "profile_restore":
+		title = "RESTAURAR PERFIL GLOBAL?"
+		line = "DEFINICOES GLOBAIS SERAO RESTAURADAS; CAMPANHAS NAO MUDAM."
+	draw_string(font, panel.position + Vector2(24, 47), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 19, Color("fff1db"))
+	draw_string(font, panel.position + Vector2(24, 86), line, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 10, Color("e7ccae"))
+	draw_string(font, panel.position + Vector2(24, 111), "CANCELAR NAO ALTERA NENHUM FICHEIRO.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 10, Color("a8bbcb"))
+	var width := (panel.size.x - 72) * 0.5
+	_draw_button(Rect2(panel.position.x + 24, panel.end.y - 62, width, 38), "CANCELAR", "campaign_cancel", "secondary")
+	_draw_button(Rect2(panel.position.x + 48 + width, panel.end.y - 62, width, 38), "CONFIRMAR", "campaign_confirm", "primary")
+
+
+func _draw_skill_tree(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.85)
+	var panel := Rect2(Vector2(16, 16), screen - Vector2(32, 32))
+	_draw_panel(panel, Color("be7bff", 0.65))
+	var inner_x := panel.position.x + 24.0
+	var inner_w := panel.size.x - 48.0
+	draw_string(font, Vector2(inner_x, panel.position.y + 32), "ARVORE DE HABILIDADES", HORIZONTAL_ALIGNMENT_LEFT, inner_w * 0.58, 21, Color("f6edff"))
+	draw_string(font, Vector2(inner_x + inner_w * 0.50, panel.position.y + 31), "CAMPANHA %d  /  PONTOS %d  /  ATIVAS %d/%d" % [game.active_slot + 1, game.skills.points, game.skills.active.size(), game.skills.EQUIP_LIMIT], HORIZONTAL_ALIGNMENT_RIGHT, inner_w * 0.5, 11, Color("8fe9ef"))
+	draw_string(font, Vector2(inner_x, panel.position.y + 54), "1 PONTO POR PRIMEIRA CONCLUSAO  /  CUSTOS E LIMITE EM TESTE", HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("a9b7d2"))
+	var tab_y := panel.position.y + 68.0
+	var gap := 5.0
+	var tab_width := (inner_w - gap * 5.0) / 6.0
+	for index in game.skills.BRANCHES.size():
+		var branch: Dictionary = game.skills.BRANCHES[index]
+		var rect := Rect2(inner_x + index * (tab_width + gap), tab_y, tab_width, 32)
+		var action: String = "skill_branch:" + str(branch.id)
+		var selected: bool = branch.id == game.skill_branch
+		var tint := Color(branch.color)
+		draw_rect(rect, Color(tint, 0.22 if selected else 0.07))
+		draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(tint, 0.9 if selected else 0.4))
+		if _is_focused(action):
+			draw_rect(rect.grow(2), Color("b5faff"), false, 2.0)
+		draw_string(font, rect.position + Vector2(3, 21), branch.name, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 6, 10, Color("ffffff") if selected else Color("b6c7dc"))
+		buttons.append({"rect": rect, "action": action})
+	var nodes: Array[Dictionary] = game.skills.branch_nodes(game.skill_branch)
+	var node_rects := {}
+	var graph_top := panel.position.y + 120.0
+	var available_height := maxf(180.0, panel.end.y - 185.0 - graph_top)
+	var node_h := minf(50.0, maxf(38.0, available_height / 5.0))
+	var row_step := minf(76.0, (available_height - node_h) / 3.0)
+	graph_top += maxf(0.0, (available_height - node_h - row_step * 3.0) * 0.5)
+	var node_w := minf(220.0, (inner_w - 40.0) / 3.0)
+	var graph_w := minf(880.0, inner_w)
+	var graph_x := panel.get_center().x - graph_w * 0.5
+	for node in nodes:
+		var center_x := graph_x + graph_w * (float(node.col) + 0.5) / 3.0
+		var rect := Rect2(center_x - node_w * 0.5, graph_top + float(node.row) * row_step, node_w, node_h)
+		node_rects[node.id] = rect
+	for node in nodes:
+		if not str(node.parent).is_empty() and node_rects.has(node.parent):
+			var from: Rect2 = node_rects[node.parent]
+			var to: Rect2 = node_rects[node.id]
+			draw_line(Vector2(from.get_center().x, from.end.y), Vector2(to.get_center().x, to.position.y), Color("966add", 0.65), 2.0, true)
+	for node in nodes:
+		var rect: Rect2 = node_rects[node.id]
+		var action: String = "skill_node:" + str(node.id)
+		var selected: bool = node.id == game.skill_selected
+		var active: bool = game.skills.active.has(node.id)
+		var unlocked: bool = game.skills.unlocked.has(node.id)
+		var fill := Color("224356") if active else Color("26203d") if unlocked else Color("15192b")
+		var edge := Color("78e9e2") if active else Color("d3a3ff") if unlocked else Color("59637e")
+		draw_rect(rect, fill)
+		draw_rect(rect, Color(edge, 0.95 if selected else 0.5), false, 2.0 if selected else 1.0)
+		if _is_focused(action):
+			draw_rect(rect.grow(3), Color("b5faff"), false, 2.0)
+		draw_string(font, rect.position + Vector2(7, rect.size.y * 0.5 - 3), node.name, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 11, Color("f7f2ff") if unlocked else Color("b5bdd0"))
+		var state := "ATIVA" if active else "DESBLOQUEADA" if unlocked else "%d PONTO%s" % [node.cost, "S" if int(node.cost) != 1 else ""]
+		draw_string(font, rect.position + Vector2(7, rect.size.y * 0.5 + 12), state, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 9, edge)
+		buttons.append({"rect": rect, "action": action})
+	var selected: Dictionary = game.skills.node(game.skill_selected)
+	if not selected.is_empty():
+		var detail_y := panel.end.y - 150.0
+		draw_rect(Rect2(inner_x, detail_y - 21, inner_w, 1), Color("9775c5", 0.4))
+		draw_string(font, Vector2(inner_x, detail_y), selected.name + "  /  " + selected.desc, HORIZONTAL_ALIGNMENT_LEFT, inner_w, 12, Color("f0e9ff"))
+		var parent: Dictionary = game.skills.node(selected.parent)
+		var dependency := "SEM REQUISITO" if parent.is_empty() else "REQUER: " + str(parent.name) + " DESBLOQUEADO E ATIVO"
+		draw_string(font, Vector2(inner_x, detail_y + 23), "%s  /  CUSTO %d PONTO(S)" % [dependency, selected.cost], HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("a9bdd2"))
+		draw_string(font, Vector2(inner_x, detail_y + 44), game.skill_message, HORIZONTAL_ALIGNMENT_LEFT, inner_w, 10, Color("ffdc91"))
+	var button_gap := 8.0
+	var button_width := (inner_w - button_gap * 2.0) / 3.0
+	var button_y := panel.end.y - 52.0
+	var unlock_label := "JA DESBLOQUEADA" if game.skills.unlocked.has(game.skill_selected) else "DESBLOQUEAR"
+	var toggle_label := "DESATIVAR" if game.skills.active.has(game.skill_selected) else "ATIVAR"
+	_draw_button(Rect2(inner_x, button_y, button_width, 34), unlock_label, "skill_unlock", "primary")
+	_draw_button(Rect2(inner_x + button_width + button_gap, button_y, button_width, 34), toggle_label, "skill_toggle", "secondary")
+	_draw_button(Rect2(inner_x + (button_width + button_gap) * 2.0, button_y, button_width, 34), "VOLTAR", "skill_back", "secondary")
+
+
+func _draw_skill_confirm(screen: Vector2) -> void:
+	_draw_skill_tree(screen)
+	buttons.clear()
+	_draw_modal_backdrop(screen, Color("080714", 0.86))
+	var panel_size := Vector2(minf(570.0, screen.x - 48.0), 210.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ff8da8", 0.8))
+	draw_string(font, panel.position + Vector2(20, 45), "DESATIVAR CORACAO?", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 21, Color("ffeaf0"))
+	draw_string(font, panel.position + Vector2(20, 78), "O SALDO ACIMA DA NOVA CAPACIDADE SERA PERDIDO.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 11, Color("f0c1ce"))
+	draw_string(font, panel.position + Vector2(20, 102), "REATIVAR NAO CONCEDE OUTRO CORACAO GRATIS.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 10, Color("b5c4d9"))
+	var width := (panel.size.x - 72) * 0.5
+	_draw_button(Rect2(panel.position.x + 24, panel.end.y - 60, width, 36), "CANCELAR", "skill_remove_cancel", "secondary")
+	_draw_button(Rect2(panel.position.x + 48 + width, panel.end.y - 60, width, 36), "DESATIVAR", "skill_remove_confirm", "primary")
 
 
 func _draw_level_select(screen: Vector2) -> void:
@@ -171,29 +805,147 @@ func _draw_floor_card(rect: Rect2, number: int) -> void:
 	var status := "%d ESTRELAS" % stars if stars > 0 else "DISPONIVEL" if unlocked else "FECHADO"
 	draw_string(font, Vector2(rect.position.x + 7, rect.position.y + rect.size.y - 20), status, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 14, 9, Color("c3d7e4") if unlocked else Color("657087"))
 	if unlocked:
-		buttons.append({"rect": rect, "action": "floor:%d" % number})
+		var action := "floor:%d" % number
+		if _is_focused(action):
+			draw_rect(rect.grow(3), Color("9cfaff"), false, 2.5)
+		buttons.append({"rect": rect, "action": action})
 
 
 func _draw_pause(screen: Vector2) -> void:
 	_draw_modal_backdrop(screen, Color("050916", 0.76))
-	var panel := Rect2(screen * 0.5 - Vector2(220, 172), Vector2(440, 344))
+	var panel := Rect2(screen * 0.5 - Vector2(220, 187), Vector2(440, 374))
 	_draw_panel(panel, Color("61e9f3", 0.4))
-	draw_string(font, Vector2(panel.position.x + 24, panel.position.y + 60), "PAUSA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 30, Color("eef7ff"))
-	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 90), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 116, panel.size.x - 96, 44), "VOLTAR AO JOGO", "resume", "primary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 170, panel.size.x - 96, 40), "DIARIO DE ANDARES", "levels", "secondary")
-	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 220, panel.size.x - 96, 40), "SAIR PARA O MENU", "menu", "secondary")
+	draw_string(font, Vector2(panel.position.x + 24, panel.position.y + 53), "PAUSA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 48, 30, Color("eef7ff"))
+	draw_string(font, Vector2(panel.position.x + 28, panel.position.y + 80), "%s  /  ANDAR %02d" % [game.get_floor_name(game.floor_number), game.floor_number], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 56, 11, Color("8be8f1"))
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 104, panel.size.x - 96, 39), "VOLTAR AO JOGO", "resume", "primary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 149, panel.size.x - 96, 39), "REINICIAR ANDAR", "restart_floor", "secondary")
+	if not game.lab_active:
+		var half := (panel.size.x - 104.0) * 0.5
+		_draw_button(Rect2(panel.position.x + 48, panel.position.y + 194, half, 39), "DIARIO", "levels", "secondary")
+		if game.turn_number == 0 and game.has_resume:
+			_draw_button(Rect2(panel.position.x + 56 + half, panel.position.y + 194, half, 39), "HABILIDADES", "skills", "secondary")
+		else:
+			draw_string(font, Vector2(panel.position.x + 56 + half, panel.position.y + 216), "ARVORE ENTRE ANDARES", HORIZONTAL_ALIGNMENT_CENTER, half, 9, Color("8c99af"))
+	else:
+		draw_string(font, Vector2(panel.position.x + 48, panel.position.y + 218), "A CAMPANHA NAO E ALTERADA NESTAS CAMARAS", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 96, 9, Color("9caecc"))
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 239, panel.size.x - 96, 39), "COMANDOS / VIBRACAO", "controller_settings", "secondary")
+	_draw_button(Rect2(panel.position.x + 48, panel.position.y + 284, panel.size.x - 96, 39), "SAIR PARA O MENU", "menu", "secondary")
+
+
+func _draw_controller_settings(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.78)
+	var panel_size := Vector2(minf(660.0, screen.x - 32.0), minf(480.0, screen.y - 32.0))
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("61e9f3", 0.55))
+	var left := panel.position.x + 32.0
+	var width := panel.size.x - 64.0
+	var top := panel.position.y
+	draw_string(font, Vector2(left, top + 35), "COMANDOS / VIBRACAO", HORIZONTAL_ALIGNMENT_CENTER, width, 22, Color("f0f7ff"))
+	var count: int = game.controller.connected_devices().size()
+	var selected: int = game.controller.selected_device
+	var name: String = game.controller.device_name(selected) if selected >= 0 else "Nenhum comando ligado"
+	draw_string(font, Vector2(left, top + 62), "%s  /  %d LIGADO(S)" % [name, count], HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("8be8f1"))
+	var status := "SEM COMANDO LIGADO"
+	if count > 0:
+		var mapping := "PERSONALIZADO" if game.controller.has_custom_mapping(selected) else "PADRAO" if game.controller.device_is_known(selected) else "GENERICO / REMAPEAR SE NECESSARIO"
+		status = "%s  /  %s" % [game.controller.device_family(selected), mapping]
+	draw_string(font, Vector2(left, top + 82), status, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("a8b8d2"))
+	var x := left + 18.0
+	var w := width - 36.0
+	var y := top + 96.0
+	_draw_button(Rect2(x, y, w, 32), "TROCAR COMANDO SELECIONADO", "controller_device", "secondary")
+	_draw_button(Rect2(x, y + 37, w, 32), "VIBRACAO: %s" % ("LIGADA" if game.controller.vibration_enabled else "DESLIGADA"), "controller_vibration", "secondary")
+	_draw_intensity_slider(Rect2(x, y + 74, w, 38))
+	_draw_button(Rect2(x, y + 117, w, 32), "TESTAR VIBRACAO", "controller_test", "secondary")
+	_draw_button(Rect2(x, y + 154, w, 32), "CONFIGURAR BOTOES E EIXOS", "controller_calibrate", "primary")
+	_draw_button(Rect2(x, y + 191, w, 32), "RESTAURAR MAPEAMENTO ORIGINAL", "controller_reset", "secondary")
+	_draw_button(Rect2(x, y + 228, w, 32), "VOLTAR", "controller_back", "secondary")
+	var rumble := "MOTOR DETETADO PELO SISTEMA" if selected >= 0 and game.controller.device_has_vibration(selected) else "MOTOR NAO CONFIRMADO PELO SISTEMA; EXPERIMENTA O TESTE"
+	draw_string(font, Vector2(left, top + 377), game.controller_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
+	draw_string(font, Vector2(left, top + 398), rumble, HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 417), "A resposta depende do comando, ligacao, sistema e drivers.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 438), "INTENSIDADE: TOCA / ARRASTA OU USA ESQUERDA E DIREITA", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+	draw_string(font, Vector2(left, top + 458), "DIRECIONAL / SETAS: NAVEGAR  |  CONFIRMAR / ENTER: ESCOLHER  |  ESC: VOLTAR", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("91a7bf"))
+
+
+func _draw_intensity_slider(rect: Rect2) -> void:
+	var focused := _is_focused("controller_intensity")
+	var hovered: bool = rect.has_point(pointer) and not game.controller.using_gamepad
+	var value: float = game.controller.vibration_intensity
+	var track_ratio: float = value / game.controller.MAX_VIBRATION_INTENSITY
+	draw_rect(rect, Color("202d44") if focused or hovered else Color("151e31"))
+	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color("9af7ff", 0.82) if focused else Color("536581", 0.82))
+	if focused:
+		draw_rect(rect.grow(3), Color("9cfaff"), false, 2.0)
+	draw_string(font, rect.position + Vector2(12, 24), "INTENSIDADE", HORIZONTAL_ALIGNMENT_LEFT, 118, 11, Color("f0f8ff"))
+	intensity_track = Rect2(rect.position.x + 142, rect.position.y + 16, maxf(30.0, rect.size.x - 205), 6)
+	draw_rect(intensity_track, Color("344358"))
+	draw_rect(Rect2(intensity_track.position, Vector2(intensity_track.size.x * track_ratio, intensity_track.size.y)), Color("70e9f2"))
+	var knob := Vector2(intensity_track.position.x + intensity_track.size.x * track_ratio, intensity_track.get_center().y)
+	draw_circle(knob, 7.0, Color("d9ffff") if game.controller.vibration_enabled else Color("8193a6"))
+	draw_string(font, Vector2(rect.end.x - 57, rect.position.y + 24), "%d%%" % roundi(value * 100.0), HORIZONTAL_ALIGNMENT_RIGHT, 45, 11, Color("f0f8ff"))
+	buttons.append({"rect": rect, "action": "controller_intensity"})
+
+
+func _draw_controller_mapping(screen: Vector2) -> void:
+	_draw_cinematic_backdrop(screen, 0.82)
+	var panel_size := Vector2(minf(680.0, screen.x - 32.0), minf(420.0, screen.y - 32.0))
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("61e9f3", 0.55))
+	var left := panel.position.x + 28.0
+	var width := panel.size.x - 56.0
+	var top := panel.position.y
+	var step: Dictionary = game.controller.current_calibration_step()
+	if step.is_empty():
+		return
+	draw_string(font, Vector2(left, top + 38), "CONFIGURAR GAMEPAD", HORIZONTAL_ALIGNMENT_CENTER, width, 22, Color("f0f7ff"))
+	draw_string(font, Vector2(left, top + 63), game.controller.device_name(game.controller.calibration_device), HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("8be8f1"))
+	draw_string(font, Vector2(left, top + 101), "PASSO %d / %d" % [game.controller.calibration_step + 1, game.controller.CALIBRATION_STEPS.size()], HORIZONTAL_ALIGNMENT_CENTER, width, 11, Color("aab7d0"))
+	draw_string(font, Vector2(left, top + 141), "PRESSIONA: %s" % step.label, HORIZONTAL_ALIGNMENT_CENTER, width, 21, Color("ffe291"))
+	var bar := Rect2(left + 36, top + 157, width - 72, 5)
+	draw_rect(bar, Color("23384a"))
+	draw_rect(Rect2(bar.position, Vector2(bar.size.x * float(game.controller.calibration_step) / float(game.controller.CALIBRATION_STEPS.size()), bar.size.y)), Color("66e7f1"))
+	draw_string(font, Vector2(left, top + 194), "USA UM BOTAO OU MOVE UM EIXO; SOLTA ENTRE PASSOS.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("c0cde0"))
+	draw_string(font, Vector2(left, top + 218), game.controller.calibration_message, HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("ffe291"))
+	if not step.required:
+		draw_string(font, Vector2(left, top + 246), "OPCIONAL: TOCA NO BOTAO DE VOLTAR PARA IGNORAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+		draw_string(font, Vector2(left, top + 265), "MANTEM O BOTAO DE VOLTAR PARA CANCELAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+	else:
+		draw_string(font, Vector2(left, top + 246), "DIRECOES, CONFIRMAR E VOLTAR SAO OBRIGATORIOS.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+		draw_string(font, Vector2(left, top + 265), "MANTEM UM BOTAO OU EIXO POR 2 SEGUNDOS PARA CANCELAR.", HORIZONTAL_ALIGNMENT_CENTER, width, 10, Color("8be8f1"))
+	draw_string(font, Vector2(left, top + 294), "TECLADO: S IGNORA OPCIONAL / ESC CANCELA. RATO E TOQUE TAMBEM FUNCIONAM.", HORIZONTAL_ALIGNMENT_CENTER, width, 9, Color("9aaec8"))
+	var button_width := minf(230.0, (width - 12.0) * 0.5)
+	var row_x := screen.x * 0.5 - (button_width * 2.0 + 12.0) * 0.5
+	if not step.required:
+		_draw_button(Rect2(row_x, top + 325, button_width, 40), "IGNORAR OPCIONAL", "controller_skip", "secondary")
+	_draw_button(Rect2(row_x + button_width + 12, top + 325, button_width, 40), "CANCELAR", "controller_cancel_mapping", "secondary")
 
 
 func _draw_result(screen: Vector2, rescued: bool) -> void:
+	if game.lab_active:
+		_draw_lab_result(screen)
+		return
 	_draw_modal_backdrop(screen, Color("08061a", 0.78))
 	var panel_width := minf(610.0, screen.x - 34.0)
 	var panel_height := minf(410.0, screen.y - 32.0)
 	var panel := Rect2((screen - Vector2(panel_width, panel_height)) * 0.5, Vector2(panel_width, panel_height))
 	_draw_panel(panel, Color("bd78ff", 0.45))
-	var title := ("LIA ESTA AQUI" if game.floor_number == 5 else "NOVO CICLO CONCLUIDO") if rescued else "ANDAR %02d CONCLUIDO" % game.floor_number
-	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 54), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 26, Color("e8faff"))
-	var subtitle: String = ("A tua amada esta a salvo. A jornada continua para alem das ruinas." if game.floor_number == 5 else "Novo conjunto de salas, inimigos e objetivos desbloqueado.") if rescued else game.get_floor_name(game.floor_number)
+	var title: String = ""
+	var subtitle: String = ""
+	if rescued:
+		if game.floor_number == 5:
+			title = "LIA FOI AVISTADA!"
+			subtitle = "O capturador levou Lia. Chega ao andar 100 para a libertar."
+		elif game.floor_number == 100:
+			title = "LIA FOI LIBERTADA!"
+			subtitle = "Lia foi libertada! A jornada continua ate ao andar 200 e depois."
+		else:
+			title = "SETOR %02d CONCLUIDO" % game.floor_number
+			subtitle = "Mais perto de libertar Lia no Andar 100. Novos desafios e inimigos desbloqueados."
+	else:
+		title = "ANDAR %02d CONCLUIDO" % game.floor_number
+		subtitle = game.get_floor_name(game.floor_number)
+	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 49), title, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 23, Color("f6eaff"))
 	draw_string(font, Vector2(panel.position.x + 30, panel.position.y + 80), subtitle, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 60, 12, Color("9caecc"))
 	var star_y := panel.position.y + 139
 	for index in 5:
@@ -201,16 +953,21 @@ func _draw_result(screen: Vector2, rescued: bool) -> void:
 		_draw_star(Vector2(x, star_y), 19.0 if index < game.stars_last_floor else 16.0, Color("ffd35e") if index < game.stars_last_floor else Color("303a54"))
 	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 184), "+%d RECOMPENSA     MOEDAS %02d     TOTAL %03d" % [game.floor_reward, game.coins_this_floor, game.total_coins], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 12, Color("f3df9c"))
 	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 211), "RECORDE %03d     RESGATES %d" % [game.best_score, game.rescues_completed], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 10, Color("b3c0d8"))
+	draw_string(font, Vector2(panel.position.x + 26, panel.position.y + 239), "%s  /  %d PONTOS DISPONIVEIS" % ["+1 PONTO DE HABILIDADE" if game.last_skill_point_awarded else "SEM NOVO PONTO (ANDAR JA CONCLUIDO)", game.skills.points], HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 52, 10, Color("bfa1ff"))
 	var button_y := panel.position.y + panel.size.y - 70
-	var button_width := minf(170.0, (panel.size.x - 58.0) / 3.0)
-	var gap := 10.0
-	var row_x := screen.x * 0.5 - (button_width * 3.0 + gap * 2.0) * 0.5
-	_draw_button(Rect2(row_x, button_y, button_width, 42), "PROXIMO SETOR" if rescued else "PROXIMO ANDAR", "next_floor", "primary")
-	_draw_button(Rect2(row_x + button_width + gap, button_y, button_width, 42), "DIARIO", "levels", "secondary")
-	_draw_button(Rect2(row_x + (button_width + gap) * 2.0, button_y, button_width, 42), "MENU", "menu", "secondary")
+	var button_width := minf(140.0, (panel.size.x - 66.0) / 4.0)
+	var gap := 8.0
+	var row_x := screen.x * 0.5 - (button_width * 4.0 + gap * 3.0) * 0.5
+	_draw_button(Rect2(row_x, button_y, button_width, 42), "PROXIMO", "next_floor", "primary")
+	_draw_button(Rect2(row_x + button_width + gap, button_y, button_width, 42), "HABILIDADES", "skills", "secondary")
+	_draw_button(Rect2(row_x + (button_width + gap) * 2.0, button_y, button_width, 42), "DIARIO", "levels", "secondary")
+	_draw_button(Rect2(row_x + (button_width + gap) * 3.0, button_y, button_width, 42), "MENU", "menu", "secondary")
 
 
 func _draw_game_over(screen: Vector2) -> void:
+	if game.lab_active:
+		_draw_lab_game_over(screen)
+		return
 	_draw_modal_backdrop(screen, Color("09040d", 0.84))
 	var panel_width := minf(540.0, screen.x - 32.0)
 	var panel_height := minf(340.0, screen.y - 32.0)
@@ -227,6 +984,63 @@ func _draw_game_over(screen: Vector2) -> void:
 	_draw_button(Rect2(button_x, button_y + 98, button_width, 38), "VOLTAR AO MENU", "menu", "secondary")
 
 
+func _draw_environment_bonus_guide(screen: Vector2) -> void:
+	var width := minf(720.0, screen.x - 24.0)
+	var rect := Rect2(12, 80, width, 30)
+	draw_rect(rect, Color("080d1c", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
+	draw_string(font, rect.position + Vector2(12, 20), "OPCIONAL: EMPURRA MADEIRA NA CORRENTE ATE A PLACA L = ESCUDO +1", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("e8d8bb"))
+
+
+func _draw_special_guide(screen: Vector2) -> void:
+	var width := minf(820.0, screen.x - 24.0)
+	var rect := Rect2(12, 80, width, 52)
+	draw_rect(rect, Color("080d1c", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
+	draw_string(font, rect.position + Vector2(12, 20), game.special_hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("f2e5c7"))
+	var detail := "R OU PAUSA > REINICIAR: RESTAURA O INVENTARIO DO INICIO" if game.objective_type == "environment" else "O PORTAL E OS OBJETIVOS CONTINUAM A USAR AS REGRAS NORMAIS"
+	if game.special_family == "sokoban":
+		detail = "Z / BOTAO DESFAZER  |  R REINICIA  |  EMPURROES %d" % game.sokoban_pushes
+	elif game.special_family == "circuit":
+		detail = "E = ENERGIA / AGUA AMARELA CAUSA DANO  |  R OU PAUSA > REINICIAR"
+	elif game.special_family == "hybrid" and game.environment_bonus_available:
+		detail = "OPCIONAL: MADEIRA NA CORRENTE ATE A PLACA L CONCEDE ESCUDO +1"
+	draw_string(font, rect.position + Vector2(12, 40), detail, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 11, Color("b4c8dc"))
+
+
+func _draw_lab_guide(screen: Vector2) -> void:
+	var width := minf(820.0, screen.x - 24.0)
+	var rect := Rect2(12, 80, width, 52)
+	draw_rect(rect, Color("080d1c", 0.94))
+	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("67dfe8", 0.8))
+	draw_string(font, rect.position + Vector2(12, 20), game.lab_hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("d6edf2"))
+	draw_string(font, rect.position + Vector2(12, 40), "PLACAS: L MADEIRA / M METAL   |   R REINICIA   |   SEM GUARDAR A CAMPANHA", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 11, Color("b4c8dc"))
+
+
+func _draw_lab_result(screen: Vector2) -> void:
+	_draw_modal_backdrop(screen, Color("08061a", 0.78))
+	var panel_size := Vector2(minf(560.0, screen.x - 34.0), 260.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("79e5e8", 0.7))
+	draw_string(font, panel.position + Vector2(25, 55), "CAMARA %d CONCLUIDA" % (game.lab_index + 1), HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 23, Color("f0fbff"))
+	draw_string(font, panel.position + Vector2(25, 93), game.lab_name, HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 13, Color("8be8f1"))
+	draw_string(font, panel.position + Vector2(25, 128), "A campanha e o checkpoint nao foram alterados.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 11, Color("b3c0d8"))
+	var next_label := "PROXIMA CAMARA" if game.lab_index < 3 else "VOLTAR AO MENU"
+	_draw_button(Rect2(panel.position.x + 35, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), next_label, "next_floor", "primary")
+	_draw_button(Rect2(panel.get_center().x + 7, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "MENU", "menu", "secondary")
+
+
+func _draw_lab_game_over(screen: Vector2) -> void:
+	_draw_modal_backdrop(screen, Color("09040d", 0.84))
+	var panel_size := Vector2(minf(520.0, screen.x - 34.0), 240.0)
+	var panel := Rect2((screen - panel_size) * 0.5, panel_size)
+	_draw_panel(panel, Color("ff536f", 0.6))
+	draw_string(font, panel.position + Vector2(25, 55), "CAMARA INTERROMPIDA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 21, Color("ffe7ec"))
+	draw_string(font, panel.position + Vector2(25, 90), "A campanha continua intacta. Tenta novamente.", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 50, 11, Color("d7a7b8"))
+	_draw_button(Rect2(panel.position.x + 35, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "REPETIR  [R]", "continue", "primary")
+	_draw_button(Rect2(panel.get_center().x + 7, panel.end.y - 68, panel.size.x * 0.5 - 42, 40), "MENU", "menu", "secondary")
+
+
 func _draw_panel(rect: Rect2, accent: Color) -> void:
 	draw_rect(rect.grow(5), Color(accent, 0.12))
 	draw_rect(rect, Color("0b1222", 0.98))
@@ -235,9 +1049,10 @@ func _draw_panel(rect: Rect2, accent: Color) -> void:
 
 
 func _draw_button(rect: Rect2, label: String, action: String, style: String) -> void:
-	var hovered := rect.has_point(pointer)
+	var focused := _is_focused(action)
+	var hovered: bool = rect.has_point(pointer) and not (game.controller != null and game.controller.using_gamepad)
 	if style == "menu" or style == "menu_primary":
-		var active := hovered or style == "menu_primary"
+		var active: bool = hovered or focused or (style == "menu_primary" and not (focus_visible or game.controller.using_gamepad))
 		var text_color := Color("ffe600") if active else Color("d0d9e4", 0.9)
 		if active:
 			draw_rect(Rect2(rect.position.x, rect.position.y + 5, 2, rect.size.y - 10), Color("ffe600", 0.92))
@@ -249,10 +1064,12 @@ func _draw_button(rect: Rect2, label: String, action: String, style: String) -> 
 		return
 	var fill := Color("15354b") if style == "primary" else Color("151e31")
 	var accent := Color("54e2f0") if style == "primary" else Color("536581")
-	if hovered:
+	if hovered or focused:
 		fill = Color("1a455a") if style == "primary" else Color("202d44")
-		accent = Color("9af7ff") if style == "primary" else Color("9bb1d5")
-	draw_rect(rect.grow(2) if hovered else rect, Color(accent, 0.12 if hovered else 0.04))
+		accent = Color("9af7ff") if focused or style == "primary" else Color("9bb1d5")
+	draw_rect(rect.grow(2) if hovered or focused else rect, Color(accent, 0.16 if hovered or focused else 0.04))
+	if focused:
+		draw_rect(rect.grow(3), Color("9cfaff"), false, 2.0)
 	draw_rect(rect, fill)
 	draw_rect(Rect2(rect.position, Vector2(rect.size.x, 2)), Color(accent, 0.82))
 	draw_string(font, Vector2(rect.position.x + 8, rect.position.y + rect.size.y * 0.5 + 5), label, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x - 16, 12, Color("f0f8ff"))
@@ -286,16 +1103,139 @@ func _draw_coin_icon(x: float, y: float, scale: float = 1.0) -> void:
 
 
 func _draw_shield_icon(x: float, y: float, scale: float = 1.0) -> void:
-	var polygon := PackedVector2Array([Vector2(x, y - 10 * scale), Vector2(x + 8 * scale, y - 5 * scale), Vector2(x + 6 * scale, y + 6 * scale), Vector2(x, y + 10 * scale), Vector2(x - 6 * scale, y + 6 * scale), Vector2(x - 8 * scale, y - 5 * scale)])
-	draw_colored_polygon(polygon, Color("4ce5f4"))
-	var outline := polygon.duplicate()
-	outline.append(polygon[0])
-	draw_polyline(outline, Color("d5fcff"), 1.2 * scale, true)
+	# Escudo de combate com armação de titânio e gema incrustada
+	var shield_outer := PackedVector2Array([
+		Vector2(x - 9.0 * scale, y - 10.0 * scale),
+		Vector2(x, y - 8.0 * scale),
+		Vector2(x + 9.0 * scale, y - 10.0 * scale),
+		Vector2(x + 10.0 * scale, y - 2.0 * scale),
+		Vector2(x + 7.0 * scale, y + 6.0 * scale),
+		Vector2(x, y + 12.0 * scale),
+		Vector2(x - 7.0 * scale, y + 6.0 * scale),
+		Vector2(x - 10.0 * scale, y - 2.0 * scale)
+	])
+	draw_colored_polygon(shield_outer, Color("142236"))
+	var shield_inner := PackedVector2Array([
+		Vector2(x - 6.5 * scale, y - 7.5 * scale),
+		Vector2(x, y - 6.0 * scale),
+		Vector2(x + 6.5 * scale, y - 7.5 * scale),
+		Vector2(x + 7.5 * scale, y - 1.5 * scale),
+		Vector2(x + 5.0 * scale, y + 4.5 * scale),
+		Vector2(x, y + 9.5 * scale),
+		Vector2(x - 5.0 * scale, y + 4.5 * scale),
+		Vector2(x - 7.5 * scale, y - 1.5 * scale)
+	])
+	draw_colored_polygon(shield_inner, Color("1f334d"))
+	var outline := shield_outer.duplicate()
+	outline.append(shield_outer[0])
+	draw_polyline(outline, Color("6de9ff"), 1.2 * scale, true)
+	
+	# Gema ciano lapidada no centro do ícone
+	var gem_pts := PackedVector2Array([
+		Vector2(x, y - 5.0 * scale),
+		Vector2(x - 4.0 * scale, y),
+		Vector2(x, y + 5.0 * scale),
+		Vector2(x + 4.0 * scale, y)
+	])
+	draw_colored_polygon(gem_pts, Color("5ae1ff"))
+	draw_circle(Vector2(x - 1.0 * scale, y - 2.0 * scale), 1.0 * scale, Color("ffffff"))
 
 
 func _draw_switch_icon(x: float, y: float, scale: float = 1.0) -> void:
-	draw_rect(Rect2(x - 8 * scale, y - 6 * scale, 16 * scale, 12 * scale), Color("7dec9c"))
-	draw_circle(Vector2(x, y), 2.5 * scale, Color("f4fff0"))
+	var center := Vector2(x, y)
+	var pts := PackedVector2Array([
+		center + Vector2(-6, -6) * scale,
+		center + Vector2(6, -6) * scale,
+		center + Vector2(6, 6) * scale,
+		center + Vector2(-6, 6) * scale
+	])
+	draw_colored_polygon(pts, Color("151a2d"))
+	var border := pts.duplicate()
+	border.append(pts[0])
+	draw_polyline(border, Color("35426b"), 1.0 * scale, true)
+	draw_circle(center + Vector2(-4, -4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(4, -4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(-4, 4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center + Vector2(4, 4) * scale, 0.8 * scale, Color("9ab0e6"))
+	draw_circle(center, 3.2 * scale, Color("5ef59f"))
+	draw_circle(center + Vector2(-0.8, -0.8) * scale, 1.0 * scale, Color("ffffff"))
+
+
+func _draw_dev_menu(screen: Vector2) -> void:
+	# Fundo escuro com vinheta
+	draw_rect(Rect2(Vector2.ZERO, screen), Color("03050c", 0.82))
+	
+	var panel_w := minf(660.0, screen.x - 40.0)
+	var panel_h := minf(540.0, screen.y - 40.0)
+	var panel := Rect2((screen - Vector2(panel_w, panel_h)) * 0.5, Vector2(panel_w, panel_h))
+	
+	# Moldura estilizada cyberpunk com brilho néon magenta/ciano
+	_draw_panel(panel, Color("ff007f", 0.85))
+	
+	# Cabeçalho
+	var header_y := panel.position.y + 28.0
+	draw_string(font, Vector2(panel.position.x + 20, header_y), "/// CONSOLA DO DESENVOLVEDOR [F1] ///", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 16, Color("ff60b0"))
+	draw_string(font, Vector2(panel.position.x + 20, header_y + 18), "Atalhos de depuracao, teleporte e sandbox em tempo real", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 40, 9, Color("88a0c0"))
+	
+	var cy := header_y + 36.0
+	
+	# SEÇÃO 1: TRAPAÇAS & MODOS ESPECIAIS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "MODOS DE JOGO:", HORIZONTAL_ALIGNMENT_LEFT, 200, 10, Color("5ce1e6"))
+	cy += 14.0
+	var btn_w := (panel.size.x - 56.0) / 2.0
+	var god_label := "IMORTALIDADE: ATIVADA" if game.dev_god_mode else "IMORTALIDADE: DESLIGADA"
+	_draw_button(Rect2(panel.position.x + 24, cy, btn_w, 32), god_label, "dev_god", "primary" if game.dev_god_mode else "secondary")
+	var noclip_label := "NO-CLIP: ATIVADO" if game.dev_noclip else "NO-CLIP: DESLIGADO"
+	_draw_button(Rect2(panel.position.x + 32 + btn_w, cy, btn_w, 32), noclip_label, "dev_noclip", "primary" if game.dev_noclip else "secondary")
+	cy += 40.0
+	
+	# SEÇÃO 2: TELEPORTE DE ANDARES (-10, -1, +1, +10 e Marcos)
+	draw_string(font, Vector2(panel.position.x + 24, cy), "TELEPORTE (ANDAR ATUAL: %d):" % game.floor_number, HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var step_w := (panel.size.x - 64.0) / 4.0
+	_draw_button(Rect2(panel.position.x + 24, cy, step_w, 28), "-10 ANDARES", "dev_floor_minus_10", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 1, cy, step_w, 28), "-1 ANDAR", "dev_floor_minus_1", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 2, cy, step_w, 28), "+1 ANDAR", "dev_floor_plus_1", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (step_w + 5) * 3, cy, step_w, 28), "+10 ANDARES", "dev_floor_plus_10", "secondary")
+	cy += 34.0
+	
+	# Marcos de História
+	var mark_w := (panel.size.x - 68.0) / 5.0
+	_draw_button(Rect2(panel.position.x + 24, cy, mark_w, 26), "ANDAR 05 (LIA)", "dev_floor:5", "primary" if game.floor_number == 5 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 1, cy, mark_w, 26), "ANDAR 10", "dev_floor:10", "primary" if game.floor_number == 10 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 2, cy, mark_w, 26), "ANDAR 50", "dev_floor:50", "primary" if game.floor_number == 50 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 3, cy, mark_w, 26), "ANDAR 100", "dev_floor:100", "primary" if game.floor_number == 100 else "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mark_w + 5) * 4, cy, mark_w, 26), "ANDAR 200", "dev_floor:200", "primary" if game.floor_number == 200 else "secondary")
+	cy += 38.0
+	
+	# SEÇÃO 3: SPAWN DE INIMIGOS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "SPAWN DE INIMIGOS NO TABULEIRO:", HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var mob_w := (panel.size.x - 72.0) / 6.0
+	_draw_button(Rect2(panel.position.x + 24, cy, mob_w, 28), "+ HUNTER", "dev_spawn:hunter", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 1, cy, mob_w, 28), "+ SENTRY", "dev_spawn:sentry", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 2, cy, mob_w, 28), "+ WISP", "dev_spawn:wisp", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 3, cy, mob_w, 28), "+ RUSHER", "dev_spawn:rusher", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 4, cy, mob_w, 28), "+ WARDEN", "dev_spawn:warden", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (mob_w + 5) * 5, cy, mob_w, 28), "LIMPAR", "dev_clear_mobs", "primary")
+	cy += 32.0
+	var extra_mob_w := (panel.size.x - 58.0) / 3.0
+	_draw_button(Rect2(panel.position.x + 24, cy, extra_mob_w, 28), "+ PATRULHA", "dev_spawn:patrol", "secondary")
+	_draw_button(Rect2(panel.position.x + 29 + extra_mob_w, cy, extra_mob_w, 28), "+ ESPELHO", "dev_spawn:mirror", "secondary")
+	_draw_button(Rect2(panel.position.x + 34 + extra_mob_w * 2, cy, extra_mob_w, 28), "+ PECA DE XADREZ", "dev_spawn:chess_boss", "secondary")
+	cy += 38.0
+	
+	# SEÇÃO 4: SANDBOX & RECURSOS
+	draw_string(font, Vector2(panel.position.x + 24, cy), "SANDBOX & RECURSOS:", HORIZONTAL_ALIGNMENT_LEFT, 300, 10, Color("5ce1e6"))
+	cy += 14.0
+	var res_w := (panel.size.x - 64.0) / 4.0
+	_draw_button(Rect2(panel.position.x + 24, cy, res_w, 28), "+10 MOEDAS/ESC", "dev_resources", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (res_w + 5) * 1, cy, res_w, 28), "ABRIR PORTAL", "dev_open_portal", "secondary")
+	_draw_button(Rect2(panel.position.x + 24 + (res_w + 5) * 2, cy, res_w * 2.0 + 5, 28), "ARENA DE TESTES (VAZIA)", "dev_arena", "primary")
+	cy += 44.0
+	
+	# BOTÃO FECHAR
+	_draw_button(Rect2(panel.position.x + 24, panel.position.y + panel.size.y - 42, panel.size.x - 48, 32), "FECHAR MENU DEV [F1]", "dev_toggle", "secondary")
 
 
 func _draw_breaker_icon(x: float, y: float, scale: float = 1.0) -> void:
