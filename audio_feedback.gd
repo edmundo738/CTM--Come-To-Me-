@@ -19,11 +19,14 @@ var threat_target := 0.0
 var threat_level := 0.0
 var capture_duck_target := 0.0
 var capture_duck := 0.0
+# Small, pausable spatial voices for already-committed environmental motions.
+var mechanism_players: Array[AudioStreamPlayer2D] = []
+var mechanism_paused := false
 
 
 func _ready() -> void:
 	rng.randomize()
-	for cue in ["step", "blocked", "crate_wood", "crate_metal", "crate_push", "current", "ice_crack", "electric_water", "coin", "shield", "hit", "heart_lost", "heart_recovered", "explosion", "portal", "captor_reveal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "break_glass", "break_metal", "break_ice", "enemy_crush", "shield_contact", "electric_contact", "electric_arc", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss"]:
+	for cue in ["step", "blocked", "crate_wood", "crate_metal", "crate_push", "current", "ice_crack", "electric_water", "coin", "shield", "hit", "heart_lost", "heart_recovered", "explosion", "portal", "captor_reveal", "switch", "jump", "inflate", "balloon_pop", "breaker", "break_wall", "break_glass", "break_metal", "break_ice", "enemy_crush", "shield_contact", "electric_contact", "electric_arc", "power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "near_miss", "plate_wood", "plate_metal", "gate_open", "gate_close", "water_drain"]:
 		var effect := _make_effect(cue)
 		effects[cue] = effect
 		haptic_envelopes[cue] = _analyze_haptic_envelope(effect)
@@ -135,6 +138,53 @@ func play_ambient_at(cue: String, world_position: Vector2) -> void:
 	player.play()
 
 
+# Mechanism sounds are distinct from tactical events: they are short, spatial,
+# bounded and can pause with the visual mechanism they accompany.
+func play_mechanism_at(cue: String, world_position: Vector2) -> void:
+	if not effects_enabled or not effects.has(cue):
+		return
+	while mechanism_players.size() >= 4:
+		var oldest: AudioStreamPlayer2D = mechanism_players.pop_front()
+		if is_instance_valid(oldest):
+			oldest.stop()
+			oldest.queue_free()
+	var player := AudioStreamPlayer2D.new()
+	player.stream = effects[cue]
+	player.volume_db = -17.0
+	player.max_distance = 480.0
+	add_child(player)
+	player.global_position = world_position
+	mechanism_players.append(player)
+	player.finished.connect(_on_mechanism_finished.bind(player))
+	cue_played.emit(cue)
+	player.play()
+	player.stream_paused = mechanism_paused
+
+
+func _on_mechanism_finished(player: AudioStreamPlayer2D) -> void:
+	mechanism_players.erase(player)
+	if is_instance_valid(player):
+		player.queue_free()
+
+
+func set_mechanism_paused(paused: bool) -> void:
+	mechanism_paused = paused
+	for index in range(mechanism_players.size() - 1, -1, -1):
+		var player := mechanism_players[index]
+		if not is_instance_valid(player):
+			mechanism_players.remove_at(index)
+		elif player.stream_paused != paused:
+			player.stream_paused = paused
+
+
+func stop_mechanism_sounds() -> void:
+	for player in mechanism_players:
+		if is_instance_valid(player):
+			player.stop()
+			player.queue_free()
+	mechanism_players.clear()
+
+
 func toggle_music() -> void:
 	music_muted = not music_muted
 	if music_muted:
@@ -146,9 +196,12 @@ func toggle_music() -> void:
 
 
 func stop_all() -> void:
+	stop_mechanism_sounds()
 	if music_player != null:
 		music_player.stop()
 	for child in get_children():
+		if child.is_queued_for_deletion():
+			continue
 		if child is AudioStreamPlayer:
 			child.stop()
 		elif child is AudioStreamPlayer2D:
@@ -184,6 +237,19 @@ func _make_effect(cue: String) -> AudioStreamWAV:
 		"blocked":
 			duration = 0.16
 			notes = [{"at": 0.0, "length": 0.12, "from": 115.0, "to": 62.0, "gain": 0.28, "shape": "triangle"}, {"at": 0.0, "length": 0.07, "from": 800.0, "to": 260.0, "gain": 0.08, "shape": "noise"}]
+		"plate_wood":
+			duration = 0.20
+			notes = [{"at": 0.0, "length": 0.14, "from": 165.0, "to": 78.0, "gain": 0.20, "shape": "triangle"}, {"at": 0.008, "length": 0.055, "from": 730.0, "to": 320.0, "gain": 0.065, "shape": "noise"}, {"at": 0.055, "length": 0.08, "from": 290.0, "to": 155.0, "gain": 0.055, "shape": "sine"}]
+		"plate_metal":
+			duration = 0.24
+			notes = [{"at": 0.0, "length": 0.14, "from": 310.0, "to": 145.0, "gain": 0.16, "shape": "triangle"}, {"at": 0.012, "length": 0.18, "from": 1250.0, "to": 810.0, "gain": 0.08, "shape": "sine"}, {"at": 0.0, "length": 0.045, "from": 1800.0, "to": 680.0, "gain": 0.055, "shape": "noise"}]
+		"gate_open", "gate_close":
+			duration = 0.38
+			var opening := cue == "gate_open"
+			notes = [{"at": 0.0, "length": 0.28, "from": 125.0 if opening else 210.0, "to": 210.0 if opening else 115.0, "gain": 0.12, "shape": "triangle"}, {"at": 0.01, "length": 0.25, "from": 480.0, "to": 250.0, "gain": 0.045, "shape": "noise"}, {"at": 0.25, "length": 0.09, "from": 360.0, "to": 125.0, "gain": 0.10, "shape": "triangle"}]
+		"water_drain":
+			duration = 0.95
+			notes = [{"at": 0.0, "length": 0.83, "from": 600.0, "to": 180.0, "gain": 0.065, "shape": "noise"}, {"at": 0.06, "length": 0.68, "from": 160.0, "to": 65.0, "gain": 0.09, "shape": "sine"}, {"at": 0.27, "length": 0.25, "from": 390.0, "to": 170.0, "gain": 0.045, "shape": "sine"}]
 		"crate_wood":
 			duration = 0.18
 			notes = [{"at": 0.0, "length": 0.15, "from": 145.0, "to": 75.0, "gain": 0.19, "shape": "triangle"}, {"at": 0.015, "length": 0.09, "from": 610.0, "to": 220.0, "gain": 0.055, "shape": "noise"}]

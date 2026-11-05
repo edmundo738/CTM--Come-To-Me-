@@ -2,10 +2,13 @@ extends RefCounted
 
 # Hand-authored, repeatable test chambers. They use the normal turn pipeline
 # but never grant campaign rewards or overwrite a campaign checkpoint.
-const COUNT := 4
+const Submerged = preload("res://submerged_installation.gd")
+const COUNT := 5
 
 
 static func chamber(index: int) -> Dictionary:
+	if index == Submerged.LAB_INDEX:
+		return Submerged.chamber()
 	var common := {
 		"size": Vector2i(13, 9),
 		"start": Vector2i(2, 4),

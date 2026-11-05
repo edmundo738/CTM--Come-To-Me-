@@ -22,7 +22,7 @@ static func make(family: String, seed_number: int, floor_number: int) -> Diction
 		spec.start = module.start
 		spec.portal = module.portal
 		spec.name = str(module.title)
-		spec.hint = "EMPURRA CADA CAIXA A UMA PLACA L; Z DESFAZ."
+		spec.hint = "EMPURRA CADA CAIXA A UMA PLACA DE MADEIRA; Z DESFAZ."
 		for y in range(1, spec.size.y - 1):
 			for x in range(1, spec.size.x - 1):
 				if module.grid[y][x] == Sokoban.TILE_WALL:
@@ -41,10 +41,10 @@ static func make(family: String, seed_number: int, floor_number: int) -> Diction
 			else:
 				spec.crates = [{"pos": Vector2i(3, 2), "material": "wood"}, {"pos": Vector2i(3, 4), "material": "wood"}]
 				spec.plates = [{"pos": Vector2i(5, 2), "required": "wood"}, {"pos": Vector2i(5, 4), "required": "wood"}]
-			spec.hint = "EMPURRA MADEIRA ATE AS PLACAS L; MANTEM-NAS ATIVAS."
+			spec.hint = "EMPURRA MADEIRA ATE AS PLACAS DE MADEIRA; MANTEM-NAS ATIVAS."
 		"mechanism":
 			spec.name = "OFICINA DO PORTAO"
-			spec.hint = "L = MADEIRA, M = METAL. AS DUAS PLACAS ABREM O PORTAO."
+			spec.hint = "MADEIRA COM MADEIRA, METAL COM METAL: AS DUAS ABREM O PORTAO."
 			spec.crates = [{"pos": Vector2i(3, 2), "material": "wood"}, {"pos": Vector2i(3, 4), "material": "metal"}]
 			spec.plates = [{"pos": Vector2i(5, 2), "required": "wood"}, {"pos": Vector2i(5, 4), "required": "metal"}]
 			for y in range(1, 6):

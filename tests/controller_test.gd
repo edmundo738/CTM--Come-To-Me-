@@ -481,7 +481,7 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	game.furthest_floor = 2
 	game.has_resume = true
 	var menus := [
-		{"state": "title", "expected": ["continue", "new_run", "levels", "experimental", "music", "controller_settings"]},
+		{"state": "title", "expected": ["continue", "new_run", "levels", "experimental", "submerged_installation", "music", "controller_settings"]},
 		{"state": "level_select", "expected": ["floor:1", "floor:2", "menu"]},
 		{"state": "paused", "expected": ["resume", "restart_floor", "levels", "controller_settings", "menu"]},
 		{"state": "controller_settings", "expected": ["controller_device", "controller_vibration", "controller_intensity", "controller_test", "controller_calibrate", "controller_reset", "controller_back"]},
@@ -514,6 +514,8 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	for _step in 3:
 		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_expect(game.hud.focus_action == "experimental", "experimental chambers are reachable with the D-pad")
+	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_expect(game.hud.focus_action == "submerged_installation", "the installation shortcut is reachable with the D-pad")
 	for _step in 2:
 		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_expect(game.hud.focus_action == "controller_settings", "real title buttons navigate to controller settings")
@@ -621,6 +623,21 @@ func _test_rendered_menus(fake: FakeInput) -> void:
 	_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
 	_dispatch_tap(2, JOY_BUTTON_A)
 	_expect(game.game_state == "playing" and game.turn_number == 0 and game.environment.crates[0].pos == Vector2i(3, 4), "controller can restart the chamber through pause")
+	game.handle_hud_action("menu")
+	await process_frame
+	await process_frame
+	for _step in 4:
+		_dispatch_tap(2, JOY_BUTTON_DPAD_DOWN)
+	_expect(game.hud.focus_action == "submerged_installation", "controller can select the direct installation shortcut")
+	_dispatch_tap(2, JOY_BUTTON_A)
+	_expect(game.lab_active and game.lab_index == 4 and game.game_state == "playing", "controller opens the fifth chamber through the drawn shortcut")
+	var start: Vector2i = game.player_position
+	_dispatch_tap(2, JOY_BUTTON_DPAD_RIGHT)
+	_expect(game.player_position == start + Vector2i.RIGHT and game.turn_number == 1, "controller moves in the installation")
+	_dispatch_tap(2, JOY_BUTTON_B)
+	_expect(game.player_position == start and game.turn_number == 0 and game.game_state == "playing", "controller cancel undoes in the installation when pause is separate")
+	_dispatch_tap(2, JOY_BUTTON_START)
+	_expect(game.game_state == "paused", "the separate pause button still pauses in the installation")
 	game.audio.stop_all()
 	game.queue_free()
 	await process_frame

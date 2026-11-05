@@ -57,9 +57,11 @@ const CaptureOverlayShader = preload("res://capture_overlay.gdshader")
 const TerrainRenderer = preload("res://terrain_renderer.gd")
 const EnvironmentSystem = preload("res://environment_system.gd")
 const EnvironmentChambers = preload("res://environment_chambers.gd")
+const SubmergedInstallation = preload("res://submerged_installation.gd")
 const VisualMotion = preload("res://visual_motion.gd")
 const ImpactPresentation = preload("res://impact_presentation.gd")
 const EnvironmentVFX = preload("res://environment_vfx.gd")
+const MechanismPresentation = preload("res://mechanism_presentation.gd")
 const ElectricPresentation = preload("res://electric_presentation.gd")
 const SpecialSchedule = preload("res://special_schedule.gd")
 const SpecialLevels = preload("res://special_levels.gd")
@@ -70,12 +72,15 @@ const SLIDE_VISUAL_TIME := 0.16
 const JUMP_VISUAL_TIME := 0.21
 
 var environment = EnvironmentSystem.new()
+var submerged = SubmergedInstallation.new()
+var mechanism_presentation = MechanismPresentation.new()
+var mechanism_sound_queue: Array[Dictionary] = []
 var special_schedule = SpecialSchedule.new()
 var special_family := ""
 var special_hint := ""
 var special_spec: Dictionary = {}
 var special_route_cache: Dictionary = {}
-# Bounded undo applies only to actual Sokoban chambers, not campaign combat.
+# Bounded undo applies to Sokoban and the authored installation, not general campaign combat.
 var sokoban_history: Array[Dictionary] = []
 var sokoban_pushes := 0
 const SOKOBAN_HISTORY_LIMIT := 128
@@ -521,6 +526,8 @@ func handle_hud_action(action: String) -> void:
 		return
 	if action == "experimental":
 		start_environment_lab()
+	elif action == "submerged_installation":
+		start_environment_lab(SubmergedInstallation.LAB_INDEX)
 	elif action == "new_run":
 		slot_select_mode = "new"
 		slot_message = "ESCOLHE UMA CAMPANHA. UMA OCUPADA EXIGE CONFIRMACAO."
@@ -588,6 +595,7 @@ func handle_hud_action(action: String) -> void:
 	elif action == "menu":
 		_leave_dev_sandbox()
 		lab_active = false
+		_clear_mechanism_presentation()
 		environment.reset()
 		capture_darkness = 0.0
 		capture_flash = 0.0
@@ -954,6 +962,7 @@ func dev_open_portal() -> void:
 func dev_load_sandbox_arena() -> void:
 	if not _begin_dev_sandbox():
 		return
+	_clear_mechanism_presentation()
 	sokoban_history.clear()
 	sokoban_pushes = 0
 	special_family = ""
@@ -1130,13 +1139,20 @@ func _restore_power_state(raw: Variant) -> void:
 
 # Experimental chambers deliberately bypass campaign generation/checkpoints.
 # They use the same actions, collision, hazards and portal loop as normal play.
-func start_environment_lab() -> void:
+func start_environment_lab(index: int = 0) -> void:
 	_leave_dev_sandbox()
 	lab_active = true
-	_load_lab_chamber(0)
+	_load_lab_chamber(index)
+
+
+func _is_submerged() -> bool:
+	return lab_active and lab_index == SubmergedInstallation.LAB_INDEX
 
 
 func _load_lab_chamber(index: int) -> void:
+	_clear_mechanism_presentation()
+	_clear_transient_motion_effects()
+	particles.clear()
 	sokoban_history.clear()
 	sokoban_pushes = 0
 	special_family = ""
@@ -1150,7 +1166,7 @@ func _load_lab_chamber(index: int) -> void:
 	var spec: Dictionary = EnvironmentChambers.chamber(lab_index)
 	lab_name = spec.name
 	lab_hint = spec.hint
-	floor_number = [2, 2, 4, 1][lab_index]
+	floor_number = int(spec.get("biome_floor", [2, 2, 4, 1][mini(lab_index, 3)]))
 	world_size = spec.size
 	grid.clear()
 	for y in world_size.y:
@@ -1173,7 +1189,7 @@ func _load_lab_chamber(index: int) -> void:
 	breakers.clear()
 	powerups.clear()
 	coins.clear()
-	switches.clear()
+	switches.assign(spec.get("switches", []).duplicate(true))
 	traps.assign(spec.traps.duplicate(true))
 	rooms.clear()
 	room_graph_edges.clear()
@@ -1181,7 +1197,9 @@ func _load_lab_chamber(index: int) -> void:
 	charges = 0
 	breach_charges = 0
 	_restore_power_state({})
-	objective_type = "environment"
+	objective_type = "submerged" if _is_submerged() else "environment"
+	if _is_submerged():
+		submerged.reset(player_position)
 	turn_number = 0
 	moves_this_floor = 0
 	jumps_this_floor = 0
@@ -1209,6 +1227,11 @@ func _crate_destination_free(point: Vector2i) -> bool:
 
 
 func _sync_environment_mechanisms() -> void:
+	if _is_submerged():
+		_present_submerged_events(submerged.sync(environment, grid, switches, player_position))
+		portal_open = submerged.final_open
+		_observe_mechanism_presentation()
+		return
 	var enemy_positions: Array[Vector2i] = []
 	for enemy in enemies:
 		enemy_positions.append(enemy.pos)
@@ -1227,6 +1250,83 @@ func _sync_environment_mechanisms() -> void:
 			last_notice = "PLACAS ATIVAS — PORTAL ABERTO"
 			notice_timer = 2.0
 			_emit_feedback("PORTAL_OPEN")
+	_observe_mechanism_presentation()
+
+
+func _clear_mechanism_presentation() -> void:
+	mechanism_presentation.clear()
+	mechanism_sound_queue.clear()
+	if audio != null and audio.has_method("stop_mechanism_sounds"):
+		audio.stop_mechanism_sounds()
+
+
+# Observe already-resolved facts; no sound, interpolation or visibility track
+# is allowed to change a turn, collision, RNG or a saved gameplay object.
+func _observe_mechanism_presentation(with_sound: bool = true) -> void:
+	var events: Array[Dictionary] = mechanism_presentation.observe(environment, switches, portal_open)
+	if not with_sound or game_state != "playing" or dev_menu_open:
+		return
+	# When several doors move together, one nearby mechanical cue is clearer
+	# than stacking a motor sound for every panel in the room.
+	var nearest_gate: Dictionary = {}
+	for event in events:
+		if event.kind == "gate":
+			if nearest_gate.is_empty() or _manhattan(event.pos, player_position) < _manhattan(nearest_gate.pos, player_position):
+				nearest_gate = event
+		else:
+			_queue_mechanism_sound(event)
+	if not nearest_gate.is_empty():
+		_queue_mechanism_sound(nearest_gate)
+
+
+func _queue_mechanism_sound(event: Dictionary) -> void:
+	var kind := str(event.kind)
+	var point: Vector2i = event.pos
+	var cue := ""
+	if kind == "plate":
+		cue = "plate_wood" if str(event.material) == "wood" else "plate_metal"
+	elif kind == "gate":
+		cue = "gate_open" if bool(event.active) else "gate_close"
+	elif kind == "drain":
+		cue = "water_drain"
+		if _is_submerged():
+			point = SubmergedInstallation.DRAIN_VALVE
+	if cue.is_empty():
+		return
+	# A reversal supersedes a not-yet-played cue rather than inventing a second
+	# event. Keep the cosmetic queue bounded under inputs faster than frames.
+	for index in range(mechanism_sound_queue.size() - 1, -1, -1):
+		if mechanism_sound_queue[index].kind == kind and mechanism_sound_queue[index].pos == point:
+			mechanism_sound_queue.remove_at(index)
+	if mechanism_sound_queue.size() >= 8:
+		mechanism_sound_queue.pop_front()
+	var contact := minf(0.16, player_motion.remaining_time()) if player_motion.is_active() else 0.0
+	var delay := contact if kind == "plate" else contact + 0.04 if kind == "gate" else contact + 0.10
+	mechanism_sound_queue.append({"kind": kind, "cue": cue, "pos": point, "delay": delay})
+
+
+func _advance_mechanism_sounds(delta: float) -> void:
+	if delta <= 0.0:
+		return
+	for index in range(mechanism_sound_queue.size() - 1, -1, -1):
+		var pending: Dictionary = mechanism_sound_queue[index]
+		pending.delay = float(pending.delay) - delta
+		if pending.delay <= 0.0:
+			if audio != null and audio.has_method("play_mechanism_at"):
+				audio.play_mechanism_at(str(pending.cue), to_global(_cell_center(pending.pos)))
+			mechanism_sound_queue.remove_at(index)
+
+
+# Presentation consumes already-committed facts; it never advances a turn.
+func _present_submerged_events(events: Array[Dictionary]) -> void:
+	for event in events:
+		last_notice = str(event.message)
+		notice_timer = 3.4
+		if bool(event.get("terrain_changed", false)) and terrain_renderer != null:
+			terrain_renderer.rebuild()
+		var color := Color("ff7586") if event.feedback == "PUZZLE_ERROR" else Color("8df6d4")
+		_spawn_burst(_cell_center(event.pos), color, 12, 90.0)
+		_emit_feedback(str(event.feedback))
 
 
 # Resolve a single environmental displacement after the entry cell. Hazards,
@@ -1366,6 +1466,7 @@ func _place_brittle_ice(occupied: Dictionary) -> void:
 
 
 func generate_floor(number: int) -> void:
+	_clear_mechanism_presentation()
 	sokoban_history.clear()
 	sokoban_pushes = 0
 	# A previous cinematic cannot leak into a newly generated floor. Entry
@@ -1575,6 +1676,7 @@ func generate_floor(number: int) -> void:
 # A special chamber is a designed, validated exception; the normal campaign
 # and all reserved boss/warden floors continue to use the WFC generator.
 func _generate_special_room(spec: Dictionary, initial_plan: Dictionary, level_seed: int) -> void:
+	_clear_mechanism_presentation()
 	sokoban_history.clear()
 	sokoban_pushes = 0
 	special_spec = spec.duplicate(true)
@@ -2457,8 +2559,13 @@ func try_move(dx: int, dy: int) -> void:
 			blocked_crate_direction = Vector2(facing)
 			blocked_crate_pending = player_motion.is_active() or crate_visual_tracks.has(crate_index)
 			blocked_crate_time = 0.0 if blocked_crate_pending else 0.16
-			last_notice = "CAIXA BLOQUEADA — PRECISA DE UMA CASA LIVRE"
-			notice_timer = 1.2
+			if bool(environment.crates[crate_index].get("locked", false)):
+				last_notice = "GERADOR FIXO — USA I/O PARA LIGAR OU DESLIGAR"
+			elif environment.is_gate_closed(next):
+				last_notice = "PORTA FECHADA — VOLTA A SELECIONAR A SUA CONSOLA"
+			else:
+				last_notice = "CAIXA BLOQUEADA — PRECISA DE UMA CASA LIVRE"
+			notice_timer = 1.8
 			_queue_contact_feedback("BLOCKED", "block", _cell_center(next) - Vector2(facing) * CELL * 0.5, Vector2(facing), _contact_delay(0.04), str(environment.crates[crate_index].get("material", "wood")))
 			queue_redraw()
 			return
@@ -2500,11 +2607,15 @@ func wait_turn() -> void:
 	_take_turn()
 
 
+func _can_undo_puzzle() -> bool:
+	return _is_submerged() or (special_family == "sokoban" and not special_spec.is_empty() and not lab_active)
+
+
 # Capture every reversible gameplay fact, not just box coordinates. The
 # chamber can contain loot and powers and players can jump, blink or demolish;
 # undo must not duplicate those resources or leave stale electricity/gates.
 func _snapshot_sokoban() -> Dictionary:
-	if special_family != "sokoban" or special_spec.is_empty() or lab_active:
+	if not _can_undo_puzzle():
 		return {}
 	return {
 		"player": player_position, "facing": facing, "grid": grid.duplicate(true),
@@ -2521,6 +2632,7 @@ func _snapshot_sokoban() -> Dictionary:
 		"pushes": sokoban_pushes, "challenge": challenge_complete,
 		"bonus_claimed": environment_bonus_claimed, "rng": rng.state,
 		"shield_notice": shield_full_notice_turn,
+		"submerged_state": submerged.snapshot() if _is_submerged() else {},
 	}
 
 
@@ -2532,8 +2644,30 @@ func _remember_sokoban(snapshot: Dictionary) -> void:
 	sokoban_history.append(snapshot)
 
 
+# Compare the old and restored authoritative arrays before assigning them.
+# The reverse is decorative; the restored item is immediately collectible.
+func _restore_pickup_visuals(saved: Dictionary) -> void:
+	for group in [
+		{"kind": "coin", "before": coins, "after": saved.coins},
+		{"kind": "shield", "before": shields, "after": saved.shields},
+		{"kind": "heart", "before": heart_pickups, "after": saved.hearts_on_floor},
+		{"kind": "breaker", "before": breakers, "after": saved.breakers},
+	]:
+		for point in group.after:
+			if not group.before.has(point):
+				mechanism_presentation.restore_pickup(str(group.kind), point)
+	for restored in saved.powerups:
+		var present := false
+		for current in powerups:
+			if current.pos == restored.pos and current.kind == restored.kind:
+				present = true
+				break
+		if not present:
+			mechanism_presentation.restore_pickup("power:" + str(restored.kind), restored.pos)
+
+
 func undo_sokoban_move() -> void:
-	if game_state != "playing" or special_family != "sokoban" or special_spec.is_empty() or captor_flyover_time > 0.0:
+	if game_state != "playing" or not _can_undo_puzzle() or captor_flyover_time > 0.0:
 		return
 	if sokoban_history.is_empty():
 		last_notice = "AINDA NAO HA MOVIMENTOS PARA DESFAZER"
@@ -2541,11 +2675,14 @@ func undo_sokoban_move() -> void:
 		_emit_feedback("BLOCKED")
 		return
 	var saved: Dictionary = sokoban_history.pop_back()
+	_restore_pickup_visuals(saved)
 	_clear_transient_motion_effects()
 	particles.clear()
 	unresolved_contacts.clear()
 	grid = saved.grid.duplicate(true)
 	environment.reset({"cells": saved.cells, "crates": saved.crates, "plates": saved.plates, "gates": saved.gates})
+	if _is_submerged():
+		submerged.restore(saved.submerged_state)
 	player_position = saved.player
 	facing = saved.facing
 	_reset_player_visual(_cell_center(player_position))
@@ -2576,6 +2713,12 @@ func undo_sokoban_move() -> void:
 	rng.state = int(saved.rng)
 	shield_full_notice_turn = int(saved.shield_notice)
 	damage_this_turn = false
+	# Undo changes the rules immediately but reverses a partially played visual
+	# from its current pose, including water and revealed terminals.
+	mechanism_sound_queue.clear()
+	if audio != null and audio.has_method("stop_mechanism_sounds"):
+		audio.stop_mechanism_sounds()
+	_observe_mechanism_presentation(false)
 	if terrain_renderer != null:
 		terrain_renderer.rebuild()
 	_update_enemy_intents()
@@ -3045,9 +3188,18 @@ func _tick_power_effects() -> void:
 		freeze_turns -= 1
 
 
+# Echoes are presentation only: the item leaves its rules array immediately.
+# Waiting for the visible arrival prevents it from popping away in front of a
+# moving player, without delaying rewards, input, collisions or RNG.
+func _present_collected_pickup(kind: String, point: Vector2i) -> void:
+	var delay := pickup_feedback_delay if pickup_feedback_delay >= 0.0 else _contact_delay()
+	mechanism_presentation.collect_pickup(kind, point, delay)
+
+
 func _collect_coin(point: Vector2i) -> bool:
 	if not coins.has(point):
 		return false
+	_present_collected_pickup("coin", point)
 	coins.erase(point)
 	coins_this_floor += 1
 	total_coins += 1 + _skill_effect("coin_bonus")
@@ -3121,6 +3273,7 @@ func _collect_pickups() -> void:
 	var collected_coins := 1 if _collect_coin(player_position) else 0
 	if shields.has(player_position):
 		if charges < shield_capacity():
+			_present_collected_pickup("shield", player_position)
 			shields.erase(player_position)
 			var gained := mini(1 + _skill_effect("shield_pickup"), shield_capacity() - charges)
 			charges += gained
@@ -3133,6 +3286,7 @@ func _collect_pickups() -> void:
 			last_notice = "ESCUDOS CHEIOS (%d/%d) — PICKUP FICA NO CHAO" % [charges, shield_capacity()]
 			notice_timer = 2.2
 	if heart_pickups.has(player_position) and hearts_current < heart_capacity():
+		_present_collected_pickup("heart", player_position)
 		heart_pickups.erase(player_position)
 		hearts_current += 1
 		last_notice = "CORACAO RECUPERADO (%d/%d)" % [hearts_current, heart_capacity()]
@@ -3140,6 +3294,7 @@ func _collect_pickups() -> void:
 		_spawn_burst(_cell_center(player_position), Color("ff83a1"), 18, 120.0)
 		_emit_feedback("HEART_RECOVERED")
 	if breakers.has(player_position):
+		_present_collected_pickup("breaker", player_position)
 		breakers.erase(player_position)
 		var gained := 1 + _skill_effect("breach_pickup")
 		breach_charges += gained
@@ -3150,6 +3305,7 @@ func _collect_pickups() -> void:
 	for i in range(powerups.size() - 1, -1, -1):
 		var item: Dictionary = powerups[i]
 		if item.pos == player_position:
+			_present_collected_pickup("power:" + str(item.kind), player_position)
 			powerups.remove_at(i)
 			_activate_powerup(item.kind)
 	if magnet_turns > 0 and not coins.is_empty():
@@ -3192,6 +3348,9 @@ func _audio_coin() -> void:
 
 
 func _activate_switches() -> void:
+	if _is_submerged():
+		_present_submerged_events(submerged.enter(player_position, switches))
+		return
 	for i in switches.size():
 		var item: Dictionary = switches[i]
 		if item.active or item.pos != player_position:
@@ -3728,7 +3887,10 @@ func _check_portal() -> void:
 	if player_position != portal_position or game_state != "playing":
 		return
 	if not portal_open:
-		last_notice = "PORTAL BLOQUEADO — ATIVA AS PLACAS" if objective_type == "environment" else "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
+		if _is_submerged():
+			last_notice = "PORTAL BLOQUEADO — DRENA E ATIVA OS TERMINAIS D"
+		else:
+			last_notice = "PORTAL BLOQUEADO — ATIVA AS PLACAS" if objective_type == "environment" else "PORTAL BLOQUEADO — ATIVA OS INTERRUPTORES"
 		notice_timer = 2.0
 		return
 	if lab_active:
@@ -3796,6 +3958,8 @@ func _stars_for_floor() -> int:
 
 
 func get_objective_text() -> String:
+	if _is_submerged():
+		return submerged.objective()
 	if objective_type == "environment":
 		return "PLACAS %d/%d  /  %s" % [environment.active_plate_count(), environment.plates.size(), "PORTAL ABERTO" if portal_open else "PORTAL BLOQUEADO"]
 	if objective_type == "puzzle":
@@ -4098,6 +4262,18 @@ func _process(delta: float) -> void:
 	# audio/haptic drivers, collision and logical positions still use real time.
 	var presentation: Dictionary = impact_presentation.advance(delta, game_state == "paused" or not _world_is_visible())
 	var visual_delta: float = presentation.visual_delta
+	# The combat presenter cancels pending contact effects on pause, but its
+	# returned delta is not zero. Hold these longer mechanisms explicitly.
+	var mechanism_delta := visual_delta if game_state == "playing" and not dev_menu_open else 0.0
+	if audio != null and audio.has_method("set_mechanism_paused"):
+		audio.set_mechanism_paused(mechanism_delta <= 0.0)
+	if _world_is_visible():
+		_observe_mechanism_presentation()
+		if mechanism_presentation.advance(mechanism_delta) and terrain_renderer != null:
+			# Returning water was drawn dynamically while it rose; bake the final
+			# opaque surface back into the retained chunks once, not every frame.
+			terrain_renderer.rebuild()
+		_advance_mechanism_sounds(mechanism_delta)
 	var player_contact := false
 	for contact in presentation.contacts:
 		_on_presentation_contact(contact)
@@ -4301,7 +4477,7 @@ func _on_controller_action(action: String) -> void:
 			wait_turn()
 		elif action == "blink":
 			try_blink()
-		elif action == "cancel" and special_family == "sokoban" and controller.button_label("pause") != "--":
+		elif action == "cancel" and _can_undo_puzzle() and controller.button_label("pause") != "--":
 			undo_sokoban_move()
 		elif action in ["pause", "cancel"]:
 			controller.feedback("menu_confirm")
@@ -4547,6 +4723,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			KEY_N: handle_hud_action("new_run")
 			KEY_L: open_level_select()
 			KEY_C: start_environment_lab()
+			KEY_I: start_environment_lab(SubmergedInstallation.LAB_INDEX)
 			KEY_M: audio.toggle_music()
 		return
 	if game_state == "level_select":
@@ -4678,6 +4855,34 @@ func _draw_heart_pickup(cell: Vector2i) -> void:
 	draw_circle(center + Vector2(-6, -5), 2.5, Color("ffe1ea"))
 
 
+# Draw the same pickup art while an echo contracts or an undone item returns.
+# The only transform is local presentation; its real cell and effects are set.
+func _draw_pickup_visual(kind: String, point: Vector2i, amount: float) -> void:
+	var size := clampf(amount, 0.0, 1.0)
+	if size <= 0.001:
+		return
+	if kind == "coin":
+		if size >= 0.999:
+			_draw_coin(point)
+		else:
+			_draw_coin_scaled(point, size)
+		return
+	var transformed := size < 0.999
+	if transformed:
+		var center := _cell_center(point)
+		var origin := center - center * size + Vector2(0.0, -8.0 * (1.0 - size))
+		draw_set_transform(origin, 0.0, Vector2.ONE * size)
+	match kind:
+		"shield": _draw_shield(point)
+		"heart": _draw_heart_pickup(point)
+		"breaker": _draw_breaker(point)
+		_:
+			if kind.begins_with("power:"):
+				_draw_powerup({"pos": point, "kind": kind.substr(6)})
+	if transformed:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
 func _draw() -> void:
 	if world_size == Vector2i.ZERO or not _world_is_visible():
 		return
@@ -4686,6 +4891,8 @@ func _draw() -> void:
 	# Static ground, shadows and walls are retained by terrain_renderer. The
 	# remaining dynamic actors are culled conservatively, never removed from
 	# the game state, so objectives and collision still use the full level.
+	if _is_submerged():
+		_draw_submerged_layout()
 	for gate in environment.gates:
 		if item_view.has_point(_cell_center(gate.pos)):
 			_draw_environment_gate(gate)
@@ -4695,19 +4902,23 @@ func _draw() -> void:
 			_draw_environment_crate(crate, index)
 	for pos in coins:
 		if item_view.has_point(_cell_center(pos)):
-			_draw_coin(pos)
+			_draw_pickup_visual("coin", pos, mechanism_presentation.pickup_amount("coin", pos, true))
 	for pos in shields:
 		if item_view.has_point(_cell_center(pos)):
-			_draw_shield(pos)
+			_draw_pickup_visual("shield", pos, mechanism_presentation.pickup_amount("shield", pos, true))
 	for pos in heart_pickups:
 		if item_view.has_point(_cell_center(pos)):
-			_draw_heart_pickup(pos)
+			_draw_pickup_visual("heart", pos, mechanism_presentation.pickup_amount("heart", pos, true))
 	for pos in breakers:
 		if item_view.has_point(_cell_center(pos)):
-			_draw_breaker(pos)
+			_draw_pickup_visual("breaker", pos, mechanism_presentation.pickup_amount("breaker", pos, true))
 	for item in powerups:
 		if item_view.has_point(_cell_center(item.pos)):
-			_draw_powerup(item)
+			var kind := "power:" + str(item.kind)
+			_draw_pickup_visual(kind, item.pos, mechanism_presentation.pickup_amount(kind, item.pos, true))
+	for echo in mechanism_presentation.pickups.values():
+		if float(echo.target) < 0.5 and item_view.has_point(_cell_center(echo.pos)):
+			_draw_pickup_visual(str(echo.kind), echo.pos, float(echo.value))
 	if view.grow(64.0).has_point(_cell_center(portal_position)):
 		_draw_portal()
 	for enemy in enemies:
@@ -5059,6 +5270,23 @@ func _enemy_contact_draw_position(enemy: Dictionary) -> Vector2:
 	return center + axis * separation
 
 
+func _draw_pickup_light(target: CanvasItem, kind: String, point: Vector2i, amount: float, pulse: float) -> void:
+	if amount <= 0.001:
+		return
+	var center := _cell_center(point) + Vector2(0, 4)
+	match kind:
+		"shield":
+			_draw_radial_light(target, center, 48.0, Color("b0f8ff", 0.95 * amount), Color("00bfe6", 0.50 * amount), pulse)
+		"breaker":
+			_draw_radial_light(target, center, 52.0, Color("fff1a8", 0.95 * amount), Color("ff9900", 0.50 * amount), pulse)
+		"coin":
+			_draw_radial_light(target, center, 28.0, Color("fff6bd", 0.85 * amount), Color("e69900", 0.40 * amount), 1.0)
+		_:
+			if kind.begins_with("power:"):
+				var color := Color(POWERUP_COLORS.get(kind.substr(6), "ffffff"))
+				_draw_radial_light(target, center, 43.0, Color(color, 0.9 * amount), Color(color, 0.4 * amount), pulse)
+
+
 func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	var pulse := 1.0 + sin(animation_clock * 3.8) * 0.07
 	var light_view := view.grow(116.0)
@@ -5068,46 +5296,48 @@ func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	# screen-wide flash and never a gameplay input.
 	for plate in environment.plates:
 		var center := _cell_center(plate.pos)
-		if plate.get("active", false) and light_view.has_point(center):
-			_draw_radial_light(target, center, 35.0, Color("adffe3", 0.35), Color("39cda3", 0.18), 1.0)
+		var amount: float = mechanism_presentation.plate_amount(plate.pos, bool(plate.get("active", false)))
+		if amount > 0.001 and light_view.has_point(center):
+			_draw_radial_light(target, center, 35.0, Color("adffe3", 0.35 * amount), Color("39cda3", 0.18 * amount), 1.0)
 	# Halo néon suave da bola vermelha do jogador no chão (sem anel ruidoso)
 	var p_pos := _player_visual_position()
 	_draw_radial_light(target, p_pos, 52.0, Color("ff6080", 0.90), Color("ff1038", 0.42), pulse)
 	
-	# Halo dos escudos cibernéticos (ciano radiante)
-	for s in shields:
-		var sc := _cell_center(s)
-		if not light_view.has_point(sc): continue
-		_draw_radial_light(target, sc + Vector2(0, 4), 48.0, Color("b0f8ff", 0.95), Color("00bfe6", 0.50), pulse)
-		
-	# Halo dos baús breaker (âmbar / dourado quente)
-	for b in breakers:
-		var bc := _cell_center(b)
-		if not light_view.has_point(bc): continue
-		_draw_radial_light(target, bc + Vector2(0, 4), 52.0, Color("fff1a8", 0.95), Color("ff9900", 0.50), pulse)
-		
-	# Four power-up colors also match their in-world icon and HUD effects.
+	# Pickup halos follow the same bounded echo as the art; neither halo nor
+	# echo is a collectible object after the authoritative array is changed.
+	for point in shields:
+		if light_view.has_point(_cell_center(point)):
+			_draw_pickup_light(target, "shield", point, mechanism_presentation.pickup_amount("shield", point, true), pulse)
+	for point in breakers:
+		if light_view.has_point(_cell_center(point)):
+			_draw_pickup_light(target, "breaker", point, mechanism_presentation.pickup_amount("breaker", point, true), pulse)
 	for item in powerups:
-		if not light_view.has_point(_cell_center(item.pos)): continue
-		var color := Color(POWERUP_COLORS.get(item.kind, "ffffff"))
-		_draw_radial_light(target, _cell_center(item.pos) + Vector2(0, 4), 43.0, Color(color, 0.9), Color(color, 0.4), pulse)
-	# Halo das moedas (dourado compacto)
-	for c in coins:
-		var cc := _cell_center(c)
-		if not coin_view.has_point(cc): continue
-		_draw_radial_light(target, cc + Vector2(0, 4), 28.0, Color("fff6bd", 0.85), Color("e69900", 0.40), 1.0)
+		if light_view.has_point(_cell_center(item.pos)):
+			var kind := "power:" + str(item.kind)
+			_draw_pickup_light(target, kind, item.pos, mechanism_presentation.pickup_amount(kind, item.pos, true), pulse)
+	for point in coins:
+		if coin_view.has_point(_cell_center(point)):
+			_draw_pickup_light(target, "coin", point, mechanism_presentation.pickup_amount("coin", point, true), pulse)
+	for echo in mechanism_presentation.pickups.values():
+		if float(echo.target) < 0.5 and light_view.has_point(_cell_center(echo.pos)):
+			_draw_pickup_light(target, str(echo.kind), echo.pos, float(echo.value), pulse)
 		
 	# Halo dos interruptores (azul/ciano inativo, verde esmeralda ativado)
 	for sw in switches:
 		var sc := _cell_center(sw.pos)
 		if not light_view.has_point(sc): continue
 		var sw_on: bool = sw.get("active", false)
-		var sw_core := Color("a0ffcf", 0.92) if sw_on else Color("6de9ff", 0.82)
-		var sw_glow := Color("15b565", 0.48) if sw_on else Color("1468b8", 0.38)
+		var visibility: float = mechanism_presentation.switch_visibility(sw.pos, bool(sw.get("hidden", false)))
+		if visibility <= 0.001: continue
+		var amount: float = mechanism_presentation.switch_amount(sw.pos, sw_on)
+		var sw_core := Color("6de9ff", 0.82).lerp(Color("a0ffcf", 0.92), amount)
+		var sw_glow := Color("1468b8", 0.38).lerp(Color("15b565", 0.48), amount)
 		if sw.has("order"):
 			var rune_color := Color(PUZZLE_COLORS[clampi(int(sw.order), 0, 2)])
-			sw_core = Color(rune_color, 0.95 if sw_on else 0.7)
-			sw_glow = Color(rune_color, 0.45 if sw_on else 0.27)
+			sw_core = Color(rune_color, lerpf(0.7, 0.95, amount))
+			sw_glow = Color(rune_color, lerpf(0.27, 0.45, amount))
+		sw_core.a *= visibility
+		sw_glow.a *= visibility
 		_draw_radial_light(target, sc + Vector2(0, 2), 38.0, sw_core, sw_glow, pulse)
 		
 	# Halo dos inimigos no chão (luz volumétrica viva e colorida por tipo de mob)
@@ -5159,8 +5389,9 @@ func _draw_floor_neon_glow(target: CanvasItem, view: Rect2) -> void:
 	var pc := _cell_center(portal_position)
 	if light_view.has_point(pc):
 		var portal_pulse := 1.0 + sin(animation_clock * 2.5) * 0.12
-		var portal_core := Color("f1b8ff", 0.95) if portal_open else Color("ffa6b8", 0.85)
-		var portal_glow := Color("a028ff", 0.55) if portal_open else Color("d61848", 0.45)
+		var open_amount: float = mechanism_presentation.portal_amount(portal_open)
+		var portal_core := Color("ffa6b8", 0.85).lerp(Color("f1b8ff", 0.95), open_amount)
+		var portal_glow := Color("d61848", 0.45).lerp(Color("a028ff", 0.55), open_amount)
 		_draw_radial_light(target, pc, 96.0, portal_core, portal_glow, portal_pulse)
 
 
@@ -5260,27 +5491,50 @@ func _draw_wall_vines(target: CanvasItem, pos: Vector2, vine_col: Color, bio_glo
 	target.draw_circle(pos + Vector2(CELL - 15, 11), 1.2, bio_glow)
 
 
-func _draw_water_base(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+# Logical water may already be gone while its final visual surface drains.
+# Neighbour checks include that surface solely to keep shorelines continuous.
+func _visual_water_at(point: Vector2i) -> bool:
+	if not _inside(point):
+		return false
+	if grid[point.y][point.x] == TILE_WATER:
+		return _surface_kind(point) != "ice"
+	return mechanism_presentation.water_amount(point, false) > 0.0
+
+
+func _draw_water_base(target: CanvasItem, point: Vector2i, top_left: Vector2, opacity: float = 1.0) -> void:
+	var alpha := clampf(opacity, 0.0, 1.0)
 	var is_garden := get_biome_index(floor_number) == 1
 	var deep := Color("082029") if is_garden else Color("0d2538")
 	var water := Color("134c56") if is_garden else Color("21536b")
 	# Fill adjoining cells edge-to-edge. Contact shading belongs only to the
 	# outer shoreline, so retained chunks do not draw a dark grid across a lake.
-	target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), water, true)
+	target.draw_rect(Rect2(top_left, Vector2(CELL, CELL)), Color(water, alpha), true)
 	var above := point + Vector2i.UP
 	var below := point + Vector2i.DOWN
-	if not _inside(above) or grid[above.y][above.x] != TILE_WATER or _surface_kind(above) == "ice":
-		target.draw_rect(Rect2(top_left, Vector2(CELL, 3)), deep, true)
-		target.draw_rect(Rect2(top_left + Vector2(0, 3), Vector2(CELL, 5)), Color("78c6c8", 0.07), true)
-	if not _inside(below) or grid[below.y][below.x] != TILE_WATER or _surface_kind(below) == "ice":
-		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 2), Vector2(CELL, 2)), deep, true)
-		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 9), Vector2(CELL, 7)), Color("020c19", 0.17), true)
+	if not _visual_water_at(above):
+		target.draw_rect(Rect2(top_left, Vector2(CELL, 3)), Color(deep, alpha), true)
+		target.draw_rect(Rect2(top_left + Vector2(0, 3), Vector2(CELL, 5)), Color("78c6c8", 0.07 * alpha), true)
+	if not _visual_water_at(below):
+		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 2), Vector2(CELL, 2)), Color(deep, alpha), true)
+		target.draw_rect(Rect2(top_left + Vector2(0, CELL - 9), Vector2(CELL, 7)), Color("020c19", 0.17 * alpha), true)
+
+
+func _draw_water_transition_tile(target: CanvasItem, point: Vector2i, top_left: Vector2, opacity: float) -> void:
+	if opacity <= 0.0:
+		return
+	_draw_water_base(target, point, top_left, opacity)
+	_draw_water_tile_alpha(target, point, top_left, opacity)
 
 
 func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) -> void:
+	_draw_water_tile_alpha(target, point, top_left, 1.0)
+
+
+func _draw_water_tile_alpha(target: CanvasItem, point: Vector2i, top_left: Vector2, opacity: float) -> void:
+	var alpha := clampf(opacity, 0.0, 1.0)
 	var is_garden := get_biome_index(floor_number) == 1
-	var caustic := Color("7bf6e4", 0.32) if is_garden else Color("8de4ff", 0.34)
-	var shore := Color("8bfad0", 0.65) if is_garden else Color("9fe9ff", 0.68)
+	var caustic := Color("7bf6e4", 0.32 * alpha) if is_garden else Color("8de4ff", 0.34 * alpha)
+	var shore := Color("8bfad0", 0.65 * alpha) if is_garden else Color("9fe9ff", 0.68 * alpha)
 	# Shared endpoints in world-cell coordinates carry each animated wave across
 	# adjacent tiles/chunk boundaries rather than restarting it in every cell.
 	var phase := animation_clock * 1.35 + float(point.y) * 0.57
@@ -5292,11 +5546,11 @@ func _draw_water_tile(target: CanvasItem, point: Vector2i, top_left: Vector2) ->
 	# Bolhas de luz cintilantes
 	if environment.kind_at(point) != "current":
 		var bubble_y := fposmod(CELL - 6.0 - (animation_clock * 16.0 + (point.x + point.y) * 12.0), CELL - 8.0)
-		target.draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7))
+		target.draw_circle(top_left + Vector2(15.0 + sin(animation_clock * 3.0) * 3.0, bubble_y), 1.6, Color(caustic, 0.7 * alpha))
 	# Contornos de margem e espuma neon
 	for direction in FOUR_WAY:
 		var neighbor: Vector2i = point + direction
-		if _inside(neighbor) and grid[neighbor.y][neighbor.x] == TILE_WATER and _surface_kind(neighbor) != "ice":
+		if _visual_water_at(neighbor):
 			continue
 		var start := Vector2.ZERO
 		var finish := Vector2.ZERO
@@ -5440,30 +5694,208 @@ func _draw_environment_surface(target: CanvasItem, point: Vector2i, top_left: Ve
 func _draw_environment_plate(target: CanvasItem, plate: Dictionary) -> void:
 	var center := _cell_center(plate.pos)
 	var active: bool = plate.get("active", false)
-	var edge := Color("8effc9") if active else Color("e5bd72")
-	var top := Rect2(center - Vector2(20, 13), Vector2(40, 29))
-	target.draw_rect(top.grow(3), Color("020b16", 0.8))
-	target.draw_rect(top, Color("174439") if active else Color("3f3024"))
-	target.draw_rect(top, edge, false, 2.0)
-	var label := "L" if plate.get("required", "") == "wood" else "M" if plate.get("required", "") == "metal" else "E" if plate.get("required", "") == "powered" else "+"
-	target.draw_string(font, center + Vector2(-5, 6), label, HORIZONTAL_ALIGNMENT_LEFT, 15, 15, Color("effff7") if active else Color("ffdfa3"))
+	var pressed: float = mechanism_presentation.plate_amount(plate.pos, active)
+	var material := str(plate.get("required", "crate"))
+	var wooden := material == "wood"
+	var powered := material == "powered"
+	# A fixed, recessed steel socket with a raised movable plate, front face,
+	# contact shadow and bolts. Only the top travels; the whole frame stays put.
+	var frame := Rect2(center + Vector2(-25, -20), Vector2(50, 42))
+	target.draw_rect(Rect2(frame.position + Vector2(-2, 1), frame.size + Vector2(4, 4)), Color("020911", 0.72))
+	target.draw_rect(frame, Color("34454b"))
+	target.draw_line(frame.position + Vector2(1, 1), Vector2(frame.end.x - 1, frame.position.y + 1), Color("a8c1bd", 0.78), 1.6, true)
+	target.draw_line(Vector2(frame.position.x + 1, frame.end.y - 1), frame.end - Vector2(1, 1), Color("08151b", 0.95), 3.0, true)
+	target.draw_rect(frame.grow(-5), Color("0a1a20"))
+	# Small spring wells remain visible as the surface sinks on contact.
+	var lift := lerpf(5.0, 1.0, pressed)
+	for x in [-20.0, 20.0]:
+		target.draw_rect(Rect2(center + Vector2(x - 1.5, -8), Vector2(3, 18)), Color("15252b"))
+		target.draw_line(center + Vector2(x, -6), center + Vector2(x, 7), Color("91b1ac", 0.7), 1.0, true)
+	var front_y := 10.0 - lift
+	var face := PackedVector2Array([
+		center + Vector2(-19, front_y), center + Vector2(19, front_y),
+		center + Vector2(19, 14), center + Vector2(-19, 14),
+	])
+	var top := PackedVector2Array([
+		center + Vector2(-16, -13 - lift), center + Vector2(16, -13 - lift),
+		center + Vector2(19, front_y), center + Vector2(-19, front_y),
+	])
+	var face_color := Color("5c3b23") if wooden else Color("334c59") if not powered else Color("57442d")
+	var top_color := Color("b37b47") if wooden else Color("829faa") if not powered else Color("b4945c")
+	var bevel := Color("f4c58a") if wooden else Color("d9edef") if not powered else Color("f3d296")
+	target.draw_colored_polygon(face, face_color)
+	target.draw_colored_polygon(top, top_color)
+	var outline := top.duplicate()
+	outline.append(top[0])
+	target.draw_polyline(outline, Color("0d2023", 0.95), 2.4, true)
+	target.draw_line(top[0] + Vector2(1, 1), top[1] + Vector2(-1, 1), Color(bevel, 0.82), 1.2, true)
+	target.draw_line(face[3] + Vector2(1, -1), face[2] + Vector2(-1, -1), Color("101d20", 0.8), 1.5, true)
+	if wooden:
+		# Plank seams and grain echo the wooden crate without requiring letters.
+		for offset in [-7.0, 0.0]:
+			target.draw_line(center + Vector2(-15, offset - lift), center + Vector2(15, offset - lift), Color("704825", 0.78), 1.4, true)
+		target.draw_polyline(PackedVector2Array([center + Vector2(-12, -4 - lift), center + Vector2(-5, -3 - lift), center + Vector2(3, -5 - lift), center + Vector2(12, -4 - lift)]), Color("e7ba7e", 0.65), 1.0, true)
+	elif powered:
+		# Copper contacts and a non-text lightning silhouette communicate a
+		# conductor, distinct from the weight-activated metal plate.
+		target.draw_arc(center + Vector2(0, -3 - lift), 8.0, 0.0, TAU, 24, Color("4f3922", 0.8), 1.6, true)
+		var bolt := PackedVector2Array([center + Vector2(1, -10 - lift), center + Vector2(-4, -2 - lift), center + Vector2(0, -2 - lift), center + Vector2(-2, 4 - lift), center + Vector2(5, -5 - lift), center + Vector2(1, -5 - lift)])
+		target.draw_colored_polygon(bolt, Color("fff0b6", 0.85))
+	else:
+		# Brushed grooves and rivets make the cold metal plate different in
+		# both texture and silhouette from the warm wood surface.
+		for offset in [-9.0, -4.0, 1.0]:
+			target.draw_line(center + Vector2(-13, offset - lift), center + Vector2(13, offset - lift), Color("41616b", 0.75), 1.3, true)
+		for x in [-12.0, 12.0]:
+			target.draw_circle(center + Vector2(x, 5 - lift), 1.35, Color("e4f6f2", 0.85))
+	for corner in [Vector2(-22, -17), Vector2(22, -17), Vector2(-22, 18), Vector2(22, 18)]:
+		target.draw_circle(center + corner, 1.6, Color("101e23"))
+		target.draw_circle(center + corner + Vector2(-0.4, -0.4), 0.7, Color("c5ded6", 0.9))
+	var lamp := Color("d7a46c").lerp(Color("8dffd1"), pressed)
+	for x in [-17.0, 17.0]:
+		target.draw_circle(center + Vector2(x, 18), 2.0, Color("0a1b1d"))
+		target.draw_circle(center + Vector2(x, 18), 1.2, lamp)
+
+
+# Cable and socket are presentation of the same generator/source state used by
+# the turn rules. The circuit is not an extra collision or electrical model.
+func _draw_submerged_layout() -> void:
+	var socket := _cell_center(SubmergedInstallation.SOCKET)
+	var source := _cell_center(SubmergedInstallation.SOURCE)
+	var wire := PackedVector2Array([
+		socket,
+		_cell_center(SubmergedInstallation.SOCKET + Vector2i.UP),
+		_cell_center(Vector2i(SubmergedInstallation.SOURCE.x, SubmergedInstallation.SOCKET.y - 1)),
+		source,
+	])
+	draw_polyline(wire, Color("081822", 0.9), 5.0, true)
+	var live: bool = submerged.generator_installed and submerged.generator_on and not submerged.drained
+	var power_amount: float = mechanism_presentation.switch_amount(SubmergedInstallation.POWER_SWITCH, submerged.generator_on)
+	var water_amount: float = mechanism_presentation.water_amount(SubmergedInstallation.SOURCE, environment.is_water(SubmergedInstallation.SOURCE))
+	var source_color := Color("547d89", 0.55).lerp(Color("ffdb69", 0.85), power_amount * water_amount)
+	draw_polyline(wire, source_color, 1.8, true)
+	# Branch the panel from the electrical cable, separately from the hatch's
+	# mechanical linkage; crossing them would imply a false dependency.
+	var panel_branch := Vector2i(SubmergedInstallation.HATCH_GATE.x + 3, SubmergedInstallation.SOCKET.y - 1)
+	# Route between the door consoles and gates, not through a console.
+	var panel_channel_y: int = SubmergedInstallation.HATCH_PLATE.y - 3
+	var panel_wire := PackedVector2Array([
+		socket,
+		_cell_center(SubmergedInstallation.SOCKET + Vector2i.UP),
+		_cell_center(panel_branch),
+		_cell_center(Vector2i(panel_branch.x, panel_channel_y)),
+		_cell_center(Vector2i(SubmergedInstallation.PANEL.x - 1, panel_channel_y)),
+		_cell_center(SubmergedInstallation.PANEL + Vector2i.LEFT),
+		_cell_center(SubmergedInstallation.PANEL),
+	])
+	draw_polyline(panel_wire, Color("081822", 0.9), 5.0, true)
+	draw_polyline(panel_wire, Color("547d89", 0.55).lerp(Color("ffdb69", 0.85), power_amount), 1.8, true)
+	# The first plate's physical cable shows its relationship to the hatch;
+	# its persistent light reports the latch rather than promising a timer.
+	var hatch_wire := PackedVector2Array([
+		_cell_center(SubmergedInstallation.HATCH_PLATE),
+		_cell_center(Vector2i(SubmergedInstallation.HATCH_GATE.x, SubmergedInstallation.HATCH_PLATE.y)),
+		_cell_center(SubmergedInstallation.HATCH_GATE),
+	])
+	draw_polyline(hatch_wire, Color("081822", 0.9), 5.0, true)
+	var hatch_amount: float = mechanism_presentation.gate_amount(SubmergedInstallation.HATCH_GATE, submerged.hatch_open)
+	draw_polyline(hatch_wire, Color("ac8b66", 0.65).lerp(Color("85f3cb", 0.85), hatch_amount), 1.8, true)
+	# This plate opens a mechanical drain, so draining still makes sense with
+	# the generator off. It is not another hidden electrical power source.
+	var valve := _cell_center(SubmergedInstallation.DRAIN_VALVE)
+	var drain_wire := PackedVector2Array([_cell_center(SubmergedInstallation.DRAIN_PLATE), valve])
+	var drain_amount := 1.0 - mechanism_presentation.water_amount(SubmergedInstallation.DRAIN_PLATE, environment.is_water(SubmergedInstallation.DRAIN_PLATE))
+	draw_polyline(drain_wire, Color("081822", 0.9), 5.0, true)
+	draw_polyline(drain_wire, Color("c8a46e", 0.75).lerp(Color("85f3cb", 0.85), drain_amount), 1.8, true)
+	draw_circle(valve, 10, Color("172b31"))
+	draw_arc(valve, 10, 0.0, TAU, 20, Color("e7bb7c").lerp(Color("9bf2da"), drain_amount), 2.0, true)
+	var valve_axis := Vector2.RIGHT.rotated(drain_amount * PI * 0.5) * 7.0
+	var valve_cross := Vector2(-valve_axis.y, valve_axis.x)
+	draw_line(valve - valve_axis, valve + valve_axis, Color("dbf7ed"), 1.4, true)
+	draw_line(valve - valve_cross, valve + valve_cross, Color("dbf7ed"), 1.4, true)
+	draw_string(font, valve + Vector2(-62, 4), "DRENO", HORIZONTAL_ALIGNMENT_RIGHT, 50, 9, Color("e5f6ed"))
+	if drain_amount > 0.001:
+		# Terminals and their independent lower bus emerge with the receding
+		# water, including a smooth reverse if the player undoes the drainage.
+		var collector := _cell_center(SubmergedInstallation.EXIT_GATE + Vector2i.UP) + Vector2(0, 18)
+		for index in SubmergedInstallation.DRAIN_TERMINALS.size():
+			var terminal: Vector2i = SubmergedInstallation.DRAIN_TERMINALS[index]
+			var trace := PackedVector2Array([
+				_cell_center(terminal),
+				_cell_center(Vector2i(terminal.x, SubmergedInstallation.DRAIN_VALVE.y)) + Vector2(0, 18),
+				collector,
+			])
+			var terminal_amount: float = mechanism_presentation.switch_amount(terminal, submerged.drain_switches[index])
+			var terminal_color := Color("847b66", 0.7).lerp(Color("a9f6dc", 0.85), terminal_amount)
+			terminal_color.a *= drain_amount
+			draw_polyline(trace, Color("081822", 0.9 * drain_amount), 5.0, true)
+			draw_polyline(trace, terminal_color, 1.8, true)
+		var exit_amount: float = mechanism_presentation.gate_amount(SubmergedInstallation.EXIT_GATE, submerged.final_open)
+		var exit_color := Color("847b66", 0.7).lerp(Color("a9f6dc", 0.85), exit_amount)
+		exit_color.a *= drain_amount
+		draw_line(collector, _cell_center(SubmergedInstallation.EXIT_GATE), Color("081822", 0.9 * drain_amount), 5.0, true)
+		draw_line(collector, _cell_center(SubmergedInstallation.EXIT_GATE), exit_color, 1.8, true)
+	draw_rect(Rect2(socket - Vector2(23, 23), Vector2(46, 46)), Color("102b37", 0.9))
+	draw_rect(Rect2(socket - Vector2(22, 22), Vector2(44, 44)), Color("72f0de") if submerged.generator_installed else Color("f0bf78"), false, 2.0)
+	draw_string(font, socket + Vector2(-10, 8), "G", HORIZONTAL_ALIGNMENT_CENTER, 20, 17, Color("eaffff"))
+	if water_amount > 0.001:
+		draw_string(font, source + Vector2(-17, 26), "G > !", HORIZONTAL_ALIGNMENT_CENTER, 34, 9, Color(Color("fff1ad") if live else Color("a8cbd1"), water_amount))
+	# The physical display fades between its two states without changing rules.
+	var panel_center := _cell_center(SubmergedInstallation.PANEL)
+	var panel := Rect2(panel_center + Vector2(-90, -20), Vector2(180, 40))
+	draw_rect(panel, Color("071320", 0.96))
+	draw_rect(panel, Color("42545f").lerp(Color("77e8d8"), power_amount), false, 1.5)
+	if power_amount < 1.0:
+		draw_string(font, panel.position + Vector2(5, 26), "PAINEL SEM ENERGIA", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 10, 16, Color("aabcc5", 1.0 - power_amount))
+	if power_amount > 0.0:
+		draw_string(font, panel.position + Vector2(5, 26), "II   >   I   >   III", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 10, 16, Color("f4ffff", power_amount))
 
 
 func _draw_environment_gate(gate: Dictionary) -> void:
 	var center := _cell_center(gate.pos)
 	var opened: bool = gate.get("open", false)
-	var dark := Color("0b1522")
-	var edge := Color("65eebc") if opened else Color("ffb96d")
-	# Open posts remain legible but do not cover the player or path.
-	draw_rect(Rect2(center + Vector2(-24, -25), Vector2(6, 50)), dark)
-	draw_rect(Rect2(center + Vector2(18, -25), Vector2(6, 50)), dark)
-	draw_line(center + Vector2(-21, -22), center + Vector2(-21, 23), edge, 2.0, true)
-	draw_line(center + Vector2(21, -22), center + Vector2(21, 23), edge, 2.0, true)
-	if not opened:
-		draw_rect(Rect2(center + Vector2(-18, -22), Vector2(36, 45)), Color("27313e"))
-		for x in [-10.0, 0.0, 10.0]:
-			draw_line(center + Vector2(x, -18), center + Vector2(x, 19), edge, 2.5, true)
-		draw_line(center + Vector2(-16, 0), center + Vector2(16, 0), Color("ffe4af"), 2.0, true)
+	var travel: float = mechanism_presentation.gate_amount(gate.pos, opened)
+	var indicator := Color("ffb86b").lerp(Color("77f4c6"), travel)
+	# Grounded threshold and a deep backing make the gate feel mounted in the
+	# wall. The two leaves retract into their housings, instead of vanishing.
+	draw_rect(Rect2(center + Vector2(-27, 18), Vector2(54, 9)), Color("020912", 0.65))
+	draw_rect(Rect2(center + Vector2(-23, -22), Vector2(46, 44)), Color("0a1821", 0.86 * (1.0 - travel)))
+	draw_line(center + Vector2(-19, 19), center + Vector2(19, 19), Color("789995", 0.45), 1.3, true)
+	var leaf_width := 18.0 * (1.0 - travel)
+	if leaf_width > 0.05:
+		for side in [-1, 1]:
+			var x := -18.0 if side < 0 else 18.0 - leaf_width
+			var panel := Rect2(center + Vector2(x, -18), Vector2(leaf_width, 35))
+			draw_rect(Rect2(panel.position + Vector2(0, 3), panel.size), Color("07131a"))
+			draw_rect(panel, Color("405761"))
+			draw_line(panel.position + Vector2(0, 1), Vector2(panel.end.x, panel.position.y + 1), Color("b9d1ce", 0.7), 1.2, true)
+			draw_line(Vector2(panel.position.x, panel.end.y - 1), panel.end - Vector2(0, 1), Color("182d33"), 2.2, true)
+			if leaf_width > 4.0:
+				for y in [-10.0, -1.0, 8.0]:
+					draw_line(center + Vector2(x + 2, y), center + Vector2(x + leaf_width - 2, y), Color("192e35", 0.85), 1.4, true)
+				var moving_edge := x + leaf_width - 1.0 if side < 0 else x + 1.0
+				draw_line(center + Vector2(moving_edge, -16), center + Vector2(moving_edge, 15), Color("c2d7cf", 0.7), 1.2, true)
+	# Fixed jambs, overhead track and hardware stay visible in the open pose.
+	for side in [-1, 1]:
+		var x := -26.0 if side < 0 else 19.0
+		var post := Rect2(center + Vector2(x, -24), Vector2(7, 48))
+		draw_rect(Rect2(post.position + Vector2(1, 2), post.size), Color("071015"))
+		draw_rect(post, Color("263d42"))
+		draw_line(post.position + Vector2(1, 2), Vector2(post.position.x + 1, post.end.y - 2), Color("9bbdb4", 0.62), 1.2, true)
+		draw_line(Vector2(post.end.x - 2, post.position.y + 5), Vector2(post.end.x - 2, post.end.y - 5), Color(indicator, 0.85), 1.5, true)
+		for y in [-18.0, 18.0]:
+			draw_circle(center + Vector2(x + 3.5, y), 1.3, Color("c1d8cb", 0.8))
+	var beam := Rect2(center + Vector2(-26, -25), Vector2(52, 7))
+	draw_rect(beam, Color("243a3e"))
+	draw_line(beam.position, Vector2(beam.end.x, beam.position.y), Color("a7c6bb", 0.70), 1.3, true)
+	draw_line(Vector2(beam.position.x, beam.end.y), beam.end, Color("07141b", 0.95), 2.0, true)
+	draw_circle(center + Vector2(0, -21.5), 2.7, Color("07141b"))
+	# This tiny status lamp follows the actual passability immediately even if
+	# the mechanical leaves are still finishing their short visual movement.
+	draw_circle(center + Vector2(0, -21.5), 1.5, Color("8effcc") if opened else Color("ffc184"))
+	if gate.has("label"):
+		draw_rect(Rect2(center + Vector2(-14, -37), Vector2(28, 12)), Color("07121d", 0.96))
+		draw_string(font, center + Vector2(-14, -27), str(gate.label), HORIZONTAL_ALIGNMENT_CENTER, 28, 10, Color("effff8"))
 
 
 func _draw_environment_crate(crate: Dictionary, index: int) -> void:
@@ -5512,6 +5944,9 @@ func _draw_environment_crate(crate: Dictionary, index: int) -> void:
 	if metal and environment.powered.has(crate.pos):
 		EnvironmentVFX.draw_arc(self, center + Vector2(-13, -8), center + Vector2(13, 4), int(crate.pos.x * 79 + crate.pos.y * 37), animation_clock)
 		draw_string(font, center + Vector2(-4, 13), "!", HORIZONTAL_ALIGNMENT_LEFT, 12, 14, Color("ffe57a"))
+	if crate.has("label"):
+		draw_rect(Rect2(center + Vector2(-8, -10), Vector2(16, 15)), Color("112a38", 0.94))
+		draw_string(font, center + Vector2(-8, 2), str(crate.label), HORIZONTAL_ALIGNMENT_CENTER, 16, 12, Color("edffff"))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	if metal and environment.powered.has(crate.pos):
 		for direction in [Vector2i.RIGHT, Vector2i.DOWN]:
@@ -5555,17 +5990,21 @@ func _draw_powerup(item: Dictionary) -> void:
 
 
 func _draw_coin(point: Vector2i) -> void:
-	var center := _cell_center(point)
+	_draw_coin_scaled(point, 1.0)
+
+
+func _draw_coin_scaled(point: Vector2i, size: float) -> void:
+	var center := _cell_center(point) + Vector2(0, -8.0 * (1.0 - size))
 	var bob := sin(animation_clock * 4.2 + float(point.x)) * 2.0
 	var spin := 0.30 + absf(sin(animation_clock * 5.0 + float(point.y))) * 0.70
 	
 	# Sombra projetada no chão
-	draw_set_transform(center + Vector2(0, 8.0), 0.0, Vector2(spin, 0.4))
+	draw_set_transform(center + Vector2(0, 8.0 * size), 0.0, Vector2(spin * size, 0.4 * size))
 	draw_circle(Vector2.ZERO, 9.0, Color("04060c", 0.45))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	
 	# Moeda Dourada 3D em perspectiva
-	draw_set_transform(Vector2(center.x, center.y + bob), 0.0, Vector2(spin, 1.0))
+	draw_set_transform(Vector2(center.x, center.y + bob * size), 0.0, Vector2(spin * size, size))
 	draw_circle(Vector2.ZERO, 9.5, Color("c9871e"))
 	draw_circle(Vector2.ZERO, 8.0, Color("ffcb3d"))
 	draw_circle(Vector2.ZERO, 5.5, Color("ffe17d"))
@@ -5744,8 +6183,9 @@ func _draw_treasure_chest(point: Vector2i) -> void:
 func _draw_portal() -> void:
 	var center := _cell_center(portal_position)
 	var pulse := sin(animation_clock * 2.8) * 3.0
-	var main_color := Color("c37aff") if portal_open else Color("c05e79")
-	var sec_color := Color("4eeeff") if portal_open else Color("ff7990")
+	var open_amount: float = mechanism_presentation.portal_amount(portal_open)
+	var main_color := Color("c05e79").lerp(Color("c37aff"), open_amount)
+	var sec_color := Color("ff7990").lerp(Color("4eeeff"), open_amount)
 	var cx := center.x
 	var cy := center.y
 	
@@ -5796,17 +6236,26 @@ func _draw_portal() -> void:
 		draw_circle(center + orbit, 2.0, Color(sec_color, 0.85))
 		draw_circle(center + orbit, 0.8, Color("ffffff"))
 		
-	if not portal_open:
-		draw_circle(center, 8.0, Color("200918", 0.92))
-		draw_arc(center, 18.0, 0.0, TAU, 40, Color("ff7990"), 2.2, true)
+	if open_amount < 1.0:
+		draw_circle(center, 8.0, Color("200918", 0.92 * (1.0 - open_amount)))
+		draw_arc(center, 18.0, 0.0, TAU, 40, Color("ff7990", 1.0 - open_amount), 2.2, true)
 
 
-func _draw_switch(target: CanvasItem, item: Dictionary) -> void:
+func _draw_switch(target: CanvasItem, item: Dictionary, visibility: float = 1.0) -> void:
 	var center := _cell_center(item.pos)
+	var reveal := clampf(visibility, 0.0, 1.0)
+	if reveal < 1.0:
+		# A submerged terminal rises smoothly instead of appearing in a frame;
+		# its logical availability has already changed independently.
+		var scale := Vector2.ONE * maxf(0.001, reveal)
+		target.draw_set_transform_matrix(Transform2D(0.0, scale, 0.0, center - center * scale))
 	var is_active: bool = item.active
-	var state_col := Color("5ef59f") if is_active else Color("52e3ff")
+	var active_amount: float = mechanism_presentation.switch_amount(item.pos, is_active)
+	var state_col := Color("52e3ff").lerp(Color("5ef59f"), active_amount)
 	if item.has("order"):
 		state_col = Color(PUZZLE_COLORS[clampi(int(item.order), 0, 2)])
+	elif item.get("group", "") == "sequence" and _is_submerged() and not submerged.generator_on:
+		state_col = Color("63757d")
 	var pulse := 1.0 + sin(animation_clock * 4.2 + center.x * 0.05) * 0.08
 	
 	# Sombra da consola projetada no chão
@@ -5837,24 +6286,29 @@ func _draw_switch(target: CanvasItem, item: Dictionary) -> void:
 	target.draw_circle(center, 7.0, Color("10162a"))
 	
 	# Cristal / Pilar holográfico central pulsante
-	var crystal_radius := 4.6 * (pulse if is_active else 1.0)
+	var crystal_radius := 4.6 * lerpf(1.0, pulse, active_amount)
 	target.draw_circle(center, crystal_radius * 1.5, Color(state_col, 0.22))
 	target.draw_circle(center, crystal_radius, state_col)
 	# Núcleo branco brilhante de alta energia
 	target.draw_circle(center + Vector2(-0.8, -0.8), crystal_radius * 0.45, Color("ffffff", 0.95))
 	
-	# Anel de status circular giratório
-	if is_active:
+	# The static and rotating rings cross-fade rather than switching abruptly.
+	if active_amount > 0.0:
 		var rot := animation_clock * 2.4
-		target.draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85), 1.4, true)
-	else:
-		target.draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5), 1.0, true)
+		target.draw_arc(center, 10.5, rot, rot + TAU * 0.75, 20, Color("8affbb", 0.85 * active_amount), 1.4, true)
+	if active_amount < 1.0:
+		target.draw_arc(center, 10.5, 0.0, TAU, 24, Color(state_col, 0.5 * (1.0 - active_amount)), 1.0, true)
 	# One, two or three white dots distinguish the ordered runes without color.
 	if item.has("order"):
 		var count := clampi(int(item.order) + 1, 1, 3)
 		target.draw_rect(Rect2(center + Vector2(-10, 14), Vector2(20, 7)), Color("07101d", 0.9))
 		for dot in count:
 			target.draw_circle(center + Vector2((float(dot) - float(count - 1) * 0.5) * 5.5, 17.5), 1.8, Color("f3ffff"))
+	elif item.has("label"):
+		target.draw_rect(Rect2(center + Vector2(-18, 13), Vector2(36, 13)), Color("07101d", 0.94))
+		target.draw_string(font, center + Vector2(-18, 23), str(item.label), HORIZONTAL_ALIGNMENT_CENTER, 36, 10, Color("f3ffff"))
+	if reveal < 1.0:
+		target.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _draw_trap(target: CanvasItem, trap: Dictionary) -> void:

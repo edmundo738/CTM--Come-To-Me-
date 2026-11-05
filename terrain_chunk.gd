@@ -40,7 +40,8 @@ func _draw() -> void:
 						if tile == game.TILE_WATER:
 							if game._surface_kind(point) == "ice":
 								game._draw_ice_base(self, point, top_left)
-							else:
+							elif not game.mechanism_presentation.water_is_animating(point):
+								# Returning water is temporarily drawn on the animated layer.
 								game._draw_water_base(self, point, top_left)
 				SHADOW:
 					if tile == game.TILE_FLOOR or tile == game.TILE_WATER:

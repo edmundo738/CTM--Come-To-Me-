@@ -112,7 +112,9 @@ func _test_chambers_and_profile() -> void:
 	_move(Vector2i.RIGHT, 6)
 	_expect(game.game_state == "floor_clear", "two-plate chamber crosses gate and reaches portal")
 	game.advance_floor()
-	_expect(game.game_state == "title" and not game.lab_active, "final chamber returns to title")
+	_expect(game.lab_active and game.lab_index == 4 and game.objective_type == "submerged", "the four original chambers lead to the added installation")
+	game.handle_hud_action("menu")
+	_expect(game.game_state == "title" and not game.lab_active, "leaving the installation returns to title")
 	var resume_after := [game.has_resume, game.resume_floor, game.resume_coins, game.resume_charges,
 		game.resume_breach_charges, game.resume_seed, game.resume_history.duplicate(), game.resume_powers.duplicate(true),
 		game.floor_stars.duplicate(true), game.furthest_floor, game.best_score]

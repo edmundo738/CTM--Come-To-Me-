@@ -38,13 +38,15 @@ func crate_index_at(point: Vector2i) -> int:
 	return -1
 
 
-func is_blocked(point: Vector2i) -> bool:
-	if crate_index_at(point) >= 0:
-		return true
+func is_gate_closed(point: Vector2i) -> bool:
 	for gate in gates:
 		if gate.pos == point and not gate.get("open", false):
 			return true
 	return false
+
+
+func is_blocked(point: Vector2i) -> bool:
+	return crate_index_at(point) >= 0 or is_gate_closed(point)
 
 
 func is_electrified(point: Vector2i) -> bool:
@@ -115,6 +117,10 @@ func stress_brittle(points: Array[Vector2i]) -> Array[Vector2i]:
 func push(index: int, direction: Vector2i, destination_free: Callable) -> bool:
 	if index < 0 or index >= crates.size() or direction not in DIRECTIONS:
 		return false
+	# An authored installation may dock a crate permanently; ordinary crates
+	# retain their existing push behavior and never acquire this flag.
+	if bool(crates[index].get("locked", false)) or is_gate_closed(crates[index].pos):
+		return false
 	var destination: Vector2i = crates[index].pos + direction
 	if not destination_free.call(destination):
 		return false
@@ -151,9 +157,9 @@ func advance_currents(destination_free: Callable) -> Array[Dictionary]:
 	return movements
 
 
-# Plates are held, not latched. Gates cannot close on an occupant; they close
-# as soon as the occupant leaves. Portal state is decided by the caller.
-func update_mechanisms(player: Vector2i, enemy_positions: Array[Vector2i]) -> bool:
+# Plates are held, not latched. This calculation is shared with authored
+# puzzles that latch different consequences from individual plates.
+func update_plates(player: Vector2i) -> bool:
 	var all_active := not plates.is_empty()
 	for plate in plates:
 		var index := crate_index_at(plate.pos)
@@ -166,6 +172,13 @@ func update_mechanisms(player: Vector2i, enemy_positions: Array[Vector2i]) -> bo
 			active = true
 		plate["active"] = active
 		all_active = all_active and active
+	return all_active
+
+
+# Ordinary gates cannot close on an occupant; they close as soon as the
+# occupant leaves. Portal state is decided by the caller.
+func update_mechanisms(player: Vector2i, enemy_positions: Array[Vector2i]) -> bool:
+	var all_active := update_plates(player)
 	for gate in gates:
 		var occupied: bool = gate.pos == player or enemy_positions.has(gate.pos) or crate_index_at(gate.pos) >= 0
 		gate["open"] = all_active or (bool(gate.get("open", false)) and occupied)
