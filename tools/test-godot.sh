@@ -44,6 +44,7 @@ elif [[ $# -eq 0 ]]; then
   run_check ENVIRONMENT_TEST_PASS --headless --path . --script res://tests/environment_test.gd
   run_check SUBMERGED_INSTALLATION_TEST_PASS --headless --path . --script res://tests/submerged_installation_test.gd
   run_check MECHANISM_PRESENTATION_TEST_PASS --headless --path . --script res://tests/mechanism_presentation_test.gd
+  run_check MECHANISM_GEOMETRY_TEST_PASS --headless --path . --script res://tests/mechanism_geometry_test.gd
   run_check ELECTRIC_PRESENTATION_TEST_PASS --headless --path . --script res://tests/electric_presentation_test.gd
   run_check SPECIAL_CONTENT_TEST_PASS --headless --path . --script res://tests/special_content_test.gd
   run_check MERGE_INTEGRATION_TEST_PASS --headless --path . --script res://tests/merge_integration_test.gd

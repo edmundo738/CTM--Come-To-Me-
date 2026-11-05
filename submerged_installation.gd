@@ -140,7 +140,7 @@ func sync(environment, grid: Array, switches: Array[Dictionary], player: Vector2
 		passage_open = true
 		# Once docked the generator stays installed. Its I/O console is separate.
 		environment.crates[generator_index]["locked"] = true
-		events.append(_event("GERADOR G INSTALADO: ENERGIA LIGADA, PASSAGEM E ABERTA.", "SWITCH_ON", SOCKET))
+		events.append(_event("GERADOR INSTALADO: ENERGIA LIGADA, PASSAGEM E ABERTA.", "SWITCH_ON", SOCKET))
 	if not drained and bool(environment.plates[1].active):
 		drained = true
 		# Remove water from the sole logical board immediately. The presentation
@@ -189,7 +189,7 @@ func enter(player: Vector2i, switches: Array[Dictionary]) -> Array[Dictionary]:
 				events.append(_event("PORTA %s SELECIONADA — AS OUTRAS DUAS FECHAM." % ["A", "B", "C"][index], "SWITCH_ON", player))
 			"power":
 				if not generator_installed:
-					events.append(_event("I/O SEM ALIMENTACAO — ENCAIXE G VAZIO.", "BLOCKED", player))
+					events.append(_event("I/O SEM ALIMENTACAO — ENCAIXE VAZIO.", "BLOCKED", player))
 				else:
 					generator_on = not generator_on
 					var message := "GERADOR LIGADO — AGUA ENERGIZADA." if generator_on and not drained else "GERADOR LIGADO — DRENAGEM MANTIDA." if generator_on else "GERADOR DESLIGADO, MAS INSTALADO — DESBLOQUEIOS MANTIDOS."
@@ -200,7 +200,7 @@ func enter(player: Vector2i, switches: Array[Dictionary]) -> Array[Dictionary]:
 				if sequence_complete or bool(item.get("active", false)):
 					return events
 				if not generator_on:
-					events.append(_event("TERMINAIS SEM ENERGIA — LIGA O GERADOR G.", "BLOCKED", player))
+					events.append(_event("TERMINAIS SEM ENERGIA.", "BLOCKED", player))
 				elif index == ORDER[sequence_progress]:
 					sequence_progress += 1
 					if sequence_progress == ORDER.size():
@@ -230,7 +230,7 @@ func hint() -> String:
 	if not hatch_open:
 		return "PORTAS A/B/C: PISA UMA CONSOLA. OBSERVA AS LIGACOES DA INSTALACAO."
 	if not generator_installed:
-		return "ESCOTILHA H ABERTA. ENCAIXE G SEM ALIMENTACAO."
+		return "ESCOTILHA H ABERTA. ENCAIXE SEM ALIMENTACAO."
 	if not sequence_complete:
 		return "PAINEL DA SALA C  /  TERMINAIS %d/3  /  %s" % [sequence_progress, "ENERGIA LIGADA" if generator_on else "SEM ENERGIA"]
 	if generator_on and not drained:

@@ -1213,8 +1213,9 @@ func _load_lab_chamber(index: int) -> void:
 	_reset_capture_state()
 	game_state = "playing"
 	_sync_environment_mechanisms()
-	last_notice = lab_hint
-	notice_timer = 5.0
+	# Keep discovery in the chamber itself; the HUD retains danger and recovery.
+	last_notice = ""
+	notice_timer = 0.0
 	_update_enemy_intents()
 	_update_camera(0.0)
 	if terrain_renderer != null:
@@ -1741,8 +1742,8 @@ func _generate_special_room(spec: Dictionary, initial_plan: Dictionary, level_se
 	challenge_par = ceili(float(route_length) * 1.3) + 4
 	challenge_kind = CHALLENGE_KINDS[rng.randi_range(0, CHALLENGE_KINDS.size() - 1)]
 	challenge_complete = false
-	last_notice = special_hint + "  /  R REINICIA O ANDAR"
-	notice_timer = 5.0
+	last_notice = ""
+	notice_timer = 0.0
 	_update_enemy_intents()
 	_update_camera(1.0)
 	if terrain_renderer != null:
@@ -5691,70 +5692,87 @@ func _draw_environment_surface(target: CanvasItem, point: Vector2i, top_left: Ve
 				EnvironmentVFX.draw_arc(target, center, endpoint, key + direction.x * 101 + direction.y * 193, animation_clock)
 
 
+# Square upper surfaces follow the same orthogonal projection as the floor.
+# Only the separate, very shallow lip conveys the tread's travel.
+func _plate_surface_rect(center: Vector2, pressed: float) -> Rect2:
+	var lift := lerpf(3.0, 0.0, clampf(pressed, 0.0, 1.0))
+	return Rect2(center + Vector2(-14.0, -14.0 - lift), Vector2(28.0, 28.0))
+
+
 func _draw_environment_plate(target: CanvasItem, plate: Dictionary) -> void:
 	var center := _cell_center(plate.pos)
-	var active: bool = plate.get("active", false)
-	var pressed: float = mechanism_presentation.plate_amount(plate.pos, active)
+	var pressed: float = mechanism_presentation.plate_amount(plate.pos, bool(plate.get("active", false)))
 	var material := str(plate.get("required", "crate"))
 	var wooden := material == "wood"
 	var powered := material == "powered"
-	# A fixed, recessed steel socket with a raised movable plate, front face,
-	# contact shadow and bolts. Only the top travels; the whole frame stays put.
-	var frame := Rect2(center + Vector2(-25, -20), Vector2(50, 42))
-	target.draw_rect(Rect2(frame.position + Vector2(-2, 1), frame.size + Vector2(4, 4)), Color("020911", 0.72))
-	target.draw_rect(frame, Color("34454b"))
-	target.draw_line(frame.position + Vector2(1, 1), Vector2(frame.end.x - 1, frame.position.y + 1), Color("a8c1bd", 0.78), 1.6, true)
-	target.draw_line(Vector2(frame.position.x + 1, frame.end.y - 1), frame.end - Vector2(1, 1), Color("08151b", 0.95), 3.0, true)
-	target.draw_rect(frame.grow(-5), Color("0a1a20"))
-	# Small spring wells remain visible as the surface sinks on contact.
-	var lift := lerpf(5.0, 1.0, pressed)
-	for x in [-20.0, 20.0]:
-		target.draw_rect(Rect2(center + Vector2(x - 1.5, -8), Vector2(3, 18)), Color("15252b"))
-		target.draw_line(center + Vector2(x, -6), center + Vector2(x, 7), Color("91b1ac", 0.7), 1.0, true)
-	var front_y := 10.0 - lift
-	var face := PackedVector2Array([
-		center + Vector2(-19, front_y), center + Vector2(19, front_y),
-		center + Vector2(19, 14), center + Vector2(-19, 14),
-	])
-	var top := PackedVector2Array([
-		center + Vector2(-16, -13 - lift), center + Vector2(16, -13 - lift),
-		center + Vector2(19, front_y), center + Vector2(-19, front_y),
-	])
-	var face_color := Color("5c3b23") if wooden else Color("334c59") if not powered else Color("57442d")
-	var top_color := Color("b37b47") if wooden else Color("829faa") if not powered else Color("b4945c")
-	var bevel := Color("f4c58a") if wooden else Color("d9edef") if not powered else Color("f3d296")
-	target.draw_colored_polygon(face, face_color)
-	target.draw_colored_polygon(top, top_color)
-	var outline := top.duplicate()
-	outline.append(top[0])
-	target.draw_polyline(outline, Color("0d2023", 0.95), 2.4, true)
-	target.draw_line(top[0] + Vector2(1, 1), top[1] + Vector2(-1, 1), Color(bevel, 0.82), 1.2, true)
-	target.draw_line(face[3] + Vector2(1, -1), face[2] + Vector2(-1, -1), Color("101d20", 0.8), 1.5, true)
+	# A broad fixed mounting plate, narrow guide rails and a SMALL recessed
+	# tread distinguish this floor mechanism from a crate in an outline.
+	var frame := Rect2(center + Vector2(-23, -23), Vector2(46, 46))
+	target.draw_rect(Rect2(frame.position + Vector2(0, 2), frame.size), Color("020911", 0.55))
+	target.draw_rect(frame, Color("26373d"))
+	target.draw_rect(frame.grow(-2), Color("728380"))
+	target.draw_rect(frame.grow(-5), Color("30464b"))
+	target.draw_rect(frame.grow(-7), Color("111f24"))
+	target.draw_line(frame.position + Vector2(2, 2), Vector2(frame.end.x - 2, frame.position.y + 2), Color("c4d4c9", 0.55), 1.0, true)
+	# Visible guides and a narrow return gap give it a mechanical purpose
+	# without an extruded box silhouette or letters on the surface.
+	for x in [-18.5, 18.5]:
+		target.draw_line(center + Vector2(x, -11), center + Vector2(x, 11), Color("12262a"), 2.3, true)
+		for y in [-8.0, 0.0, 8.0]:
+			target.draw_line(center + Vector2(x - 1, y), center + Vector2(x + 1, y), Color("bdc6b1", 0.7), 1.0, true)
+	var tread := _plate_surface_rect(center, pressed)
+	var edge := Color("5a3e2a") if wooden else Color("31464c") if not powered else Color("59442f")
+	var top := Color("ad8156") if wooden else Color("829c9b") if not powered else Color("a28b5e")
+	var highlight := Color("e0b780") if wooden else Color("c8d8cb") if not powered else Color("e5c783")
+	var lip := Rect2(Vector2(tread.position.x, tread.end.y), Vector2(tread.size.x, maxf(1.0, center.y + 15.0 - tread.end.y)))
+	target.draw_rect(lip, edge)
+	target.draw_rect(tread, top)
+	target.draw_rect(tread, Color("172326", 0.85), false, 1.0)
+	target.draw_line(tread.position + Vector2(1, 1), Vector2(tread.end.x - 1, tread.position.y + 1), Color(highlight, 0.6), 1.0, true)
 	if wooden:
-		# Plank seams and grain echo the wooden crate without requiring letters.
-		for offset in [-7.0, 0.0]:
-			target.draw_line(center + Vector2(-15, offset - lift), center + Vector2(15, offset - lift), Color("704825", 0.78), 1.4, true)
-		target.draw_polyline(PackedVector2Array([center + Vector2(-12, -4 - lift), center + Vector2(-5, -3 - lift), center + Vector2(3, -5 - lift), center + Vector2(12, -4 - lift)]), Color("e7ba7e", 0.65), 1.0, true)
+		for dy in [9.0, 18.0]:
+			target.draw_line(tread.position + Vector2(2, dy), Vector2(tread.end.x - 2, tread.position.y + dy), Color("64472f", 0.58), 1.0, true)
+		target.draw_line(tread.position + Vector2(4, 5), tread.position + Vector2(16, 5), Color("d4a477", 0.4), 1.0, true)
 	elif powered:
-		# Copper contacts and a non-text lightning silhouette communicate a
-		# conductor, distinct from the weight-activated metal plate.
-		target.draw_arc(center + Vector2(0, -3 - lift), 8.0, 0.0, TAU, 24, Color("4f3922", 0.8), 1.6, true)
-		var bolt := PackedVector2Array([center + Vector2(1, -10 - lift), center + Vector2(-4, -2 - lift), center + Vector2(0, -2 - lift), center + Vector2(-2, 4 - lift), center + Vector2(5, -5 - lift), center + Vector2(1, -5 - lift)])
-		target.draw_colored_polygon(bolt, Color("fff0b6", 0.85))
+		var middle := tread.get_center()
+		var bolt := PackedVector2Array([middle + Vector2(1, -8), middle + Vector2(-4, 1), middle + Vector2(0, 1), middle + Vector2(-1, 7), middle + Vector2(5, -3), middle + Vector2(1, -3)])
+		target.draw_colored_polygon(bolt, Color("f3e1aa", 0.85))
 	else:
-		# Brushed grooves and rivets make the cold metal plate different in
-		# both texture and silhouette from the warm wood surface.
-		for offset in [-9.0, -4.0, 1.0]:
-			target.draw_line(center + Vector2(-13, offset - lift), center + Vector2(13, offset - lift), Color("41616b", 0.75), 1.3, true)
-		for x in [-12.0, 12.0]:
-			target.draw_circle(center + Vector2(x, 5 - lift), 1.35, Color("e4f6f2", 0.85))
-	for corner in [Vector2(-22, -17), Vector2(22, -17), Vector2(-22, 18), Vector2(22, 18)]:
-		target.draw_circle(center + corner, 1.6, Color("101e23"))
-		target.draw_circle(center + corner + Vector2(-0.4, -0.4), 0.7, Color("c5ded6", 0.9))
-	var lamp := Color("d7a46c").lerp(Color("8dffd1"), pressed)
-	for x in [-17.0, 17.0]:
-		target.draw_circle(center + Vector2(x, 18), 2.0, Color("0a1b1d"))
-		target.draw_circle(center + Vector2(x, 18), 1.2, lamp)
+		# Grip studs, unlike the crate's cooling ribs.
+		for x in [-7.0, 0.0, 7.0]:
+			for y in [-7.0, 0.0, 7.0]:
+				target.draw_circle(tread.get_center() + Vector2(x, y), 1.0, Color("456269", 0.8))
+	for offset in [Vector2(-20, -20), Vector2(20, -20), Vector2(-20, 20), Vector2(20, 20)]:
+		target.draw_circle(center + offset, 1.6, Color("0b151a"))
+		target.draw_circle(center + offset + Vector2(-0.3, -0.3), 0.7, Color("c6d3c9", 0.85))
+	var status := Color("c09463").lerp(Color("86e5c3"), pressed)
+	target.draw_line(center + Vector2(-11, 19), center + Vector2(11, 19), Color("101c20"), 3.0, true)
+	target.draw_line(center + Vector2(-8, 19), center + Vector2(8, 19), Color(status, 0.7), 1.0, true)
+
+
+# Recessed metallic receiver, not a second generator. A square retention frame,
+# inset contact field and latch borrow the visual language of a CPU socket.
+func _draw_generator_socket(center: Vector2, power: float) -> void:
+	var frame := Rect2(center + Vector2(-23, -23), Vector2(46, 46))
+	draw_rect(Rect2(frame.position + Vector2(0, 3), frame.size), Color("020c11", 0.65))
+	draw_rect(frame, Color("263b42"))
+	draw_rect(frame.grow(-2), Color("91a8a4"))
+	draw_rect(frame.grow(-5), Color("21353b"))
+	var well := Rect2(center + Vector2(-14, -14), Vector2(28, 28))
+	draw_rect(well, Color("08171d"))
+	draw_rect(well.grow(-2), Color("324b50"))
+	draw_line(well.position + Vector2(1, 1), Vector2(well.end.x - 1, well.position.y + 1), Color("050e12", 0.9), 2.0, true)
+	draw_line(Vector2(well.position.x + 1, well.end.y - 1), well.end - Vector2(1, 1), Color("91aaa2", 0.7), 1.2, true)
+	for y in [-9.0, -3.0, 3.0, 9.0]:
+		for x in [-9.0, -3.0, 3.0, 9.0]:
+			draw_circle(center + Vector2(x, y), 1.1, Color("d1ba80", 0.78))
+	# A short retention arm remains part of the mount and never crosses the
+	# cavity, making it visually distinct from the generator placed over it.
+	draw_line(center + Vector2(18, -13), center + Vector2(18, 12), Color("bccbc0"), 1.5, true)
+	draw_line(center + Vector2(18, 12), center + Vector2(13, 15), Color("bccbc0"), 1.5, true)
+	for offset in [Vector2(-20, -20), Vector2(20, -20), Vector2(-20, 20), Vector2(20, 20)]:
+		draw_circle(center + offset, 1.2, Color("0a1c20"))
+	draw_line(center + Vector2(-8, 19), center + Vector2(8, 19), Color("9b8b67").lerp(Color("91ddbd"), power), 1.2, true)
 
 
 # Cable and socket are presentation of the same generator/source state used by
@@ -5763,13 +5781,12 @@ func _draw_submerged_layout() -> void:
 	var socket := _cell_center(SubmergedInstallation.SOCKET)
 	var source := _cell_center(SubmergedInstallation.SOURCE)
 	var wire := PackedVector2Array([
-		socket,
+		socket + Vector2(0, -23),
 		_cell_center(SubmergedInstallation.SOCKET + Vector2i.UP),
 		_cell_center(Vector2i(SubmergedInstallation.SOURCE.x, SubmergedInstallation.SOCKET.y - 1)),
 		source,
 	])
 	draw_polyline(wire, Color("081822", 0.9), 5.0, true)
-	var live: bool = submerged.generator_installed and submerged.generator_on and not submerged.drained
 	var power_amount: float = mechanism_presentation.switch_amount(SubmergedInstallation.POWER_SWITCH, submerged.generator_on)
 	var water_amount: float = mechanism_presentation.water_amount(SubmergedInstallation.SOURCE, environment.is_water(SubmergedInstallation.SOURCE))
 	var source_color := Color("547d89", 0.55).lerp(Color("ffdb69", 0.85), power_amount * water_amount)
@@ -5780,7 +5797,7 @@ func _draw_submerged_layout() -> void:
 	# Route between the door consoles and gates, not through a console.
 	var panel_channel_y: int = SubmergedInstallation.HATCH_PLATE.y - 3
 	var panel_wire := PackedVector2Array([
-		socket,
+		socket + Vector2(0, -23),
 		_cell_center(SubmergedInstallation.SOCKET + Vector2i.UP),
 		_cell_center(panel_branch),
 		_cell_center(Vector2i(panel_branch.x, panel_channel_y)),
@@ -5792,10 +5809,11 @@ func _draw_submerged_layout() -> void:
 	draw_polyline(panel_wire, Color("547d89", 0.55).lerp(Color("ffdb69", 0.85), power_amount), 1.8, true)
 	# The first plate's physical cable shows its relationship to the hatch;
 	# its persistent light reports the latch rather than promising a timer.
+	var hatch_housing := _cell_center(SubmergedInstallation.HATCH_GATE) + Vector2(-25, -23)
 	var hatch_wire := PackedVector2Array([
-		_cell_center(SubmergedInstallation.HATCH_PLATE),
-		_cell_center(Vector2i(SubmergedInstallation.HATCH_GATE.x, SubmergedInstallation.HATCH_PLATE.y)),
-		_cell_center(SubmergedInstallation.HATCH_GATE),
+		_cell_center(SubmergedInstallation.HATCH_PLATE) + Vector2(23, 0),
+		Vector2(hatch_housing.x, _cell_center(SubmergedInstallation.HATCH_PLATE).y),
+		hatch_housing,
 	])
 	draw_polyline(hatch_wire, Color("081822", 0.9), 5.0, true)
 	var hatch_amount: float = mechanism_presentation.gate_amount(SubmergedInstallation.HATCH_GATE, submerged.hatch_open)
@@ -5803,7 +5821,7 @@ func _draw_submerged_layout() -> void:
 	# This plate opens a mechanical drain, so draining still makes sense with
 	# the generator off. It is not another hidden electrical power source.
 	var valve := _cell_center(SubmergedInstallation.DRAIN_VALVE)
-	var drain_wire := PackedVector2Array([_cell_center(SubmergedInstallation.DRAIN_PLATE), valve])
+	var drain_wire := PackedVector2Array([_cell_center(SubmergedInstallation.DRAIN_PLATE) + Vector2(0, 23), valve + Vector2(0, -10)])
 	var drain_amount := 1.0 - mechanism_presentation.water_amount(SubmergedInstallation.DRAIN_PLATE, environment.is_water(SubmergedInstallation.DRAIN_PLATE))
 	draw_polyline(drain_wire, Color("081822", 0.9), 5.0, true)
 	draw_polyline(drain_wire, Color("c8a46e", 0.75).lerp(Color("85f3cb", 0.85), drain_amount), 1.8, true)
@@ -5835,11 +5853,7 @@ func _draw_submerged_layout() -> void:
 		exit_color.a *= drain_amount
 		draw_line(collector, _cell_center(SubmergedInstallation.EXIT_GATE), Color("081822", 0.9 * drain_amount), 5.0, true)
 		draw_line(collector, _cell_center(SubmergedInstallation.EXIT_GATE), exit_color, 1.8, true)
-	draw_rect(Rect2(socket - Vector2(23, 23), Vector2(46, 46)), Color("102b37", 0.9))
-	draw_rect(Rect2(socket - Vector2(22, 22), Vector2(44, 44)), Color("72f0de") if submerged.generator_installed else Color("f0bf78"), false, 2.0)
-	draw_string(font, socket + Vector2(-10, 8), "G", HORIZONTAL_ALIGNMENT_CENTER, 20, 17, Color("eaffff"))
-	if water_amount > 0.001:
-		draw_string(font, source + Vector2(-17, 26), "G > !", HORIZONTAL_ALIGNMENT_CENTER, 34, 9, Color(Color("fff1ad") if live else Color("a8cbd1"), water_amount))
+	_draw_generator_socket(socket, power_amount)
 	# The physical display fades between its two states without changing rules.
 	var panel_center := _cell_center(SubmergedInstallation.PANEL)
 	var panel := Rect2(panel_center + Vector2(-90, -20), Vector2(180, 40))
@@ -5851,51 +5865,94 @@ func _draw_submerged_layout() -> void:
 		draw_string(font, panel.position + Vector2(5, 26), "II   >   I   >   III", HORIZONTAL_ALIGNMENT_CENTER, panel.size.x - 10, 16, Color("f4ffff", power_amount))
 
 
+# Find the wall's axis from the actual neighboring tiles, rather than assuming
+# every doorway crosses a horizontal wall. No collision data is changed.
+func _gate_in_vertical_wall(point: Vector2i) -> bool:
+	var vertical := int(_is_wall(point + Vector2i.UP)) + int(_is_wall(point + Vector2i.DOWN))
+	var horizontal := int(_is_wall(point + Vector2i.LEFT)) + int(_is_wall(point + Vector2i.RIGHT))
+	return vertical > horizontal
+
+
 func _draw_environment_gate(gate: Dictionary) -> void:
 	var center := _cell_center(gate.pos)
 	var opened: bool = gate.get("open", false)
 	var travel: float = mechanism_presentation.gate_amount(gate.pos, opened)
-	var indicator := Color("ffb86b").lerp(Color("77f4c6"), travel)
-	# Grounded threshold and a deep backing make the gate feel mounted in the
-	# wall. The two leaves retract into their housings, instead of vanishing.
-	draw_rect(Rect2(center + Vector2(-27, 18), Vector2(54, 9)), Color("020912", 0.65))
-	draw_rect(Rect2(center + Vector2(-23, -22), Vector2(46, 44)), Color("0a1821", 0.86 * (1.0 - travel)))
-	draw_line(center + Vector2(-19, 19), center + Vector2(19, 19), Color("789995", 0.45), 1.3, true)
-	var leaf_width := 18.0 * (1.0 - travel)
-	if leaf_width > 0.05:
+	var indicator := Color("e0aa73").lerp(Color("83dfc3"), travel)
+	var vertical := _gate_in_vertical_wall(gate.pos)
+	# Every surface is orthogonal to the board. The leaves retract INTO the
+	# adjoining wall sections; an open doorway has no dark panel behind it.
+	var remaining := 22.0 * (1.0 - travel)
+	if remaining > 0.05:
 		for side in [-1, 1]:
-			var x := -18.0 if side < 0 else 18.0 - leaf_width
-			var panel := Rect2(center + Vector2(x, -18), Vector2(leaf_width, 35))
-			draw_rect(Rect2(panel.position + Vector2(0, 3), panel.size), Color("07131a"))
-			draw_rect(panel, Color("405761"))
-			draw_line(panel.position + Vector2(0, 1), Vector2(panel.end.x, panel.position.y + 1), Color("b9d1ce", 0.7), 1.2, true)
-			draw_line(Vector2(panel.position.x, panel.end.y - 1), panel.end - Vector2(0, 1), Color("182d33"), 2.2, true)
-			if leaf_width > 4.0:
-				for y in [-10.0, -1.0, 8.0]:
-					draw_line(center + Vector2(x + 2, y), center + Vector2(x + leaf_width - 2, y), Color("192e35", 0.85), 1.4, true)
-				var moving_edge := x + leaf_width - 1.0 if side < 0 else x + 1.0
-				draw_line(center + Vector2(moving_edge, -16), center + Vector2(moving_edge, 15), Color("c2d7cf", 0.7), 1.2, true)
-	# Fixed jambs, overhead track and hardware stay visible in the open pose.
+			var panel: Rect2
+			if vertical:
+				var y := -22.0 if side < 0 else 22.0 - remaining
+				panel = Rect2(center + Vector2(-18, y), Vector2(36, remaining))
+			else:
+				var x := -22.0 if side < 0 else 22.0 - remaining
+				panel = Rect2(center + Vector2(x, -18), Vector2(remaining, 36))
+			draw_rect(Rect2(panel.position + Vector2(0, 3), panel.size), Color("071116", 0.8))
+			draw_rect(panel, Color("425963"))
+			draw_rect(panel, Color("172b31"), false, 1.3)
+			if vertical and remaining > 5.0:
+				var edge_y := panel.end.y - 2.0 if side < 0 else panel.position.y + 2.0
+				draw_line(Vector2(panel.position.x + 3, edge_y), Vector2(panel.end.x - 3, edge_y), Color("aec8c4", 0.7), 1.2, true)
+			elif not vertical and remaining > 5.0:
+				var edge_x := panel.end.x - 2.0 if side < 0 else panel.position.x + 2.0
+				draw_line(Vector2(edge_x, panel.position.y + 3), Vector2(edge_x, panel.end.y - 3), Color("aec8c4", 0.7), 1.2, true)
+	# Housings sit at the wall ends, not along the open route through the gate.
 	for side in [-1, 1]:
-		var x := -26.0 if side < 0 else 19.0
-		var post := Rect2(center + Vector2(x, -24), Vector2(7, 48))
-		draw_rect(Rect2(post.position + Vector2(1, 2), post.size), Color("071015"))
-		draw_rect(post, Color("263d42"))
-		draw_line(post.position + Vector2(1, 2), Vector2(post.position.x + 1, post.end.y - 2), Color("9bbdb4", 0.62), 1.2, true)
-		draw_line(Vector2(post.end.x - 2, post.position.y + 5), Vector2(post.end.x - 2, post.end.y - 5), Color(indicator, 0.85), 1.5, true)
-		for y in [-18.0, 18.0]:
-			draw_circle(center + Vector2(x + 3.5, y), 1.3, Color("c1d8cb", 0.8))
-	var beam := Rect2(center + Vector2(-26, -25), Vector2(52, 7))
-	draw_rect(beam, Color("243a3e"))
-	draw_line(beam.position, Vector2(beam.end.x, beam.position.y), Color("a7c6bb", 0.70), 1.3, true)
-	draw_line(Vector2(beam.position.x, beam.end.y), beam.end, Color("07141b", 0.95), 2.0, true)
-	draw_circle(center + Vector2(0, -21.5), 2.7, Color("07141b"))
-	# This tiny status lamp follows the actual passability immediately even if
-	# the mechanical leaves are still finishing their short visual movement.
-	draw_circle(center + Vector2(0, -21.5), 1.5, Color("8effcc") if opened else Color("ffc184"))
+		var housing: Rect2
+		if vertical:
+			var y := -28.0 if side < 0 else 22.0
+			housing = Rect2(center + Vector2(-23, y), Vector2(46, 6))
+		else:
+			var x := -28.0 if side < 0 else 22.0
+			housing = Rect2(center + Vector2(x, -23), Vector2(6, 46))
+		draw_rect(Rect2(housing.position + Vector2(0, 2), housing.size), Color("071217"))
+		draw_rect(housing, Color("2c4147"))
+		draw_rect(housing, Color("88a9a4", 0.55), false, 1.0)
+		var anchor := housing.get_center()
+		draw_circle(anchor, 2.0, Color("102329"))
+		draw_circle(anchor, 1.0, Color(indicator, 0.85))
+	# The small real-state lamp stays immediate even while the leaves animate.
+	var lamp := center + (Vector2(0, -25) if vertical else Vector2(-25, -17))
+	draw_circle(lamp, 1.2, Color("8effcc") if opened else Color("ffc184"))
 	if gate.has("label"):
 		draw_rect(Rect2(center + Vector2(-14, -37), Vector2(28, 12)), Color("07121d", 0.96))
 		draw_string(font, center + Vector2(-14, -27), str(gate.label), HORIZONTAL_ALIGNMENT_CENTER, 28, 10, Color("effff8"))
+
+
+# The top is an undistorted square; the front is a separate darker rectangle.
+func _crate_top_rect(center: Vector2) -> Rect2:
+	return Rect2(center + Vector2(-17, -22), Vector2(34, 34))
+
+
+func _draw_generator_top(top: Rect2, power: float) -> void:
+	var c := top.get_center()
+	draw_rect(top, Color("516a70"))
+	draw_rect(top.grow(-2), Color("263d45"))
+	draw_rect(top.grow(-4), Color("40575b"))
+	# Alternator: a copper-wound core, retained inside a metal housing. The
+	# axial windings and vents read as machinery rather than a socket or crate.
+	var core := Rect2(c + Vector2(-10, -7), Vector2(20, 14))
+	draw_rect(core.grow(2), Color("12262b"))
+	draw_rect(core, Color("734d36"))
+	draw_rect(core.grow(-2), Color("bb8a53"))
+	for x in [-7.0, -3.5, 0.0, 3.5, 7.0]:
+		draw_line(c + Vector2(x, -5), c + Vector2(x, 5), Color("55392b"), 1.2, true)
+		draw_line(c + Vector2(x + 1, -4), c + Vector2(x + 1, 4), Color("efc47e", 0.8), 0.9, true)
+	for side in [-1, 1]:
+		draw_rect(Rect2(c + Vector2(float(side) * 12 - 1, -5), Vector2(2, 10)), Color("a8c2b8"))
+	for y in [-12.0, 12.0]:
+		for x in [-11.0, -6.0, -1.0, 4.0, 9.0]:
+			draw_line(c + Vector2(x, y), c + Vector2(x + 2, y), Color("132b30"), 1.2, true)
+	for x in [-14.0, 14.0]:
+		for y in [-13.0, 13.0]:
+			draw_circle(c + Vector2(x, y), 1.2, Color("101f26"))
+			draw_circle(c + Vector2(x, y), 0.5, Color("c6d3c4"))
+	var lamp := Color("a68a61").lerp(Color("9affd7"), clampf(power, 0.0, 1.0))
+	draw_circle(c + Vector2(13, 10), 1.3, lamp)
 
 
 func _draw_environment_crate(crate: Dictionary, index: int) -> void:
@@ -5908,43 +5965,49 @@ func _draw_environment_crate(crate: Dictionary, index: int) -> void:
 		push_dir = blocked_crate_direction
 		center += push_dir * blocked_pose * 2.0
 	var metal: bool = crate.get("material", "") == "metal"
+	var generator: bool = str(crate.get("id", "")) == "generator"
 	var visible_cell := Vector2i(floori(center.x / CELL), floori(center.y / CELL))
 	if not metal and environment.is_water(visible_cell):
-		# Wood floats visually; logical occupancy remains at its resolved cell.
 		center.y += sin(animation_clock * 3.6 + float(index)) * 1.1
-	var top := Color("8db1bd") if metal else Color("bd864e")
-	var face := Color("34525f") if metal else Color("694322")
-	var side := Color("263c49") if metal else Color("4c2d18")
-	var trim := Color("d9f6ff") if metal else Color("f5c58a")
-	# Contact shadow, front and bevel give a small 2.5D silhouette while the
-	# logical position remains an integer cell resolved before drawing.
-	draw_set_transform(center + Vector2(0, 19), 0.0, Vector2(1.0, 0.34))
-	draw_circle(Vector2.ZERO, 24, Color(0, 0, 0, 0.42))
+	var face := Color("304951") if metal else Color("694322")
+	var top_color := Color("84a6ae") if metal else Color("bd864e")
+	var trim := Color("d5e6df") if metal else Color("f5c58a")
+	draw_set_transform(center + Vector2(0, 20), 0.0, Vector2(1.0, 0.30))
+	draw_circle(Vector2.ZERO, 22, Color(0, 0, 0, 0.42))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-	# Short resistance/compression and recovery, never a collision transform.
+	# Uniform compression retains the same square projection even in motion.
 	var squash := push_pose * 0.035 + blocked_pose * 0.055
-	var pose_scale := Vector2(1.0 - squash, 1.0 + squash * 0.5) if absf(push_dir.x) >= absf(push_dir.y) else Vector2(1.0 + squash * 0.5, 1.0 - squash)
+	var pose_scale := Vector2.ONE * (1.0 - squash * 0.35)
 	draw_set_transform_matrix(Transform2D(0.0, pose_scale, 0.0, center - center * pose_scale))
-	var upper := center + Vector2(0, -5)
-	var face_points := PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(18, 4), upper + Vector2(18, 18), upper + Vector2(-18, 18)])
-	draw_colored_polygon(face_points, face)
-	var top_points := PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(-14, -15), upper + Vector2(15, -15), upper + Vector2(18, 4)])
-	draw_colored_polygon(top_points, top)
-	draw_colored_polygon(PackedVector2Array([upper + Vector2(18, 4), upper + Vector2(15, -15), upper + Vector2(21, -10), upper + Vector2(21, 13), upper + Vector2(18, 18)]), side)
-	draw_polyline(PackedVector2Array([upper + Vector2(-18, 4), upper + Vector2(-14, -15), upper + Vector2(15, -15), upper + Vector2(18, 4), upper + Vector2(-18, 4)]), trim, 1.5, true)
-	if metal:
-		draw_line(upper + Vector2(-10, -10), upper + Vector2(10, -10), Color("34525f"), 2.0, true)
-		draw_line(upper + Vector2(-10, -4), upper + Vector2(10, -4), Color("34525f"), 2.0, true)
+	var top := _crate_top_rect(center)
+	var front := Rect2(Vector2(top.position.x, top.end.y), Vector2(top.size.x, 9.0))
+	draw_rect(front, face)
+	draw_line(Vector2(front.position.x + 1, front.end.y - 1), front.end - Vector2(1, 1), Color("101a1d", 0.85), 1.5, true)
+	if generator:
+		var power: float = mechanism_presentation.switch_amount(SubmergedInstallation.POWER_SWITCH, submerged.generator_on) if _is_submerged() else 0.0
+		_draw_generator_top(top, power)
+		for y in [2.0, 4.0, 6.0]:
+			draw_line(front.position + Vector2(4, y), front.position + Vector2(18, y), Color("111f24", 0.85), 1.0, true)
+		draw_circle(front.position + Vector2(27, 4), 1.5, Color("a68a61").lerp(Color("9affd7"), power))
+	elif metal:
+		draw_rect(top, top_color)
+		draw_rect(top.grow(-3), Color("6e919a"))
+		for y in [8.0, 13.0, 18.0]:
+			draw_line(top.position + Vector2(6, y), Vector2(top.end.x - 6, top.position.y + y), Color("34525f", 0.8), 1.5, true)
 		for x in [-12.0, 12.0]:
-			draw_circle(upper + Vector2(x, 11), 1.8, trim)
+			draw_circle(Vector2(center.x + x, front.get_center().y), 1.4, trim)
 	else:
-		draw_line(upper + Vector2(-10, -11), upper + Vector2(10, 1), Color("694322"), 2.2, true)
-		draw_line(upper + Vector2(10, -11), upper + Vector2(-10, 1), Color("694322"), 2.2, true)
-		draw_line(upper + Vector2(-14, 10), upper + Vector2(14, 10), Color("eab579", 0.65), 1.5, true)
+		draw_rect(top, top_color)
+		draw_rect(top.grow(-3), Color("c79760"))
+		draw_line(top.position + Vector2(5, 5), top.end - Vector2(5, 5), Color("694322"), 2.1, true)
+		draw_line(Vector2(top.end.x - 5, top.position.y + 5), Vector2(top.position.x + 5, top.end.y - 5), Color("694322"), 2.1, true)
+		draw_line(front.position + Vector2(4, 4), Vector2(front.end.x - 4, front.position.y + 4), Color("eab579", 0.5), 1.0, true)
+	draw_rect(top, Color("17242a", 0.9), false, 1.5)
+	draw_line(top.position + Vector2(1, 1), Vector2(top.end.x - 1, top.position.y + 1), Color(trim, 0.8), 1.2, true)
 	if metal and environment.powered.has(crate.pos):
 		EnvironmentVFX.draw_arc(self, center + Vector2(-13, -8), center + Vector2(13, 4), int(crate.pos.x * 79 + crate.pos.y * 37), animation_clock)
 		draw_string(font, center + Vector2(-4, 13), "!", HORIZONTAL_ALIGNMENT_LEFT, 12, 14, Color("ffe57a"))
-	if crate.has("label"):
+	if crate.has("label") and not generator:
 		draw_rect(Rect2(center + Vector2(-8, -10), Vector2(16, 15)), Color("112a38", 0.94))
 		draw_string(font, center + Vector2(-8, 2), str(crate.label), HORIZONTAL_ALIGNMENT_CENTER, 16, 12, Color("edffff"))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

@@ -995,7 +995,7 @@ func _draw_environment_bonus_guide(screen: Vector2) -> void:
 	var rect := Rect2(12, 80, width, 30)
 	draw_rect(rect, Color("080d1c", 0.94))
 	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
-	draw_string(font, rect.position + Vector2(12, 20), "OPCIONAL: EMPURRA MADEIRA NA CORRENTE ATE A PLACA DE MADEIRA: ESCUDO +1", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("e8d8bb"))
+	draw_string(font, rect.position + Vector2(12, 20), "DESAFIO OPCIONAL  |  ESCUDO +1", HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("e8d8bb"))
 
 
 func _draw_special_guide(screen: Vector2) -> void:
@@ -1003,27 +1003,35 @@ func _draw_special_guide(screen: Vector2) -> void:
 	var rect := Rect2(12, 80, width, 52)
 	draw_rect(rect, Color("080d1c", 0.94))
 	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("e7bd75", 0.8))
-	draw_string(font, rect.position + Vector2(12, 20), game.special_hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("f2e5c7"))
+	# Do not give away the environmental puzzle's solution. Keep genuinely
+	# useful hazard and recovery information available without a spoiler.
+	var title: String = game.special_hint if game.objective_type != "environment" else str(game.special_spec.get("name", "CAMARA"))
 	var detail := "R OU PAUSA > REINICIAR: RESTAURA O INVENTARIO DO INICIO" if game.objective_type == "environment" else "O PORTAL E OS OBJETIVOS CONTINUAM A USAR AS REGRAS NORMAIS"
 	if game.special_family == "sokoban":
 		detail = "Z / BOTAO DESFAZER  |  R REINICIA  |  EMPURROES %d" % game.sokoban_pushes
 	elif game.special_family == "circuit":
 		detail = "PLACA DE ENERGIA / AGUA ELETRIFICADA CAUSA DANO  |  R REINICIA"
 	elif game.special_family == "hybrid" and game.environment_bonus_available:
-		detail = "OPCIONAL: MADEIRA NA CORRENTE ATE A PLACA DE MADEIRA CONCEDE ESCUDO +1"
+		detail = "DESAFIO OPCIONAL  |  ESCUDO +1"
+	draw_string(font, rect.position + Vector2(12, 20), title, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13, Color("f2e5c7"))
 	draw_string(font, rect.position + Vector2(12, 40), detail, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 11, Color("b4c8dc"))
 
 
 func _draw_lab_guide(screen: Vector2) -> void:
-	var width := minf(820.0, screen.x - 24.0)
+	var width := minf(620.0, screen.x - 24.0)
 	var installation: bool = game._is_submerged()
-	var rect := Rect2(12, 80, width, 60 if installation else 52)
+	var danger := ""
+	if (installation and game.submerged.generator_installed and game.submerged.generator_on and not game.submerged.drained) or (not installation and game.lab_index == 1):
+		danger = "AGUA ELETRIFICADA CAUSA DANO"
+	elif not installation and game.lab_index == 2:
+		danger = "GELO FRAGIL  |  ARMADILHA DE RITMO"
+	var rect := Rect2(12, 80, width, 52 if danger != "" else 30)
 	draw_rect(rect, Color("080d1c", 0.94))
 	draw_rect(Rect2(rect.position, Vector2(3, rect.size.y)), Color("67dfe8", 0.8))
-	var hint: String = game.submerged.hint() if installation else game.lab_hint
-	var recovery := "Z DESFAZ ATE 128 ACOES  |  R REINICIA A CAMARA  |  CAMPANHA INTACTA" if installation else "PLACAS E CAIXAS DO MESMO MATERIAL   |   R REINICIA   |   CAMPANHA INTACTA"
-	draw_string(font, rect.position + Vector2(12, 23 if installation else 20), hint, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 16 if installation else 13, Color("d6edf2"))
-	draw_string(font, rect.position + Vector2(12, 47 if installation else 40), recovery, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 13 if installation else 11, Color("b4c8dc"))
+	if danger != "":
+		draw_string(font, rect.position + Vector2(12, 19), danger, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 12, Color("f3c996"))
+	var recovery := "Z / BOTAO DESFAZER  |  R OU PAUSA: REINICIAR" if installation else "R OU PAUSA: REINICIAR CAMARA"
+	draw_string(font, rect.position + Vector2(12, 40 if danger != "" else 20), recovery, HORIZONTAL_ALIGNMENT_LEFT, width - 24, 11, Color("b4c8dc"))
 
 
 func _draw_lab_result(screen: Vector2) -> void:
