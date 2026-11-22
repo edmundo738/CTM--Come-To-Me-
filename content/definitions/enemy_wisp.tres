@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"wisp"
+display_name = "ESPECTRO"
+movement_profile = "wisp"
+move_duration = 0.16
+visual_scale = 0.88
+glow_radius = 48
+idle_core_color = Color(0.8549, 0.5412, 1, 0.92)
+alert_core_color = Color(0.8549, 0.5412, 1, 0.92)
+glow_color = Color(0.5216, 0.1255, 0.7961, 0.46)

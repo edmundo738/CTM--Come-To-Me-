@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"mirror"
+display_name = "REFLEXO"
+movement_profile = "mirror"
+move_duration = 0.14
+visual_scale = 1.02
+glow_radius = 43
+idle_core_color = Color(0.7373, 0.9098, 1, 0.9)
+alert_core_color = Color(0.7373, 0.9098, 1, 0.9)
+glow_color = Color(0.1922, 0.5373, 0.8353, 0.44)

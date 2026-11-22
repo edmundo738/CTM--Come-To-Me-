@@ -1,5 +1,7 @@
 # Come To Me: Neon Ruins — auditoria e plano de evolução
 
+> **Nota posterior:** esta auditoria e as hipóteses abaixo são históricas. A árvore, corações e três campanhas foram implementados depois da referência: ver [estado atual](ARVORE_E_CAMPANHAS.md) e [comparação de versões](AUDITORIA_REPOSITORIO_2026-11-04.md). A direção atual não permite revelar antecipadamente a trajetória ou próxima casa dos inimigos, exceto necessidade de justiça comprovada; propostas antigas de zonas e percursos anunciados não são autorização para os implementar. Ver [guia atual](GAME_FEEL_GAMEPLAY_GUIDE.md) e [relatório V1](RELATORIO_EXPRESSIVE_MOVEMENT_V1.md).
+
 **Referência auditada:** `8c0841bfd3dffbb3d708bdec7e60febf40a071af` (Godot 4.7.2). A auditoria abaixo descreve essa referência; as alterações posteriores são registadas no checkpoint no fim. O objetivo é melhorar as interações sem deitar fora sistemas funcionais nem lançar todas as funcionalidades de uma vez.
 
 ## Como ler as evidências
@@ -150,6 +152,18 @@ godot --headless --path . --script res://tools/shield_impact_benchmark.gd -- ite
 Para repetir a comparação, copiar o mesmo script para uma cópia da referência `8c0841b`, importar os recursos das duas versões e alternar execuções na mesma máquina. O cenário de 64 inimigos é um teste de esforço sintético, não a quantidade normal do gerador.
 
 **NOT TESTED:** a qualidade visual do arco e do impacto em janela real, som em dispositivo físico, GPU e equilíbrio por jogadores. Água/gelo funcionais e redesenhados, Sokoban, revisão do Peão, árvore e restantes sistemas continuam por implementar; este checkpoint não os apresenta como concluídos.
+
+## 6. Checkpoint — interações ambientais incrementais
+
+**FACT — implementado:** madeira e metal são sólidos empurráveis; a corrente move madeira, a água e o metal conduzem eletricidade, o gelo marcado desloca o jogador e pode atrasar inimigos, e placas mantidas acionam portões. Tudo é resolvido por ações no fluxo existente, inclusive itens, armadilhas, contacto, IA e portal; há no máximo um impacto ao jogador por ação. As quatro câmaras do menu usam esses mesmos turnos e não dão progressão de campanha. O desafio opcional também aparece na campanha, nos andares 6, 26, 46… quando existe uma posição segura, com uma carga de escudo atribuída uma vez. A validação da posição conserva a acessibilidade do chão antes e após o movimento da caixa **sem depender de atravessar a corrente**; o limite de ações e as setas para o portal são calculados sem usar essa corrente. Reiniciar restaura a seed e os recursos do início do andar.
+
+**MEASURED — testes:** `environment_test.gd` percorre soluções reais das quatro câmaras, testa perfil/checkpoint, reinício, colisões, corrente, gelo, eletricidade, inimigos, placas e portões. Também percorre a solução opcional e conclui o objetivo normal da campanha em várias seeds dos andares 6 e 26, com inimigos removidos e invulnerabilidade para isolar a progressão; isso não é um teste de equilíbrio. Os testes de comandos verificam a navegação até às câmaras, empurrão e reinício pelo menu de pausa. As cinco suites passaram; a varredura com três seeds passou nos andares 1–40 (10.114 ações de bots), 100 e 200. A configuração da CI inclui o teste ambiental e verifica erros de script mesmo quando o processo termina com sucesso.
+
+**OBSERVED — apresentação:** foram inspecionadas capturas geradas numa janela Godot com OpenGL **llvmpipe por software**, a 1280×720 e 800×540: menu, quatro câmaras, placa ativa, desafio de campanha antes/depois e água do Jardim de Vidro. A água une superfícies adjacentes e as suas ondas partilham extremos entre células; o gelo funcional tem marca própria, além da armadilha, e a caixa tem sombra e faces distintas. Isto confirma apenas o conteúdo dessas capturas, não aprovação estética nem a experiência em todos os dispositivos.
+
+**LIMITES / NOT TESTED:** as câmaras têm soluções testadas, mas não há solver genérico de todos os estados de caixas. A garantia da campanha cobre a posição inicial e a solução prevista; empurrões posteriores podem criar bloqueios recuperáveis com **R**. O gelo ainda não se parte nem liberta água; os lagos legados permanecem decorativos. Os tempos comparativos e as suas limitações estão no README. GPU/hardware de destino, áudio e comando físicos, e equilíbrio com jogadores continuam por verificar.
+
+**Nota histórica:** a revisão seguinte descreve uma linha de desenvolvimento anterior, não o estado consolidado.
 
 ## Atualização de implementação — 2026-11-03
 

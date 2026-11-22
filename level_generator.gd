@@ -1,3 +1,4 @@
+@tool
 extends RefCounted
 
 # Simple Tiled Model: each tile is a four-bit set of open passages.
@@ -7,17 +8,9 @@ const BITS := [1, 2, 4, 8]
 const OPPOSITE_BITS := [4, 8, 1, 2]
 # Bitsets of tiles with an open edge in each direction. A domain is itself a
 # 16-bit set of tile IDs, not a single tile's four-bit passage mask.
-const OPEN_TILE_MASKS := [0xAAAA, 0xCCCC, 0xF0F0, 0xFF00]
-const OPPOSITE_OPEN_TILE_MASKS := [0xF0F0, 0xFF00, 0xAAAA, 0xCCCC]
-const WEIGHTS := [0.85, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.42, 0.20, 0.20]
+const WFC_TILE_SET = preload("res://components/wfc_default_tile_set.tres")
+const DEFAULT_ROOM_PROFILE = preload("res://content/definitions/room_profile_neon_ruins.tres")
 const MAX_RESTARTS := 5
-const ROOM_PROFILES := [
-	{"base": 3, "scale": 180.0, "min_rooms": 4, "max_rooms": 12, "min_w": 5, "max_w": 8, "min_h": 4, "max_h": 7, "min_link": 2, "max_link": 3, "loops": 0.16},
-	{"base": 5, "scale": 165.0, "min_rooms": 5, "max_rooms": 14, "min_w": 4, "max_w": 7, "min_h": 4, "max_h": 6, "min_link": 1, "max_link": 2, "loops": 0.23},
-	{"base": 2, "scale": 235.0, "min_rooms": 4, "max_rooms": 8, "min_w": 7, "max_w": 11, "min_h": 5, "max_h": 9, "min_link": 2, "max_link": 3, "loops": 0.14},
-	{"base": 4, "scale": 175.0, "min_rooms": 5, "max_rooms": 12, "min_w": 5, "max_w": 9, "min_h": 5, "max_h": 8, "min_link": 2, "max_link": 4, "loops": 0.22},
-	{"base": 3, "scale": 210.0, "min_rooms": 5, "max_rooms": 10, "min_w": 7, "max_w": 12, "min_h": 6, "max_h": 9, "min_link": 2, "max_link": 3, "loops": 0.25},
-]
 
 var rng := RandomNumberGenerator.new()
 var last_attempts := 0
@@ -30,16 +23,46 @@ var _heap_positions := PackedInt32Array()
 var _heap_scores := PackedFloat64Array()
 var _heap_noise := PackedFloat32Array()
 var _heap_active := false
+var open_tile_masks: Array[int] = []
+var opposite_open_tile_masks: Array[int] = []
+var tile_weights := PackedFloat64Array()
+var _active_tile_set: Resource
 
 
 func _init() -> void:
 	entropy_table.resize(65536)
 	entropy_table.fill(-1.0)
+	configure_tile_set(WFC_TILE_SET)
 
 
-func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dictionary:
+func configure_tile_set(tile_set: Resource) -> bool:
+	var selected_tile_set: Resource = tile_set if tile_set != null else WFC_TILE_SET
+	if selected_tile_set == _active_tile_set:
+		return true
+	if not selected_tile_set.has_method("build_tables"):
+		last_failure = "O bioma selecionado não tem um WfcTileSet válido"
+		return false
+	var tile_tables: Dictionary = selected_tile_set.call("build_tables")
+	var definition_errors: Array = tile_tables.get("errors", [])
+	if not definition_errors.is_empty():
+		last_failure = "; ".join(definition_errors)
+		return false
+	open_tile_masks.assign(tile_tables.open_masks)
+	opposite_open_tile_masks.assign(tile_tables.opposite_masks)
+	tile_weights = tile_tables.weights
+	_active_tile_set = selected_tile_set
+	return true
+
+
+func generate(width: int, height: int, seed_value: int, profile: WfcRoomProfile = DEFAULT_ROOM_PROFILE, tile_set: Resource = null) -> Dictionary:
+	if not configure_tile_set(tile_set):
+		return {"ok": false, "grid": [], "attempts": 0, "seed": seed_value, "reason": last_failure}
+	var selected_profile: WfcRoomProfile = profile if profile != null else DEFAULT_ROOM_PROFILE
+	var profile_errors := selected_profile.validate()
+	if not profile_errors.is_empty():
+		last_failure = "; ".join(profile_errors)
+		return {"ok": false, "grid": [], "attempts": 0, "seed": seed_value, "reason": last_failure}
 	rng.seed = seed_value
-	profile = clampi(profile, 0, ROOM_PROFILES.size() - 1)
 	last_failure = ""
 	for attempt in MAX_RESTARTS:
 		last_attempts = attempt + 1
@@ -49,10 +72,10 @@ func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dic
 				var domain := 0xFFFF
 				# Eliminate boundary-opening tiles as bitsets rather than testing
 				# all 16 tiles individually. This is the same boundary constraint.
-				if y == 0: domain &= 0xFFFF ^ OPEN_TILE_MASKS[0]
-				if x == width - 1: domain &= 0xFFFF ^ OPEN_TILE_MASKS[1]
-				if y == height - 1: domain &= 0xFFFF ^ OPEN_TILE_MASKS[2]
-				if x == 0: domain &= 0xFFFF ^ OPEN_TILE_MASKS[3]
+				if y == 0: domain &= 0xFFFF ^ open_tile_masks[0]
+				if x == width - 1: domain &= 0xFFFF ^ open_tile_masks[1]
+				if y == height - 1: domain &= 0xFFFF ^ open_tile_masks[2]
+				if x == 0: domain &= 0xFFFF ^ open_tile_masks[3]
 				domains.append(domain)
 		if _solve(domains, width, height):
 			var layout: Array = []
@@ -66,7 +89,7 @@ func generate(width: int, height: int, seed_value: int, profile: int = 0) -> Dic
 					row.append(0 if tile == 0 else 1)
 				layout.append(row)
 				tile_map.append(tile_row)
-			var graph_layout := _construct_room_graph(layout, width, height, profile)
+			var graph_layout := _construct_room_graph(layout, width, height, selected_profile)
 			return {"ok": true, "grid": graph_layout.grid, "tiles": tile_map, "rooms": graph_layout.rooms, "edges": graph_layout.edges, "start": graph_layout.start, "goal": graph_layout.goal, "attempts": attempt + 1, "seed": seed_value}
 		last_failure = "Contradicao de adjacencia no intento %d" % (attempt + 1)
 	return {"ok": false, "grid": [], "attempts": MAX_RESTARTS, "seed": seed_value, "reason": last_failure}
@@ -246,8 +269,8 @@ func _propagate(domains: Array, width: int, height: int, origin: int) -> bool:
 # Matching depends only on whether an edge is open, so this is O(1) rather
 # than checking all 16 x 16 pairs. An empty source correctly supports nothing.
 func _support(direction: int, source: int) -> int:
-	var source_open: int = OPEN_TILE_MASKS[direction]
-	var target_open: int = OPPOSITE_OPEN_TILE_MASKS[direction]
+	var source_open: int = open_tile_masks[direction]
+	var target_open: int = opposite_open_tile_masks[direction]
 	var supported := 0
 	if (source & source_open) != 0:
 		supported |= target_open
@@ -276,7 +299,7 @@ func _entropy(options: int) -> float:
 	for tile in 16:
 		if (options & (1 << tile)) == 0:
 			continue
-		var weight: float = WEIGHTS[tile]
+		var weight: float = tile_weights[tile]
 		sum_weights += weight
 		sum_weight_logs += weight * log(weight)
 	var result := log(sum_weights) - sum_weight_logs / sum_weights
@@ -288,12 +311,12 @@ func _weighted_choice(options: int) -> int:
 	var sum_weights := 0.0
 	for tile in 16:
 		if (options & (1 << tile)) != 0:
-			sum_weights += WEIGHTS[tile]
+			sum_weights += tile_weights[tile]
 	var draw := rng.randf() * sum_weights
 	for tile in 16:
 		if (options & (1 << tile)) == 0:
 			continue
-		draw -= WEIGHTS[tile]
+		draw -= tile_weights[tile]
 		if draw <= 0.0:
 			return tile
 	return _single_tile(options)
@@ -306,7 +329,7 @@ func _single_tile(options: int) -> int:
 	return 0
 
 
-func _construct_room_graph(base_grid: Array, width: int, height: int, profile: int = 0) -> Dictionary:
+func _construct_room_graph(base_grid: Array, width: int, height: int, profile: WfcRoomProfile = DEFAULT_ROOM_PROFILE) -> Dictionary:
 	var layout: Array = []
 	for row in base_grid:
 		layout.append(row.duplicate())
@@ -317,18 +340,17 @@ func _construct_room_graph(base_grid: Array, width: int, height: int, profile: i
 		layout[y][0] = 1
 		layout[y][width - 1] = 1
 	var rooms: Array[Dictionary] = []
-	var shape: Dictionary = ROOM_PROFILES[clampi(profile, 0, ROOM_PROFILES.size() - 1)]
-	var desired := clampi(int(shape.base + float(width * height) / float(shape.scale)), int(shape.min_rooms), int(shape.max_rooms))
-	if profile == 4:
-		var arena_size := Vector2i(mini(int(shape.max_w), width - 8), mini(int(shape.max_h), height - 8))
+	var desired := clampi(int(profile.base_rooms + float(width * height) / profile.area_scale), profile.min_rooms, profile.max_rooms)
+	if profile.arena_layout:
+		var arena_size := Vector2i(mini(profile.max_room_width, width - 8), mini(profile.max_room_height, height - 8))
 		var arena_position := Vector2i((width - arena_size.x) / 2, (height - arena_size.y) / 2)
 		var arena_rect := Rect2i(arena_position, arena_size)
 		rooms.append({"rect": arena_rect, "center": Vector2i(arena_rect.position.x + arena_rect.size.x / 2, arena_rect.position.y + arena_rect.size.y / 2)})
 	for attempt in desired * 100:
 		if rooms.size() >= desired:
 			break
-		var room_width := rng.randi_range(int(shape.min_w), mini(int(shape.max_w), width - 6))
-		var room_height := rng.randi_range(int(shape.min_h), mini(int(shape.max_h), height - 6))
+		var room_width := rng.randi_range(profile.min_room_width, mini(profile.max_room_width, width - 6))
+		var room_height := rng.randi_range(profile.min_room_height, mini(profile.max_room_height, height - 6))
 		var rect := Rect2i(rng.randi_range(2, width - room_width - 2), rng.randi_range(2, height - room_height - 2), room_width, room_height)
 		var overlaps := false
 		for room in rooms:
@@ -381,10 +403,10 @@ func _construct_room_graph(base_grid: Array, width: int, height: int, profile: i
 		connected.append(best_to)
 		edge_keys[_edge_key(best_from, best_to)] = true
 		edges.append({"from": best_from, "to": best_to, "main": true})
-		_carve_corridor(layout, rooms[best_from].center, rooms[best_to].center, rng.randi_range(int(shape.min_link), int(shape.max_link)))
+		_carve_corridor(layout, rooms[best_from].center, rooms[best_to].center, rng.randi_range(profile.min_link_width, profile.max_link_width))
 	for a in rooms.size():
 		for b in range(a + 1, rooms.size()):
-			if edge_keys.has(_edge_key(a, b)) or rng.randf() > float(shape.loops):
+			if edge_keys.has(_edge_key(a, b)) or rng.randf() > profile.extra_loop_chance:
 				continue
 			edges.append({"from": a, "to": b, "main": false})
 			_carve_corridor(layout, rooms[a].center, rooms[b].center, 2)

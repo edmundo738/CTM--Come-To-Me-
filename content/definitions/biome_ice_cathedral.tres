@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="BiomeDefinition" load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://content/biome_definition.gd" id="1_script"]
+[ext_resource type="Resource" path="res://components/wfc_default_tile_set.tres" id="2_tiles"]
+[ext_resource type="Resource" path="res://content/definitions/room_profile_ice_cathedral.tres" id="3_profile"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"ice_cathedral"
+display_name = "CATEDRAL DE GELO"
+initial_size = Vector2i(37, 23)
+wfc_tile_set = ExtResource("2_tiles")
+room_profile = ExtResource("3_profile")

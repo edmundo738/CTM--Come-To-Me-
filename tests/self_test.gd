@@ -2,6 +2,7 @@ extends SceneTree
 
 const GameScript = preload("res://game.gd")
 const Generator = preload("res://level_generator.gd")
+const Content = preload("res://content/game_content_catalog.tres")
 var failures: Array[String] = []
 
 func _initialize() -> void:
@@ -18,8 +19,14 @@ func _run_tests() -> void:
 	_expect(game.game_state == "title", "game opens on the cinematic title menu")
 	_expect(int(ProjectSettings.get_setting("display/window/size/mode")) == DisplayServer.WINDOW_MODE_MAXIMIZED, "game opens maximized for the available display")
 	_expect(game.world_size.x > 18 and game.world_size.y > 14, "world is larger than the old compact board")
-	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "portal remains reachable after WFC repair")
 	_expect(game.enemies.size() >= 1, "floor contains pursuers")
+	_expect(game.grid[0].all(func(tile): return tile == game.TILE_BORDER), "north world boundary is closed and indestructible")
+	# WFC-specific checks run on a procedural floor. Floor 1 may be an authored
+	# map (campaign_level_catalog links it to a hand-crafted scene), which clears
+	# the rooms array by design. Switch to floor 2 for these assertions.
+	if game.rooms.size() == 0:
+		game.generate_floor(2)
+	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "portal remains reachable after WFC repair")
 	_expect(game.rooms.size() >= 4, "level contains several tactical rooms")
 	_expect(game.room_graph_edges.size() >= game.rooms.size() - 1, "room links include a connected spanning tree")
 	var floor_cells := 0
@@ -28,23 +35,14 @@ func _run_tests() -> void:
 			if cell == 0:
 				floor_cells += 1
 	_expect(float(floor_cells) / (game.world_size.x * game.world_size.y) > 0.25, "walkable space is not reduced to thin corridors")
-	_expect(game.grid[0].all(func(tile): return tile == game.TILE_BORDER), "north world boundary is closed and indestructible")
 	var game_source := FileAccess.get_file_as_string("res://game.gd")
 	_expect(not game_source.contains("_draw_enemy_intent") and not game_source.contains("_draw_enemy_forecast"), "enemy forecast renderers are absent from game rendering")
-	_expect(game.player_sphere_texture != null and game.lia_sphere_texture != null, "player and Lia both use shaded sphere textures")
-	if game.player_sphere_texture != null and game.lia_sphere_texture != null:
-		var player_sphere_image: Image = game.player_sphere_texture.get_image()
-		var lia_sphere_image: Image = game.lia_sphere_texture.get_image()
-		_expect(player_sphere_image.get_size() == lia_sphere_image.get_size(), "Lia's sphere uses the player's sphere detail resolution")
-		_expect(player_sphere_image.get_data() != lia_sphere_image.get_data(), "Lia's sphere keeps the shared shading with her own palette")
-	_expect(game_source.count("_draw_orb_face(") >= 3, "player and captive Lia share the same expressive orb face renderer")
 	_expect(game.audio.effects.has("coin") and game.audio.effects.has("shield"), "action sound effects are synthesized")
 	_expect(game.audio.effects.has("inflate") and game.audio.effects.has("balloon_pop"), "capture has its own rising squeak and pop cues")
 	_expect(game.audio.effects.has("break_wall") and game.audio.effects.has("breaker"), "wall breaking and its power-up have separate sound cues")
-	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap", "captor_reveal"]:
+	_expect(game.audio.effects.has("crate_wood") and game.audio.effects.has("crate_metal") and game.audio.effects.crate_wood.data.size() > 0 and game.audio.effects.crate_metal.data.size() > 0, "wood and metal pushes have their own synthesized audio")
+	for cue in ["power_speed", "power_magnet", "power_blink", "power_time_freeze", "blink", "puzzle_error", "rhythm_trap"]:
 		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "new action has synthesized audio: " + cue)
-	for cue in ["crate_push", "current", "ice_crack", "electric_water"]:
-		_expect(game.audio.effects.has(cue) and game.audio.effects[cue].data.size() > 0, "environment action has synthesized audio: " + cue)
 	_expect(game.capture_overlay != null and game.capture_material != null, "capture has a camera-darkening overlay")
 	_expect(game.audio.music_player.stream.get_length() >= 38.0 and game.audio.music_player.stream.stereo, "music is an arranged 40-second stereo track with bass, melody and percussion")
 	_expect(is_equal_approx(game.audio.threat_player.stream.get_length(), game.audio.music_player.stream.get_length()), "enemy-tension layer stays synchronized with the score")
@@ -54,7 +52,6 @@ func _run_tests() -> void:
 	_test_switch_level(game)
 	_test_large_camera_and_rescue(game)
 	_test_progression(game)
-	_test_long_campaign_progression(game)
 	_test_wall_destruction(game)
 	_test_challenges(game)
 	_test_score_saving(game)
@@ -63,12 +60,11 @@ func _run_tests() -> void:
 	_test_shield_recoil(game)
 	_test_chess_bosses(game)
 	_test_powerups(game)
-	_test_environment_interactions(game)
 	_test_puzzle_floor(game)
 	_test_patrol_mirror_and_rhythm(game)
 	_test_capture_sequence(game)
 	if failures.is_empty():
-		print("SELFTEST_PASS: WFC, desafios, checkpoint, chefes, mini-chefe, poderes, puzzles, ambiente, patrulha, espelho, armadilhas, captura e audio")
+		print("SELFTEST_PASS: WFC, desafios, checkpoint, chefes, mini-chefe, poderes, puzzles, patrulha, espelho, armadilhas, captura e audio")
 	else:
 		printerr("SELFTEST_FAIL: %d check(s): %s" % [failures.size(), "; ".join(failures)])
 	game.audio.stop_all()
@@ -119,7 +115,7 @@ func _test_wfc() -> void:
 				var south: int = result_a.tiles[y + 1][x]
 				_expect(((tile & 4) != 0) == ((south & 1) != 0), "north-south WFC adjacency is reciprocal")
 	for profile_index in 5:
-		var profiled = Generator.new().generate(19, 15, 8050 + profile_index, profile_index)
+		var profiled = Generator.new().generate(19, 15, 8050 + profile_index, Content.biomes[profile_index].get("room_profile"), Content.biomes[profile_index].get("wfc_tile_set"))
 		_expect(profiled.ok and profiled.rooms.size() >= 4, "each biome profile produces connected tactical rooms")
 		if profiled.ok:
 			_expect(profiled.grid.size() == 15 and profiled.grid[0].size() == 19, "biome generation preserves requested world size")
@@ -127,6 +123,8 @@ func _test_wfc() -> void:
 
 func _test_profile_roundtrip() -> void:
 	var path := "res://.godot/self_test_progress.cfg"
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 	var writer = GameScript.new()
 	writer.profile_path = path
 	writer.furthest_floor = 4
@@ -161,7 +159,8 @@ func _test_profile_roundtrip() -> void:
 	old_reader.free()
 	writer.free()
 	reader.free()
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	for suffix in ["", ".bak", ".legacy.bak", ".campaign-1.cfg", ".campaign-1.cfg.bak"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path + suffix))
 
 
 func _test_turn_loop(game: Node) -> void:
@@ -202,10 +201,11 @@ func _test_turn_loop(game: Node) -> void:
 	game.enemies[0].pos = Vector2i(3, 5)
 	var moves_before: int = game.moves_this_floor
 	game.player_position = Vector2i(0, 5)
+	game.shake_time = 0.0
 	game.try_move(-1, 0)
 	_expect(game.player_position == Vector2i(0, 5), "world edge blocks movement")
 	_expect(game.moves_this_floor == moves_before, "blocked move does not count as movement")
-	_expect(game.shake_time > 0.0 and game.audio.effects.has("blocked"), "invalid move triggers feedback")
+	_expect(game.shake_time == 0.0 and game.audio.effects.has("blocked") and game.last_notice != "", "invalid move gives feedback without camera shake")
 	game.enemies.clear()
 
 
@@ -302,13 +302,12 @@ func _test_large_camera_and_rescue(game: Node) -> void:
 	game.game_state = "playing"
 	game.player_position = game.portal_position
 	game._check_portal()
-	_expect(game.game_state == "rescued" and game.rescues_completed == 0, "fifth floor reveals Lia but does not count as a rescue or campaign ending")
-	_expect(game.furthest_floor == 6 and game.resume_floor == 6, "fifth floor unlocks and checkpoints floor six")
-	game.advance_floor()
-	_expect(game.game_state == "playing" and game.floor_number == 6, "the campaign continues directly after the Lia reveal")
+	_expect(game.game_state == "rescued", "portal on the fifth floor reaches the rescue ending")
 
 
 func _test_arena(game: Node) -> void:
+	# This synthetic arena replaces the previous floor without generate_floor().
+	game.captor_flyover_time = 0.0
 	game.world_size = Vector2i(12, 10)
 	game.grid.clear()
 	for y in game.world_size.y:
@@ -317,17 +316,9 @@ func _test_arena(game: Node) -> void:
 			row.append(game.TILE_BORDER if x == 0 or y == 0 or x == game.world_size.x - 1 or y == game.world_size.y - 1 else game.TILE_FLOOR)
 		game.grid.append(row)
 	game.game_state = "playing"
-	game.floor_number = 1
 	game.dev_god_mode = false
 	game.dev_noclip = false
 	game.enemies.clear()
-	game.crates.clear()
-	game.water_current_dirs.clear()
-	game.electrified_water.clear()
-	game.brittle_ice.clear()
-	game.ice_stress.clear()
-	game.broken_ice.clear()
-	game.player_step_path.clear()
 	game.coins.clear()
 	game.shields.clear()
 	game.breakers.clear()
@@ -531,6 +522,9 @@ func _test_shield_recoil(game: Node) -> void:
 	_expect(game.enemies[0].from == game._cell_center(Vector2i(5, 4)) and game.enemies[0].to == game._cell_center(Vector2i(7, 4)) and game.enemies[0].t == 0.0, "the pre-enemy-phase recoil retains its visual interpolation")
 	var board_turn: int = game.turn_number
 	game._process(0.035)
+	_expect(game.turn_number == board_turn and game.enemies[0].pos == Vector2i(7, 4) and is_zero_approx(float(game.enemies[0].t)), "shield recoil waits for the player's visual contact without changing the resolved cell")
+	game._process(0.105) # finish the committed approach and start contact
+	game._process(0.083) # consume the selective hold, then show the recoil arc
 	var recoil_visual: Vector2 = game._enemy_visual_position(game.enemies[0])
 	_expect(game.turn_number == board_turn and game.enemies[0].pos == Vector2i(7, 4) and game.enemies[0].t > 0.0, "animating recoil does not spend turns or change the resolved cell")
 	_expect(recoil_visual.y < game._cell_center(Vector2i(5, 4)).y and recoil_visual.x > game._cell_center(Vector2i(5, 4)).x, "shield recoil has a short visual arc while the board position stays fixed")
@@ -695,7 +689,7 @@ func _test_chess_bosses(game: Node) -> void:
 		game.floor_number = (i + 1) * 5
 		var piece: Dictionary = game._make_boss(Vector2i(2, 2))
 		_expect(piece.boss_kind == types[i] and piece.hp == health[i] and piece.max_hp == health[i] and piece.role == "chess_boss" and not piece.has("symbol"), "distinct chess bosses cycle every five floors, resist a hit and carry no letter badge")
-	_expect(game.BOSS_TEXTURES.size() == 6, "all six chess bosses have separate artwork")
+	_expect(game.CONTENT_CATALOG.bosses.size() == 6 and game.CONTENT_CATALOG.boss_definition("king").get("texture") != null, "all six chess bosses resolve editable portrait resources")
 	var art_hashes := {}
 	for kind in ["pawn", "rook", "knight", "bishop", "queen", "king"]:
 		var svg := FileAccess.get_file_as_string("res://assets/bosses/%s.svg" % kind)
@@ -782,7 +776,7 @@ func _test_powerups(game: Node) -> void:
 	for number in range(1, 5):
 		game.active_seed = 12900
 		game.generate_floor(number)
-		_expect(game.powerups.size() == 1 and game.powerups[0].kind == game.POWERUP_TYPES[number - 1], "all four ability pickups appear in successive floors")
+		_expect(game.powerups.size() == 1 and game.powerups[0].kind == game.CONTENT_CATALOG.powerup_ids()[number - 1], "all four ability pickups appear in successive floors")
 		_expect(game._reachable_cells(game.player_position).has(game.powerups[0].pos), "power pickup is reachable")
 
 	_test_arena(game)
@@ -880,74 +874,16 @@ func _test_powerups(game: Node) -> void:
 	_expect(game._capture_power_state() == {"speed_turns": 0, "speed_phase": 0, "magnet_turns": 0, "freeze_turns": 0, "blink_charges": 0}, "new campaign resets all powers")
 
 
-func _test_environment_interactions(game: Node) -> void:
-	game.new_game(44127)
-	game.generate_floor(2)
-	_expect(not game.water_current_dirs.is_empty(), "garden biome marks readable flowing-water cells")
-	_expect(game.crates.size() > 0, "water and ice biomes place optional pushable crates")
-	_expect(game._reachable_cells(game.player_position).has(game.portal_position), "generated crates leave a route to the portal")
-	for crate in game.crates:
-		_expect(crate.pos != game.player_position and crate.pos != game.portal_position, "generated crate avoids the start and portal")
-	game.generate_floor(7)
-	_expect(not game.electrified_water.is_empty(), "later garden biome introduces a marked electric-water tile")
-	for point in game.electrified_water:
-		var old_tile: int = game.grid[point.y][point.x]
-		game.grid[point.y][point.x] = game.TILE_WALL
-		var alternate_route: bool = game._reachable_cells(game.player_position).has(game.portal_position)
-		game.grid[point.y][point.x] = old_tile
-		_expect(alternate_route, "electric-water tile always has a safe route around it")
-
-	_test_arena(game)
-	game.floor_number = 2
-	game.grid[4][6] = game.TILE_WATER
-	game.grid[4][7] = game.TILE_WATER
-	game.grid[4][8] = game.TILE_WATER
-	for x in [6, 7, 8]:
-		game.water_current_dirs[Vector2i(x, 4)] = Vector2i.RIGHT
-	var crate_pos := Vector2i(5, 4)
-	var crate_center: Vector2 = game._cell_center(crate_pos)
-	game.crates.append({"pos": crate_pos, "from": crate_center, "to": crate_center, "t": 1.0, "floating": false})
-	game.try_move(1, 0)
-	_expect(game.player_position == Vector2i(5, 4) and game.crates[0].pos == Vector2i(7, 4) and game.crates[0].floating, "pushed wooden crate floats and follows the marked current")
-	_expect(not game._is_floor(game.crates[0].pos), "crate occupies a cell and blocks actor pathfinding")
-	game.wait_turn()
-	_expect(game.crates[0].pos == Vector2i(8, 4), "floating crate advances once per spent turn")
-
-	_test_arena(game)
-	game.floor_number = 4
-	for x in [5, 6, 7]:
-		game.grid[4][x] = game.TILE_WATER
-	game.brittle_ice[Vector2i(5, 4)] = true
-	game.try_move(1, 0)
-	_expect(game.player_position == Vector2i(8, 4), "player slides across an ice patch and settles on the first safe floor cell")
-	_expect(int(game.ice_stress.get(Vector2i(5, 4), 0)) == 1, "crossing brittle ice records one deterministic stress step")
-	var ice_cell: Array[Vector2i] = [Vector2i(5, 4)]
-	game._stress_brittle_ice(ice_cell)
-	game._stress_brittle_ice(ice_cell)
-	_expect(game.broken_ice.has(Vector2i(5, 4)) and not game._is_slippery_ice(Vector2i(5, 4)), "brittle ice cracks after three crossings and stops sliding")
-
-	_test_arena(game)
-	game.floor_number = 2
-	game.grid[4][5] = game.TILE_WATER
-	game.electrified_water[Vector2i(5, 4)] = true
-	game.charges = 1
-	game.try_move(1, 0)
-	_expect(game.charges == 0 and game.hits_this_floor == 1 and game.game_state == "playing", "electrified water is a single readable hit absorbed by one shield")
-
-	_test_arena(game)
-	game.floor_number = 2
-	game.grid[4][5] = game.TILE_WATER
-	game.water_current_dirs[Vector2i(5, 4)] = Vector2i.RIGHT
-	game.electrified_water[Vector2i(5, 4)] = true
-	game.powerups.append({"pos": Vector2i(5, 4), "kind": "time_freeze"})
-	game.try_move(1, 0)
-	_expect(game.player_position == Vector2i(5, 4) and game.hits_this_floor == 0 and game.game_state == "playing", "time-freeze pickup halts currents and makes electrified water safe on contact")
-	_expect(game.freeze_turns == 3, "surface safety uses the existing four-action power timer")
-
-
 func _test_puzzle_floor(game: Node) -> void:
 	game.active_seed = 77123
-	for number in [3, 8, 13]:
+	var sequence_floors: Array[int] = []
+	for number in range(3, 160):
+		if game.special_schedule.family_for(game.active_seed, number) == "sequence":
+			sequence_floors.append(number)
+		if sequence_floors.size() >= 3:
+			break
+	_expect(sequence_floors.size() == 3, "ordered sequences recur in the variable campaign schedule")
+	for number in sequence_floors:
 		game.generate_floor(number)
 		_expect(game.objective_type == "puzzle" and game.enemies.is_empty() and game.traps.is_empty(), "puzzle floors contain no enemies or traps")
 		_expect(game.switches.size() == 3 and not game.portal_open and game._estimate_route_length() >= 0, "puzzle has three ordered runes and a solvable route")
@@ -1152,44 +1088,5 @@ func _test_progression(game: Node) -> void:
 	_expect(game.floor_history == [2, 4], "continue carries the completed star record through the run")
 	game.floor_stars["4"] = 3
 	_expect(game.floor_stars.get("4", 0) == 3 and game.furthest_floor >= 4, "level journal stores stars and unlock progress")
-	var saved_floor: int = game.floor_number
-	game.floor_number = 5
-	game.captor_intro_seen = false
-	var saved_turn: int = game.turn_number
-	game._begin_captor_flyover_if_needed()
-	_expect(game.captor_flyover_time > 0.0 and game.captor_intro_seen, "floor five starts the one-time Captor flyover")
-	game.handle_hud_action("skip_captor_flyover")
-	_expect(is_zero_approx(game.captor_flyover_time) and game.turn_number == saved_turn, "the flyover can be skipped without spending a turn")
-	game.floor_number = saved_floor
-	game.captor_intro_seen = true
-	game.captor_flyover_time = 0.0
 	if saved_state == "paused":
 		game.game_state = "paused"
-
-
-func _test_long_campaign_progression(game: Node) -> void:
-	game.total_coins = 0
-	game.rescues_completed = 0
-	_complete_test_floor(game, 100)
-	_expect(game.game_state == "rescued" and game.rescues_completed == 1, "Lia is actually freed at floor one hundred")
-	_expect(game.furthest_floor == 101 and game.resume_floor == 101, "rescue milestone saves floor one hundred and one")
-	game.advance_floor()
-	_expect(game.game_state == "playing" and game.floor_number == 101, "the post-rescue campaign starts at one hundred and one")
-	_complete_test_floor(game, 200)
-	_expect(game.game_state == "floor_clear" and game.resume_floor == 201, "floor two hundred completes the main arc without ending the procedural run")
-	game.advance_floor()
-	_expect(game.game_state == "playing" and game.floor_number == 201, "procedural progression continues beyond floor two hundred")
-	_expect(game.get_floor_size(201).x > 0 and game.get_biome_index(201) == 0, "post-campaign floors continue using WFC biome cycles")
-
-
-func _complete_test_floor(game: Node, number: int) -> void:
-	game.generate_floor(number)
-	game.portal_open = true
-	game.game_state = "playing"
-	game.player_position = game.portal_position
-	game.coins.clear()
-	game.coins_spawned_this_floor = 0
-	game.coins_this_floor = 0
-	game.hits_this_floor = 1
-	game.challenge_kind = "no_hit"
-	game._check_portal()

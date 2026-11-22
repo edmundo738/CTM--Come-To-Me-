@@ -26,6 +26,10 @@ window/stretch/aspect="expand"
 window/size/min_width=800
 window/size/min_height=540
 
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/ctm_workshop/plugin.cfg")
+
 [rendering]
 
 renderer/rendering_method="gl_compatibility"

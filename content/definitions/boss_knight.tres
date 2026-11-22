@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="BossDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://content/boss_definition.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/bosses/knight.svg" id="2_texture"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"knight"
+display_name = "CAVALO"
+rule_summary = "SALTO EM L"
+texture = ExtResource("2_texture")
+accent_color = Color(0.3608, 0.749, 1, 1)
+movement_profile = &"knight"
+hit_points = 4

@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="BossDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://content/boss_definition.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/bosses/pawn.svg" id="2_texture"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"pawn"
+display_name = "PEAO"
+rule_summary = "1 CASA ORTOGONAL"
+texture = ExtResource("2_texture")
+accent_color = Color(0.3725, 0.9647, 0.9373, 1)
+movement_profile = &"pawn"
+hit_points = 2

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="CampaignLevelCatalog" format=3 uid="uid://d4dejek5xfjcb"]
+
+[ext_resource type="Script" uid="uid://cm0vx6m3s6fc4" path="res://content/campaign_level_catalog.gd" id="1_catalog"]
+[ext_resource type="Script" uid="uid://bpxvm4kwbf6kc" path="res://content/campaign_level_entry.gd" id="1_nx8ws"]
+[ext_resource type="PackedScene" uid="uid://bnncxh6do0ut4" path="res://levels/authored/floor_001_workshop.tscn" id="2_nx8ws"]
+
+[sub_resource type="Resource" id="Resource_nx8ws"]
+script = ExtResource("1_nx8ws")
+blueprint = ExtResource("2_nx8ws")
+
+[resource]
+script = ExtResource("1_catalog")
+entries = Array[ExtResource("1_nx8ws")]([SubResource("Resource_nx8ws")])

@@ -1,5 +1,8 @@
 shader_type canvas_item;
 
+// The near grid and distant dust move at different camera-relative rates.
+uniform vec2 camera_offset = vec2(0.0);
+
 float hash21(vec2 p) {
 	return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
 }
@@ -26,7 +29,7 @@ void fragment() {
 	base = mix(base, sky_bottom, smoothstep(0.6, 1.0, uv.y));
 	
 	// Abyssal Cyber Void (subtle top-down grid fading into deep space)
-	vec2 grid_uv = uv * 32.0;
+	vec2 grid_uv = (uv + camera_offset * 0.08) * 32.0;
 	vec2 grid_line = abs(fract(grid_uv - 0.5) - 0.5) / fwidth(grid_uv);
 	float grid_val = 1.0 - min(min(grid_line.x, grid_line.y), 1.0);
 	float grid_fade = smoothstep(0.05, 0.75, uv.y) * 0.12;
@@ -41,7 +44,7 @@ void fragment() {
 	base += vec3(0.04, 0.02, 0.08) * flare_top;
 	
 	// Star field & digital dust
-	vec2 star_cell = floor(uv * vec2(160.0, 100.0));
+	vec2 star_cell = floor((uv + camera_offset * 0.025) * vec2(160.0, 100.0));
 	float star = step(0.995, hash21(star_cell));
 	float twinkle = 0.4 + 0.6 * sin(TIME * 2.2 + hash21(star_cell + 4.2) * 6.28);
 	base += vec3(0.4, 0.75, 1.0) * star * twinkle * 0.35;

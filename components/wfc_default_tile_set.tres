@@ -1,0 +1,112 @@
+[gd_resource type="Resource" format=3 uid="uid://bxccbt4o4nsop"]
+
+[ext_resource type="Script" uid="uid://b3ol5m1qua3bc" path="res://components/wfc_tile_set.gd" id="1_set"]
+[ext_resource type="Script" uid="uid://dxqy5aa62rkmj" path="res://components/wfc_tile_definition.gd" id="2_tile"]
+
+[sub_resource type="Resource" id="Tile00"]
+script = ExtResource("2_tile")
+weight = 0.85
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile01"]
+script = ExtResource("2_tile")
+tile_id = 1
+passage_mask = 1
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile02"]
+script = ExtResource("2_tile")
+tile_id = 2
+passage_mask = 2
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile03"]
+script = ExtResource("2_tile")
+tile_id = 3
+passage_mask = 3
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile04"]
+script = ExtResource("2_tile")
+tile_id = 4
+passage_mask = 4
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile05"]
+script = ExtResource("2_tile")
+tile_id = 5
+passage_mask = 5
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile06"]
+script = ExtResource("2_tile")
+tile_id = 6
+passage_mask = 6
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile07"]
+script = ExtResource("2_tile")
+tile_id = 7
+passage_mask = 7
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile08"]
+script = ExtResource("2_tile")
+tile_id = 8
+passage_mask = 8
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile09"]
+script = ExtResource("2_tile")
+tile_id = 9
+passage_mask = 9
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile10"]
+script = ExtResource("2_tile")
+tile_id = 10
+passage_mask = 10
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile11"]
+script = ExtResource("2_tile")
+tile_id = 11
+passage_mask = 11
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile12"]
+script = ExtResource("2_tile")
+tile_id = 12
+passage_mask = 12
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile13"]
+script = ExtResource("2_tile")
+tile_id = 13
+passage_mask = 13
+weight = 0.42
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile14"]
+script = ExtResource("2_tile")
+tile_id = 14
+passage_mask = 14
+weight = 0.2
+biome_tags = PackedStringArray()
+
+[sub_resource type="Resource" id="Tile15"]
+script = ExtResource("2_tile")
+tile_id = 15
+passage_mask = 15
+weight = 0.2
+biome_tags = PackedStringArray()
+
+[resource]
+script = ExtResource("1_set")
+tiles = Array[Resource]([SubResource("Tile00"), SubResource("Tile01"), SubResource("Tile02"), SubResource("Tile03"), SubResource("Tile04"), SubResource("Tile05"), SubResource("Tile06"), SubResource("Tile07"), SubResource("Tile08"), SubResource("Tile09"), SubResource("Tile10"), SubResource("Tile11"), SubResource("Tile12"), SubResource("Tile13"), SubResource("Tile14"), SubResource("Tile15")])

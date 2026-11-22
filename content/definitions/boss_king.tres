@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="BossDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://content/boss_definition.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/bosses/king.svg" id="2_texture"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"king"
+display_name = "REI"
+rule_summary = "1 CASA EM QUALQUER DIRECAO"
+texture = ExtResource("2_texture")
+accent_color = Color(1, 0.8314, 0.4549, 1)
+visual_scale = 1.1
+movement_profile = &"king"
+hit_points = 7

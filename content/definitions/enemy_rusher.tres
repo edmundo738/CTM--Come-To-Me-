@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"rusher"
+display_name = "INVESTIDA"
+movement_profile = "rusher"
+move_duration = 0.12
+visual_scale = 0.95
+glow_radius = 46
+idle_core_color = Color(0.902, 0.4157, 0.102, 0.8)
+alert_core_color = Color(1, 0.5451, 0.2392, 0.95)
+glow_color = Color(0.702, 0.2078, 0, 0.46)

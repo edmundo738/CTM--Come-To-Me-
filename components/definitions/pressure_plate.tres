@@ -1,0 +1,14 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://components/component_definition.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://components/pressure_plate.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+kind = &"pressure_plate"
+display_name = "Pressure plate"
+scene = ExtResource("2_scene")
+family = &"mechanism"
+input_channel = &"weight"
+output_channel = &"logic"
+tags = PackedStringArray("held", "linkable")

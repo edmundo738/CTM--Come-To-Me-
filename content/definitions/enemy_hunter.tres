@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"hunter"
+display_name = "CAÇADOR"
+movement_profile = "hunter"
+move_duration = 0.14
+visual_scale = 1.02
+glow_radius = 42
+idle_core_color = Color(0.902, 0.1647, 0.2902, 0.75)
+alert_core_color = Color(1, 0.2824, 0.3961, 0.9)
+glow_color = Color(0.7098, 0.0314, 0.1412, 0.45)

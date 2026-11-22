@@ -30,3 +30,7 @@ As imagens enviadas são conceitos e inspiração, não modelos finais a copiar.
 - Conferir a cena no tabuleiro real, com o jogador e a Lia no mesmo enquadramento.
 - Conferir rosto e silhueta à escala do jogador e em miniatura; verificar que as barras não cobrem os olhos.
 - Ajustar apenas o que melhorar leitura, personalidade ou continuidade com a arte já existente.
+
+## Integração de 4 de novembro de 2026
+
+A cena foi ligada à progressão por campanha e mantém a expressão e iluminação partilhadas da esfera. A visualização Web em 1280×720 e 800×540 confirmou os elementos e o botão de avançar nos cenários capturados; ainda falta avaliação estética humana, áudio e hardware real.

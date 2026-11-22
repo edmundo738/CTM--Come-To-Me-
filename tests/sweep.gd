@@ -60,15 +60,17 @@ func _sweep_generation(game: Node) -> void:
 			generation_ms[floor_number] = maxf(float(generation_ms.get(floor_number, 0.0)), elapsed)
 			var tag := "andar %d seed %d" % [floor_number, game.active_seed]
 			_check_floor(game, tag)
-			if seed_index == 0 and floor_number in [1, 5, 30, 100, 200]:
+			if seed_index == 0 and floor_number in [1, 5, 6, 26, 30, 100, 200]:
 				var before := {
 					"grid": game.grid.duplicate(true), "coins": game.coins.duplicate(),
 					"enemies": game.enemies.duplicate(true), "switches": game.switches.duplicate(true),
 					"powerups": game.powerups.duplicate(true), "traps": game.traps.duplicate(true),
 					"challenge": game.challenge_kind, "par": game.challenge_par,
+					"environment_cells": game.environment.cells.duplicate(true),
+					"crates": game.environment.crates.duplicate(true), "plates": game.environment.plates.duplicate(true),
 				}
 				game.generate_floor(floor_number)
-				if before.grid != game.grid or before.coins != game.coins or before.enemies != game.enemies or before.switches != game.switches or before.powerups != game.powerups or before.traps != game.traps or before.challenge != game.challenge_kind or before.par != game.challenge_par:
+				if before.grid != game.grid or before.coins != game.coins or before.enemies != game.enemies or before.switches != game.switches or before.powerups != game.powerups or before.traps != game.traps or before.challenge != game.challenge_kind or before.par != game.challenge_par or before.environment_cells != game.environment.cells or before.crates != game.environment.crates or before.plates != game.environment.plates:
 					_flag("seed_nao_reproduzivel", tag)
 
 
@@ -80,16 +82,24 @@ func _mark(seen: Dictionary, point: Vector2i, label: String, tag: String) -> voi
 
 func _check_floor(game: Node, tag: String) -> void:
 	var world: Vector2i = game.world_size
+	# Authored campaign floors use hand-placed layouts and entity spawns that
+	# are validated by the blueprint scene, not by procedural sweep heuristics.
+	# Skip checks that assume WFC generation (reachability of fixed spawns,
+	# challenge_par, bot routing) and return early to avoid false positives.
+	var is_authored: bool = game.special_family == "authored"
 	if game.grid.size() != world.y or game.grid.is_empty() or game.grid[0].size() != world.x:
 		_flag("dimensao_do_mapa", tag)
 		return
 	if not game._is_floor(game.player_position) or not game._is_floor(game.portal_position):
 		_flag("inicio_ou_portal_fora_do_chao", tag)
+	if is_authored:
+		return  # Remaining checks require a procedurally generated floor.
 	var reachable: Dictionary = {}
 	for point in game._reachable_cells(game.player_position):
 		reachable[point] = true
 	if not reachable.has(game.portal_position):
-		_flag("portal_inalcancavel", tag)
+		if game.objective_type != "environment" or game.special_spec.is_empty() or int(game._plan_environment_route().length) < 0:
+			_flag("portal_inalcancavel", tag)
 	if game.generation_report.contains("fallback"):
 		_flag("gerador_usou_fallback", tag + " " + game.generation_report)
 	var seen: Dictionary = {}
@@ -101,14 +111,15 @@ func _check_floor(game: Node, tag: String) -> void:
 			if not reachable.has(point):
 				_flag("item_inalcancavel", "%s: %s em %s" % [tag, name, str(point)])
 			_mark(seen, point, name, tag)
-	if game.powerups.size() != 1 or game.powerups[0].kind != game.POWERUP_TYPES[posmod(game.floor_number - 1, game.POWERUP_TYPES.size())]:
+	var powerup_ids: PackedStringArray = game.CONTENT_CATALOG.powerup_ids()
+	if game.powerups.size() != 1 or game.powerups[0].kind != powerup_ids[posmod(game.floor_number - 1, powerup_ids.size())]:
 		_flag("poder_em_falta", tag)
 	for item in game.powerups:
 		if not reachable.has(item.pos):
 			_flag("poder_inalcancavel", tag)
 		_mark(seen, item.pos, "poder", tag)
-	if game.floor_number % 5 == 3:
-		if game.objective_type != "puzzle" or not game.enemies.is_empty() or not game.traps.is_empty() or game.switches.size() != 3 or game.portal_open:
+	if game.objective_type == "puzzle":
+		if not game.enemies.is_empty() or not game.traps.is_empty() or game.switches.size() != 3 or game.portal_open:
 			_flag("puzzle_invalido", tag)
 		elif int(game._plan_puzzle_route().length) < 0:
 			_flag("puzzle_sem_solucao", tag)
@@ -124,6 +135,27 @@ func _check_floor(game: Node, tag: String) -> void:
 		if not reachable.has(trap.pos):
 			_flag("armadilha_inalcancavel", tag)
 		_mark(seen, trap.pos, "armadilha", tag)
+	if game.environment_bonus_available:
+		var current := Vector2i(-1, -1)
+		for cell in game.environment.cells:
+			if game.environment.kind_at(cell) == "current":
+				current = cell
+		var safe_before := _reachable_avoiding_current(game, game.player_position)
+		for point in reachable:
+			if point != current and not safe_before.has(point):
+				_flag("rota_depende_de_corrente", "%s: %s" % [tag, str(point)])
+		var crate: Dictionary = game.environment.crates[0]
+		var old_position: Vector2i = crate.pos
+		crate.pos = game.environment.plates[0].pos
+		var reachable_after: Array[Vector2i] = game._reachable_cells(game.player_position)
+		var safe_after := _reachable_avoiding_current(game, game.player_position)
+		for point in reachable_after:
+			if point != current and not safe_after.has(point):
+				_flag("rota_depende_de_corrente_apos_placa", "%s: %s" % [tag, str(point)])
+		crate.pos = old_position
+		_mark(seen, old_position, "caixa", tag)
+		_mark(seen, game.environment.plates[0].pos, "placa", tag)
+		_mark(seen, current, "corrente", tag)
 	for enemy in game.enemies:
 		if not reachable.has(enemy.pos):
 			_flag("inimigo_inalcancavel", tag)
@@ -148,15 +180,15 @@ func _check_floor(game: Node, tag: String) -> void:
 		_flag("mini_chefe_em_falta", tag)
 	elif game.floor_number % 5 != 4 and wardens > 0:
 		_flag("mini_chefe_em_andar_errado", tag)
-	if game.floor_number >= 7 and game.floor_number % 5 != 3 and (not enemy_roles.has("patrol") or not enemy_roles.has("mirror")):
+	if game.floor_number >= 7 and game.special_family not in ["sequence", "switches", "quiet", "sokoban", "mechanism", "circuit"] and (not enemy_roles.has("patrol") or not enemy_roles.has("mirror")):
 		_flag("novos_inimigos_em_falta", tag)
 	var boss: Dictionary = game.get_active_boss()
 	if game.floor_number % 5 == 0:
 		if boss.is_empty() or int(boss.get("hp", 0)) < 2:
 			_flag("chefe_em_falta", tag)
 		else:
-			var index := posmod(game.floor_number / 5 - 1, game.BOSS_TYPES.size())
-			if boss.get("role", "") != "chess_boss" or boss.get("boss_kind", "") != game.BOSS_TYPES[index].id:
+			var expected_boss: Resource = game.CONTENT_CATALOG.boss_for_floor(game.floor_number)
+			if boss.get("role", "") != "chess_boss" or boss.get("boss_kind", "") != str(expected_boss.get("id")):
 				_flag("tipo_de_chefe_incorreto", tag)
 	elif not boss.is_empty():
 		_flag("chefe_em_andar_errado", tag)
@@ -181,6 +213,10 @@ func _sweep_bots(game: Node) -> void:
 				game.breach_charges = 1
 				game._restore_power_state({})
 				game.generate_floor(floor_number)
+				# Authored floors use hand-placed layouts not designed for bot routing;
+				# skip bot simulation to avoid false positives.
+				if game.special_family == "authored":
+					continue
 				game.game_state = "playing"
 				rng.seed = game.active_seed + (7 if style == "aleatorio" else 0)
 				var turns := 0
@@ -207,6 +243,8 @@ func _sweep_bots(game: Node) -> void:
 						var step := Vector2i.ZERO
 						if game.objective_type == "puzzle":
 							step = game._plan_puzzle_route().step
+						elif game.objective_type == "environment" and not game.special_spec.is_empty():
+							step = game._plan_environment_route().step
 						else:
 							var target: Vector2i = game.portal_position
 							if not game.portal_open:
@@ -229,6 +267,21 @@ func _sweep_bots(game: Node) -> void:
 	game.game_state = "title"
 
 
+func _reachable_avoiding_current(game: Node, start: Vector2i) -> Dictionary:
+	var visited := {start: true}
+	var queue: Array[Vector2i] = [start]
+	var head := 0
+	while head < queue.size():
+		var point := queue[head]
+		head += 1
+		for direction in game.FOUR_WAY:
+			var next: Vector2i = point + direction
+			if game._is_floor(next) and game.environment.kind_at(next) != "current" and not visited.has(next):
+				visited[next] = true
+				queue.append(next)
+	return visited
+
+
 func _next_step(game: Node, from: Vector2i, to: Vector2i) -> Vector2i:
 	if from == to:
 		return Vector2i.ZERO
@@ -242,7 +295,7 @@ func _next_step(game: Node, from: Vector2i, to: Vector2i) -> Vector2i:
 			break
 		for direction in game.FOUR_WAY:
 			var next: Vector2i = point + direction
-			if game._is_floor(next) and not previous.has(next):
+			if game._is_floor(next) and game.environment.kind_at(next) != "current" and not previous.has(next):
 				previous[next] = point
 				queue.append(next)
 	if not previous.has(to):

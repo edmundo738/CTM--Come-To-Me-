@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"patrol"
+display_name = "PATRULHA"
+movement_profile = "patrol"
+move_duration = 0.14
+visual_scale = 1.02
+glow_radius = 42
+idle_core_color = Color(0.4471, 0.9686, 0.6745, 0.9)
+alert_core_color = Color(0.4471, 0.9686, 0.6745, 0.9)
+glow_color = Color(0.1137, 0.6588, 0.4, 0.43)

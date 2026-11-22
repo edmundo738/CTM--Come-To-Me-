@@ -1,6 +1,54 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://game.gd" id="1_game"]
+[ext_resource type="Script" path="res://terrain_renderer.gd" id="2_terrain"]
+[ext_resource type="Script" path="res://hud.gd" id="3_hud"]
+[ext_resource type="Shader" path="res://capture_overlay.gdshader" id="4_capture"]
+
+[sub_resource type="ShaderMaterial" id="CaptureOverlayMaterial"]
+shader = ExtResource("4_capture")
 
 [node name="ComeToMe" type="Node2D"]
 script = ExtResource("1_game")
+
+[node name="World" type="Node2D" parent="."]
+
+[node name="TerrainRenderer" type="Node2D" parent="World"]
+z_index = -10
+script = ExtResource("2_terrain")
+
+[node name="LevelComponents" type="Node2D" parent="World"]
+
+[node name="Actors" type="Node2D" parent="World"]
+
+[node name="Camera2D" type="Camera2D" parent="World"]
+enabled = true
+
+[node name="BackgroundLayer" type="CanvasLayer" parent="."]
+layer = -2
+
+[node name="Background" type="ColorRect" parent="BackgroundLayer"]
+mouse_filter = 2
+
+[node name="RuntimeSystems" type="Node" parent="."]
+
+[node name="CaptureLayer" type="CanvasLayer" parent="."]
+layer = 1
+
+[node name="Overlay" type="ColorRect" parent="CaptureLayer"]
+material = SubResource("CaptureOverlayMaterial")
+visible = false
+mouse_filter = 2
+
+[node name="HUDLayer" type="CanvasLayer" parent="."]
+layer = 2
+
+[node name="HUD" type="Control" parent="HUDLayer"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+script = ExtResource("3_hud")
