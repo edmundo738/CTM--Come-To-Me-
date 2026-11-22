@@ -1,0 +1,10 @@
+[gd_resource type="Resource" script_class="PowerupDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/powerup_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"blink"
+display_name = "BLINK"
+accent_color = Color(0.6039, 0.9569, 1, 1)
+duration_turns = 0

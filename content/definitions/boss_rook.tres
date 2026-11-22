@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="BossDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://content/boss_definition.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/bosses/rook.svg" id="2_texture"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"rook"
+display_name = "TORRE"
+rule_summary = "LINHAS DE ATE 3 CASAS"
+texture = ExtResource("2_texture")
+accent_color = Color(1, 0.7137, 0.3569, 1)
+movement_profile = &"rook"
+hit_points = 3

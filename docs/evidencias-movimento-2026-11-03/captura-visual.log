@@ -1,0 +1,37 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+WARNING: Could not set V-Sync mode, as changing V-Sync mode is not supported by the graphics driver.
+     at: set_use_vsync (platform/linuxbsd/x11/gl_manager_x11.cpp:372)
+libdbus-1.so.3: cannot open shared object file: No such file or directory
+OpenGL API 4.5 (Core Profile) Mesa 23.2.1-1ubuntu3.1~22.04.2 - Compatibility - Using Device: Mesa - llvmpipe (LLVM 15.0.7, 256 bits)
+
+SCREENSHOT passo-antes size=(1366, 768) save=0
+SINGLE_FRAME index=0 sim_ms=0 logical=(8, 7) visual=(420.0, 420.0) anim=0.0
+SCREENSHOT passo-00 size=(1366, 768) save=0
+SINGLE_FRAME index=1 sim_ms=25 logical=(8, 7) visual=(426.7888, 420.0) anim=0.21739130434783
+SCREENSHOT passo-01 size=(1366, 768) save=0
+SINGLE_FRAME index=2 sim_ms=50 logical=(8, 7) visual=(442.5528, 420.0) anim=0.43478260869565
+SCREENSHOT passo-02 size=(1366, 768) save=0
+SINGLE_FRAME index=3 sim_ms=75 logical=(8, 7) visual=(460.3879, 420.0) anim=0.65217391304348
+SCREENSHOT passo-03 size=(1366, 768) save=0
+SINGLE_FRAME index=4 sim_ms=100 logical=(8, 7) visual=(473.3903, 420.0) anim=0.8695652173913
+SCREENSHOT passo-04 size=(1366, 768) save=0
+SINGLE_FRAME index=5 sim_ms=125 logical=(8, 7) visual=(476.0, 420.0) anim=1.0
+SCREENSHOT passo-05 size=(1366, 768) save=0
+SINGLE_FRAME index=6 sim_ms=150 logical=(8, 7) visual=(476.0, 420.0) anim=1.0
+SCREENSHOT passo-06 size=(1366, 768) save=0
+SCREENSHOT passo-recuperado size=(1366, 768) save=0
+SCREENSHOT curva-antes size=(1366, 768) save=0
+SCREENSHOT curva-primeiro size=(1366, 768) save=0
+CORNER command_2 logical=(8, 8) from=(435.6121, 420.0) target=(476.0, 476.0) turn=2
+SCREENSHOT curva-comando size=(1366, 768) save=0
+CORNER_FRAME index=0 sim_ms_after_second=30 visual=(442.4236, 429.4445) logical=(8, 8)
+SCREENSHOT curva-00 size=(1366, 768) save=0
+CORNER_FRAME index=1 sim_ms_after_second=60 visual=(457.1222, 449.825) logical=(8, 8)
+SCREENSHOT curva-01 size=(1366, 768) save=0
+CORNER_FRAME index=2 sim_ms_after_second=90 visual=(471.1038, 469.2112) logical=(8, 8)
+SCREENSHOT curva-02 size=(1366, 768) save=0
+CORNER_FRAME index=3 sim_ms_after_second=120 visual=(476.0, 476.0) logical=(8, 8)
+SCREENSHOT curva-03 size=(1366, 768) save=0
+SCREENSHOT minimo-antes size=(800, 540) save=0
+MINIMUM_FRAME sim_ms=100 viewport=(800, 540) logical=(8, 7) visual=(473.3903, 420.0)
+SCREENSHOT minimo-passo-100ms size=(800, 540) save=0

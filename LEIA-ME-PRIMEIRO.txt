@@ -1,0 +1,26 @@
+COME TO ME: NEON RUINS — ARVORE E TRES CAMPANHAS
+
+Este ZIP e o projeto-fonte atualizado, nao um jogo exportado.
+Commit Git: 514f0175a052b4fd015347f940183d87b6fef2b0
+
+PARA JOGAR
+1. Extraia o ZIP completo para uma pasta normal (nao execute de dentro do ZIP).
+2. Windows: execute Jogar-Windows.cmd. O launcher prepara o Godot 4.7.2 oficial,
+   verifica o SHA-256 e pode precisar de Internet na primeira utilizacao.
+   O launcher nao foi testado num computador Windows nesta entrega.
+3. Linux: execute ./Jogar-Linux.sh; pode indicar GODOT_BIN para usar um editor
+   Godot 4.7.2 ja instalado. Este pacote nao inclui o executavel Godot.
+4. Alternativa: abra project.godot no Godot 4.7.2 e inicie a cena principal.
+
+ARVORE E SAVES
+Conclua um andar para ganhar um ponto. No resultado, menu ou pausa no inicio do
+andar, abra HABILIDADES. Desbloquear e ativar sao passos diferentes. Existem
+36 nos em seis ramos e ate 8 ativos. Os valores ainda estao em teste.
+O menu CAMPANHAS permite tres saves independentes; substituir uma campanha
+existente pede confirmacao. Antes de alterar ficheiros manualmente, copie todo
+o diretorio de dados do Godot. Se aparecer aviso de save, nao assuma que o
+ultimo progresso ficou guardado. Veja docs/ARVORE_E_CAMPANHAS.md.
+
+O relatorio docs/AUDITORIA_REPOSITORIO_2026-11-04.md compara esta versao com
+a outra branch, ainda conflituosa. Leia README.md para comandos e validacoes.
+Os ficheiros e respetivos hashes constam de SHA256SUMS.txt.

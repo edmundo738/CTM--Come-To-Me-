@@ -1,0 +1,121 @@
+[gd_scene format=3 uid="uid://bnncxh6do0ut4"]
+
+[ext_resource type="Script" uid="uid://dskcwqbgphtjp" path="res://components/level_blueprint.gd" id="1_7ib3p"]
+[ext_resource type="PackedScene" path="res://components/gate.tscn" id="2_xxnay"]
+[ext_resource type="PackedScene" path="res://components/pressure_plate.tscn" id="4_nrhdo"]
+[ext_resource type="PackedScene" path="res://components/crate.tscn" id="4_xxnay"]
+[ext_resource type="Script" uid="uid://ch8oot61j48gb" path="res://components/crate_component.gd" id="5_b51li"]
+
+[node name="CampaignFloor001" type="Node2D" unique_id=1332370456]
+script = ExtResource("1_7ib3p")
+mission_title = "Fase 001"
+level_id = "campaign_floor_001"
+campaign_floor = 1
+grid_size = Vector2i(19, 15)
+start_cell = Vector2i(1, 2)
+portal_cell = Vector2i(17, 7)
+wall_cells = Array[Vector2i]([Vector2i(4, 5), Vector2i(3, 9), Vector2i(8, 7), Vector2i(8, 8), Vector2i(8, 9), Vector2i(8, 10), Vector2i(8, 11), Vector2i(8, 12), Vector2i(8, 13), Vector2i(8, 4), Vector2i(8, 1), Vector2i(5, 3), Vector2i(8, 3), Vector2i(8, 6), Vector2i(6, 11), Vector2i(8, 2)])
+entity_spawns = Array[Dictionary]([{
+"cell": Vector2i(2, 12),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(3, 11),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(3, 12),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(6, 13),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(11, 11),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(12, 6),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(13, 9),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(14, 12),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(10, 10),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(10, 9),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(6, 7),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(11, 5),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(11, 3),
+"kind": "pickup",
+"subtype": "coin"
+}, {
+"cell": Vector2i(5, 9),
+"kind": "pickup",
+"subtype": "shield"
+}, {
+"cell": Vector2i(14, 8),
+"kind": "enemy",
+"subtype": "hunter"
+}, {
+"cell": Vector2i(13, 2),
+"kind": "enemy",
+"subtype": "hunter"
+}])
+
+[node name="Gate" parent="." unique_id=1271749810 instance=ExtResource("2_xxnay")]
+position = Vector2(476, 308)
+component_id = "gate_1"
+cell = Vector2i(8, 5)
+output_ids = PackedStringArray()
+
+[node name="PressurePlate" parent="." unique_id=1550230246 instance=ExtResource("4_nrhdo")]
+position = Vector2(140, 532)
+component_id = "pressure_plate_1"
+cell = Vector2i(2, 9)
+output_ids = PackedStringArray("gate_1")
+
+[node name="@Node2D@21746" parent="." unique_id=1106334248 instance=ExtResource("4_nrhdo")]
+position = Vector2(196, 308)
+component_id = "pressure_plate_2"
+cell = Vector2i(3, 5)
+output_ids = PackedStringArray("gate_1")
+
+[node name="Crate" type="Node2D" parent="." unique_id=1600711138 instance=ExtResource("4_xxnay")]
+position = Vector2(532, 420)
+script = ExtResource("5_b51li")
+component_id = "crate_1"
+cell = Vector2i(9, 7)
+output_ids = PackedStringArray()
+
+[node name="@Node2D@22823" type="Node2D" parent="." unique_id=1025583628 instance=ExtResource("4_xxnay")]
+position = Vector2(140, 420)
+script = ExtResource("5_b51li")
+component_id = "crate_2"
+cell = Vector2i(2, 7)
+output_ids = PackedStringArray()
+
+[node name="@Node2D@22824" type="Node2D" parent="." unique_id=1863625213 instance=ExtResource("4_xxnay")]
+position = Vector2(196, 140)
+script = ExtResource("5_b51li")
+component_id = "crate_3"
+cell = Vector2i(3, 2)
+output_ids = PackedStringArray()

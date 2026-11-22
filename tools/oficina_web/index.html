@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="pt">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#060911">
+  <title>Oficina CTM — World-Class Level Designer</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="editor-body">
+
+  <!-- ═══════════════════════════════════════════════════════════
+       BARRA DE TOPO INTEGRADA (Compact Studio Topbar)
+  ══════════════════════════════════════════════════════════════ -->
+  <header class="studio-topbar">
+    <!-- Brand & Nível -->
+    <div class="topbar-brand-zone">
+      <div class="holo-logo">
+        <span class="logo-core"></span>
+        <span class="logo-text">CTM</span>
+      </div>
+      <div class="brand-meta">
+        <strong class="app-title">OFICINA TÁTICA</strong>
+        <span class="app-subtitle">COME TO ME · NEON RUINS</span>
+      </div>
+    </div>
+
+    <!-- Seletor Rápido de Fase (Stepper) -->
+    <div class="topbar-floor-zone">
+      <button class="nav-step-btn" id="prev-floor-btn" title="Fase anterior">◀</button>
+      <div class="floor-pill">
+        <span class="floor-prefix">FASE</span>
+        <select id="floor" class="floor-dropdown"></select>
+      </div>
+      <button class="nav-step-btn" id="next-floor-btn" title="Próxima fase">▶</button>
+      <div class="save-status-pill" id="saved-state">
+        <span class="status-beacon"></span>
+        <span class="status-copy">Sincronizado</span>
+      </div>
+    </div>
+
+    <!-- Modo de Atmosfera / Iluminação Dinâmica -->
+    <div class="topbar-lighting-zone">
+      <span class="zone-label">ATMOSFERA</span>
+      <div class="atmosphere-buttons" id="atmo-selector">
+        <button class="atmo-btn active" data-atmo="neon" title="Noite Neon Profunda (Iluminação Dinâmica)">🌌 Neon</button>
+        <button class="atmo-btn" data-atmo="alert" title="Alerta Vermelho / Emergência">🚨 Alerta</button>
+        <button class="atmo-btn" data-atmo="ice" title="Catedral Glacial">❄ Gelo</button>
+        <button class="atmo-btn" data-atmo="furnace" title="Fornalha Violeta">🔥 Fornalha</button>
+        <button class="atmo-btn" data-atmo="day" title="Modo Claro de Edição">☀️ Claro</button>
+      </div>
+    </div>
+
+    <!-- Ações Centrais e Salvar -->
+    <div class="topbar-actions-zone">
+      <button class="studio-btn" id="new-btn" title="Novo mapa vazio">Novo</button>
+      <button class="studio-btn" id="import-btn" title="Abrir arquivo de mapa (.json)">Abrir</button>
+      <button class="studio-btn" id="blueprint-btn" title="Restaurar blueprint original do jogo">Blueprint</button>
+      <button class="studio-btn icon-btn" id="disable-btn" title="Desativar mapa autoral da campanha">⊘</button>
+
+      <div class="v-line"></div>
+
+      <button class="studio-btn icon-btn" id="undo-btn" title="Desfazer (Ctrl+Z)" disabled>↶</button>
+      <button class="studio-btn icon-btn" id="redo-btn" title="Refazer (Ctrl+Y)" disabled>↷</button>
+
+      <div class="v-line"></div>
+
+      <button class="studio-btn validate-glow-btn" id="validate-btn" title="Validar integridade do mapa">
+        <span class="btn-icon">✓</span> Validar
+      </button>
+
+      <button class="studio-btn save-pulse-btn" id="save-btn" title="Gravar diretamente no jogo (Ctrl+S)">
+        <span class="btn-icon">💾</span> <strong>Guardar no jogo</strong>
+      </button>
+
+      <input hidden type="file" id="file-input" accept=".json,.ctmmap.json,application/json">
+    </div>
+  </header>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       ÁREA PRINCIPAL DE TRABALHO (MAPA AMPLO + DOCK DIREITO)
+  ══════════════════════════════════════════════════════════════ -->
+  <main class="studio-workspace">
+
+    <!-- ─── CENTRO: O GRANDE MAPA EM VISÃO PANORÂMICA (VIEWPORT) ─── -->
+    <section class="viewport-canvas-area">
+      <!-- HUD Superior do Mapa -->
+      <div class="canvas-floating-hud">
+        <div class="hud-left-group">
+          <span class="hud-phase-chip" id="stage-source">Fase 001 · Autoral</span>
+          <span class="hud-size-chip" id="map-size">19 × 15 Casas</span>
+          <span class="hud-route-chip" id="route-indicator">
+            <span class="route-led"></span>
+            <span id="route-status">Analisando Rota...</span>
+          </span>
+        </div>
+
+        <div class="hud-right-group">
+          <span class="hud-cursor-coords" id="coordinates">X: 00 · Y: 00</span>
+          <span class="hud-cell-name" id="cell-type">[Chão]</span>
+        </div>
+      </div>
+
+      <!-- Container do Canvas Principal com Réguas -->
+      <div class="canvas-mount-box" id="canvas-container">
+        <canvas id="map-canvas"></canvas>
+
+        <!-- Controles de Visualização no Rodapé do Canvas -->
+        <div class="canvas-zoom-pill">
+          <button id="zoom-out" class="zoom-btn" title="Diminuir Zoom (−)">−</button>
+          <span id="zoom-label" class="zoom-value">100%</span>
+          <button id="zoom-in" class="zoom-btn" title="Aumentar Zoom (+)">+</button>
+          <button id="fit-btn" class="zoom-text-btn" title="Enquadrar Mapa">Ajustar</button>
+          <button id="grid-toggle-btn" class="zoom-text-btn active" title="Alternar Grelha">Grelha</button>
+          <button id="depth-toggle-btn" class="zoom-text-btn active" title="Alternar Volume 2.5D">2.5D</button>
+        </div>
+      </div>
+
+      <!-- Barra de Atalhos Inferior -->
+      <footer class="canvas-bottom-bar">
+        <div class="hint-feed">
+          <span class="feed-led" id="status-dot"></span>
+          <span class="feed-text" id="status-text">Oficina pronta. Escolha um terreno ou peça à direita para pintar.</span>
+        </div>
+        <div class="shortcut-pills">
+          <span><kbd>V</kbd> Sel</span>
+          <span><kbd>W</kbd> Parede</span>
+          <span><kbd>B</kbd> Sala</span>
+          <span><kbd>G</kbd> Balde</span>
+          <span><kbd>R</kbd> Detritos</span>
+          <span><kbd>I</kbd> Pipeta</span>
+          <span><kbd>E</kbd> Apagar</span>
+          <span><kbd>M</kbd> Espelho</span>
+          <span><kbd>Ctrl+S</kbd> Salvar</span>
+        </div>
+      </footer>
+    </section>
+
+    <!-- ─── DOCK LATERAL DIREITO (ESTILO WESNOTH / LDTK / TILEMAP STUDIO) ─── -->
+    <aside class="side-dock-shelf">
+
+      <!-- 1. Radar Minimap Tático (Topo da Lateral) -->
+      <div class="dock-minimap-card">
+        <div class="minimap-banner">
+          <span class="radar-dot"></span>
+          <span class="minimap-tag">RADAR TÁTICO</span>
+          <button class="minimap-recenter" id="minimap-center-btn" title="Centralizar visão">⊙</button>
+        </div>
+        <div class="minimap-screen">
+          <canvas id="minimap-canvas" width="300" height="150"></canvas>
+        </div>
+      </div>
+
+      <!-- 2. Barra de Ferramentas de Ação Rápida (Estilo Photoshop / Wesnoth) -->
+      <div class="dock-quick-tools">
+        <button class="qtool-btn active" data-tool="select" title="Selecionar e mover elementos [V]">
+          <span class="qtool-icon">↖</span>
+          <span class="qtool-txt">Mover</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="wall" title="Pintar Paredes 2.5D com Auto-Tiling [W]">
+          <span class="qtool-icon">🧱</span>
+          <span class="qtool-txt">Parede</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="boxwall" title="Erguer Sala ou Retângulo de Paredes [B]">
+          <span class="qtool-icon">▣</span>
+          <span class="qtool-txt">Sala</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="flood" title="Balde de Preenchimento de Paredes [G]">
+          <span class="qtool-icon">🪣</span>
+          <span class="qtool-txt">Balde</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="scatter" title="Pincel de Dispersão: espalha detritos e cabos orgânicos [R]">
+          <span class="qtool-icon">✨</span>
+          <span class="qtool-txt">Detritos</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="weather" title="Pincel de Desgaste: adiciona rachaduras e ruína neon [T]">
+          <span class="qtool-icon">⚡</span>
+          <span class="qtool-txt">Desgaste</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="pipette" title="Conta-Gotas / Pipeta: clica numa peça para clonar [I]">
+          <span class="qtool-icon">🧪</span>
+          <span class="qtool-txt">Pipeta</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="erase" title="Borracha: remove peças, detritos e paredes [E]">
+          <span class="qtool-icon">⌫</span>
+          <span class="qtool-txt">Apagar</span>
+        </button>
+
+        <button class="qtool-btn" data-tool="link" title="Ligar Fios Elétricos entre mecanismos [L]">
+          <span class="qtool-icon">⌁</span>
+          <span class="qtool-txt">Fios</span>
+        </button>
+
+        <button class="qtool-btn toggle-qtool" id="mirror-btn" title="Modo de Simetria Horizontal [M]">
+          <span class="qtool-icon">⟺</span>
+          <span class="qtool-txt">Espelho</span>
+        </button>
+      </div>
+
+      <!-- 3. Seletor de Bioma Ativo (Pincel Inteligente de Terrenos) -->
+      <div class="dock-biome-selector">
+        <span class="dock-micro-label">BIOMA DO MUNDO</span>
+        <div class="biome-card-row">
+          <button class="biome-swatch active" data-biome="neon_ruins" title="As Ruínas de Neon (Aço escuro e neon ciano)">
+            <span class="swatch-color ruins-col"></span>
+            <span class="swatch-name">Ruínas</span>
+          </button>
+          <button class="biome-swatch" data-biome="ice_cathedral" title="Catedral Glacial (Pisos de cristal e geada)">
+            <span class="swatch-color ice-col"></span>
+            <span class="swatch-name">Catedral</span>
+          </button>
+          <button class="biome-swatch" data-biome="violet_furnace" title="Fornalha Violeta (Grelhas industriais e lava roxa)">
+            <span class="swatch-color furnace-col"></span>
+            <span class="swatch-name">Fornalha</span>
+          </button>
+          <button class="biome-swatch" data-biome="glass_garden" title="Jardim de Vidro (Lajes espelhadas e vegetação ciber)">
+            <span class="swatch-color garden-col"></span>
+            <span class="swatch-name">Jardim</span>
+          </button>
+          <button class="biome-swatch" data-biome="warden_throne" title="Trono do Guardião (Mármore e xadrez de elite)">
+            <span class="swatch-color throne-col"></span>
+            <span class="swatch-name">Trono</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4. Paleta Visual de Tiles & Peças em Abas (Como Wesnoth) -->
+      <div class="dock-palette-panel">
+        <div class="palette-tabs" role="tablist">
+          <button class="pal-tab active" data-category="enemy">Ameaças</button>
+          <button class="pal-tab" data-category="pickup">Recolhas</button>
+          <button class="pal-tab" data-category="mechanism">Mecanismos</button>
+          <button class="pal-tab" data-category="prefabs">Salas Prontas</button>
+        </div>
+
+        <!-- Grade de Peças Vivas -->
+        <div class="palette-asset-grid" id="piece-list">
+          <!-- Gerado dinamicamente com render 2.5D miniatura -->
+        </div>
+      </div>
+
+      <!-- 5. Inspetor de Seleção e Parâmetros da Missão (Rodapé do Dock) -->
+      <div class="dock-inspector-box">
+        <details class="dock-details-group" open>
+          <summary class="details-summary">
+            <span>❖ ENTIDADE EM FOCO</span>
+            <button class="summary-del-btn" id="remove-selected" disabled title="Eliminar peça selecionada">✕</button>
+          </summary>
+          <div class="details-body">
+            <div id="selection-card" class="selection-preview-card">
+              <span class="sel-empty-copy">Nenhum elemento selecionado</span>
+            </div>
+            <div id="selection-details" class="selection-custom-props"></div>
+          </div>
+        </details>
+
+        <details class="dock-details-group">
+          <summary class="details-summary">
+            <span>⚙ OBJETIVO E MISSÃO</span>
+          </summary>
+          <div class="details-body mission-form">
+            <label class="compact-field">
+              <span>Nome</span>
+              <input type="text" id="map-name" maxlength="48" value="Fase 001">
+            </label>
+            <label class="compact-field">
+              <span>Objetivo</span>
+              <select id="objective">
+                <option value="escape">Alcançar o Portal (Escape)</option>
+                <option value="environment">Resolver Mecanismos (Sokoban)</option>
+              </select>
+            </label>
+            <label class="compact-toggle">
+              <input type="checkbox" id="authoritative" checked>
+              <span>Apenas peças autorais (sem spawns aleatórios)</span>
+            </label>
+          </div>
+        </details>
+
+        <!-- Botão para Redimensionar o Mapa -->
+        <button class="dock-resize-btn" id="resize-open">
+          <span>▦ Dimensões do Mapa</span>
+          <strong id="size-button-label">19 × 15</strong>
+        </button>
+      </div>
+
+    </aside>
+  </main>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       MODAL DE DIMENSÕES
+  ══════════════════════════════════════════════════════════════ -->
+  <dialog id="resize-dialog" class="studio-dialog">
+    <form method="dialog" id="resize-form" class="dialog-box">
+      <div class="dialog-header">
+        <h3>Redimensionar Terreno Tático</h3>
+        <button class="close-x" value="cancel">✕</button>
+      </div>
+      <p class="dialog-sub">As bordas indestrutíveis de segurança e o conteúdo existente serão adaptados automaticamente.</p>
+      
+      <div class="preset-buttons">
+        <button type="button" class="preset-pill" data-w="13" data-h="9">13 × 9 (Compacto)</button>
+        <button type="button" class="preset-pill active" data-w="19" data-h="15">19 × 15 (Padrão)</button>
+        <button type="button" class="preset-pill" data-w="25" data-h="19">25 × 19 (Amplo)</button>
+        <button type="button" class="preset-pill" data-w="31" data-h="21">31 × 21 (Arena Boss)</button>
+      </div>
+
+      <div class="size-inputs-grid">
+        <label><span>Largura (Colunas)</span><input type="number" id="width-input" min="9" max="160" value="19" required></label>
+        <label><span>Altura (Linhas)</span><input type="number" id="height-input" min="9" max="160" value="15" required></label>
+      </div>
+
+      <div class="dialog-actions">
+        <button type="button" class="dialog-btn secondary" id="dialog-cancel-btn">Cancelar</button>
+        <button type="submit" class="dialog-btn primary" id="apply-size">Confirmar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Toast Notifier -->
+  <div class="studio-toast" id="toast" role="status">
+    <span class="toast-symbol" id="toast-icon">⚡</span>
+    <span class="toast-text" id="toast-text">Notificação</span>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

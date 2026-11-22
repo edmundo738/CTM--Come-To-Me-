@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="BossDefinition" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://content/boss_definition.gd" id="1_script"]
+[ext_resource type="Texture2D" path="res://assets/bosses/queen.svg" id="2_texture"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"queen"
+display_name = "RAINHA"
+rule_summary = "LINHAS E DIAGONAIS"
+texture = ExtResource("2_texture")
+accent_color = Color(0.9608, 0.4706, 0.8627, 1)
+visual_scale = 1.1
+movement_profile = &"queen"
+hit_points = 6

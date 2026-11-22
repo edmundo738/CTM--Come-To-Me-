@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://components/component_definition.gd" id="1_script"]
+[ext_resource type="PackedScene" path="res://components/power_source.tscn" id="2_scene"]
+
+[resource]
+script = ExtResource("1_script")
+kind = &"power_source"
+display_name = "Generator / power source"
+scene = ExtResource("2_scene")
+family = &"circuit"
+output_channel = &"power"
+tags = PackedStringArray("source", "switchable")

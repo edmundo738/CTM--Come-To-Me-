@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="EnemyDefinition" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://content/enemy_definition.gd" id="1_script"]
+
+[resource]
+script = ExtResource("1_script")
+id = &"sentry"
+display_name = "SENTINELA"
+movement_profile = "sentry"
+move_duration = 0.17
+visual_scale = 1.08
+glow_radius = 45
+idle_core_color = Color(0.902, 0.6471, 0.1255, 0.75)
+alert_core_color = Color(1, 0.8157, 0.2627, 0.92)
+glow_color = Color(0.651, 0.3608, 0, 0.42)

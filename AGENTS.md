@@ -1,3 +1,31 @@
+## Entrega e pull requests
+
+- No fim de cada tarefa, fornece um link direto para descarregar o trabalho atualizado; para alterações ao projeto, inclui também alterações locais ainda não enviadas, por exemplo num ZIP sem caches nem `.git`.
+- Apresenta o download antes de abrir ou fazer merge de um pull request. Como o utilizador pode pedir um PR por engano, se o download dessa tarefa ainda não tiver sido entregue, envia-o primeiro e pede confirmação antes de avançar com o PR.
+- Nunca faças commit sem autorização explícita do proprietário. Apresenta um plano antes de alterar código e obtém aprovação prévia para alterações estruturais ou destrutivas.
+
+## Game Feel e comunicação com o jogador
+
+- **Feedback do proprietário, 5 de novembro de 2026:** a intenção desta revisão foi aprovada, mas a sua aplicação visual e de design foi rejeitada: o proprietário considerou-a feia, sem alma e paternalista, por não confiar no jogador e retirar a graça da descoberta. O commit e os testes não são aprovação estética. Confia na inteligência do jogador, privilegia descoberta e comunicação pelo mundo e evita explicações que o subestimem, sem esconder informação essencial de segurança e acessibilidade. Não presumir aprovação de um redesenho sem o validar com o proprietário.
+- Consulta [Game Feel & Gameplay — Guia de referência](docs/GAME_FEEL_GAMEPLAY_GUIDE.md) ao analisar ou alterar experiência, apresentação e mecânicas. O guia é referência e não autoriza implementar tudo de uma vez.
+- Antes de alterar gameplay ou apresentação, lê [o checkpoint vivo](docs/CHECKPOINT_GAME_FEEL.md), confirma-o contra o código e atualiza estado, decisões, evidências e próximo passo depois do trabalho. Distingue factos, medições, observações, hipóteses e o que não foi testado.
+- Não culpes o jogador por falhas de comunicação: investiga primeiro a mecânica, os comportamentos e as pistas do mundo, evitando instruções ou efeitos redundantes. Mantém a informação essencial acessível.
+- Não revelar antecipadamente trajetórias, caminhos ou próximas células dos inimigos — sobretudo dos básicos — através de linhas, setas, células destacadas ou previsões. Comunica ameaça pela própria entidade, distância, orientação, postura, comportamento e consequências; reserva indicadores explícitos a exceções comprovadamente necessárias para compreensão ou justiça. Os dados internos de planeamento continuam a pertencer à lógica.
+- Para movimento, a direção escolhida é **Expressive + Hybrid**: a lógica por turnos e grelha decide os resultados; a apresentação comunica-os sem alterar ou atrasar as regras. Segue o plano aprovado para cada tarefa, sem presumir que esta direção autoriza alterações de código.
+
+## Puzzles e level design
+
+- **Identidade permanente de Come To Me:** cada nível, mecanismo, inimigo, recompensa e encontro deve ter intenção e uma relação compreensível com o mundo. Privilegia sistemas interligados, observação, experimentação, consequências reais e surpresa que faça sentido depois da descoberta. Um objeto pode ter várias funções; uma recompensa pode ser ferramenta, custo ou peça da solução. Não adaptes a identidade a um catálogo de mecânicas convencionais.
+- Não transformar o jogo inteiro em puzzles: perseguição, combate, exploração, sobrevivência, pausa e domínio também podem dar propósito a níveis simples. Combina-os quando fizer sentido, preservando grelha, turnos, progressão e justiça. Não acrescentes percurso, interruptores, transporte ou repetição apenas para prolongar a duração.
+- **Auditoria obrigatória antes de aprovar um puzzle:** qual é o problema; por que existe cada mecanismo naquele local; o que se descobre; há raciocínio ou só execução repetitiva; que consequência muda a situação; como contribui para o mundo ou progressão; removê-lo prejudicaria a experiência? Se apenas acrescenta trabalho ou uma recompensa sem contexto, elimina-o ou redesenha-o. Avalia funcionamento técnico, experiência e respeito pela identidade separadamente; uma rota ou teste não prova diversão.
+- Oferece pistas ambientais e observáveis, sem explicar a solução por defeito. Informação de segurança, consequências, regras novas e recuperação devem continuar legíveis e acessíveis; não confundir descoberta com informação essencial escondida. Observar jogadores antes de afirmar que uma surpresa ou pista funciona.
+- Antes de projetar ou alterar puzzles, consulta [Puzzles — filosofia, contexto e arquitetura](docs/PUZZLES_FILOSOFIA_E_ARQUITETURA.md) e confirma as regras atuais no código. A direção escolhida é híbrida: momentos artesanais e variedade procedural validada; isso não autoriza implementar todos os módulos propostos.
+- Dificuldade deve vir do raciocínio, não de regras ou controlos confusos. Define objetivo, propósito e, quando houver, a frase da descoberta; ensina, reforça e combina sem pressupor aprendizagem. Uma sala de demonstração ou pausa pode ter valor sem ser difícil. Mantém feedback essencial, recuperação clara e distinção entre pressão por turnos e reflexos inesperados.
+- Para auditar ruído, descreve as soluções e identifica os elementos que não contribuem para elas. Remove ou simplifica o que não tiver propósito justificado; preserva alternativas, acessibilidade, atmosfera, economia e desvios deliberados quando fizerem sentido. Não elimines automaticamente elementos só por não aparecerem numa rota.
+- Trata também a sequência como trabalho de design: perante dificuldades observadas, considera simplificar, inserir reforço, reordenar ou propor uma opção não bloqueante. Experimenta antes de alterar a campanha; preserva progressão, saves, seeds e recuperação e obtém aprovação para alterações estruturais.
+- WFC, conectividade e uma rota do solver não provam qualidade nem ausência de bloqueios em todos os estados. Declara o modelo e ações suportadas, trata busca truncada como inconclusiva e valida as rotas aceites nas regras reais. Clareza, diversão e satisfação exigem playtesting e avaliação humana, não um número inventado.
+- As transcrições fornecidas de Patrick Traynor e Brett Taylor agora cobrem os trechos analisados. Atribui as ideias às fontes corretas e trata os percentuais de memória de trabalho de Taylor como metáfora, não medição ou objetivo quantitativo. Gravação e pensamento em voz alta no playtest são opcionais e requerem consentimento.
+
 <!-- ai-memory:start -->
 ## Long-term memory (ai-memory)
 
@@ -52,3 +80,21 @@ This block and the installed ai-memory Agent Skills are managed together.
 
 Refreshes are idempotent: only the content delimited by the ai-memory start/end HTML-comment markers is replaced.
 <!-- ai-memory:end -->
+
+## Prioridade máxima: autoria visual sem dependência total do Godot
+
+- A arquitetura deve ser modular, reutilizável, configurável e instanciável. O Godot continua como runtime, autoridade das regras e editor de cenas/Resources, mas as tarefas normais de mapas não podem exigir abrir o editor Godot.
+- Componentes manuais e procedurais devem reutilizar a mesma biblioteca e a mesma autoridade funcional; o WFC deve consumir metadados de compatibilidade e as saídas devem ser validadas pelas regras reais do jogo.
+- Separar lógica, configuração e apresentação onde isso simplificar reutilização e edição. Usar Scenes, Resources, TileSets ou dados conforme cada responsabilidade; não impor Nodes para tudo, não duplicar regras e não criar framework/plugin sem necessidade demonstrada.
+- **Meta de arquitetura:** todo o jogo deve poder ser compreendido, montado, configurado e estendido visualmente. Mapas e missões usam a Oficina CTM independente; cenas, Resources e WFC podem usar o Godot enquanto não houver fluxo equivalente fora dele. Cobrir níveis, terreno/WFC, personagens e inimigos, mecanismos, pickups, combate, progressão, HUD/menus, áudio/VFX, opções e persistência.
+- **Público prioritário de autoria:** pessoas sem conhecimentos de programação. Separar código em ficheiros e expor campos no Inspector não basta. Criar/abrir mapas, posicionar atores e pickups, ligar mecanismos, desfazer/refazer, guardar e validar deve funcionar na Oficina independente sem abrir Godot nem escrever GDScript; conteúdos que ainda precisem do Godot ficam explicitamente marcados como pendentes.
+- **Critério de aceitação da autoria:** para cada família migrada, demonstrar o percurso na ferramenta adequada: criar/abrir, editar visualmente, desfazer/refazer, guardar, validar e observar a mudança no jogo. O formato externo deve ser legível e consumido pela regra atual, sem duplicar a autoridade de gameplay.
+- Executar esta reformulação por migrações completas de famílias, cada uma com evidência e testes, até cobrir a arquitetura inteira. Preservar seeds, turnos, progressão e saves através de adaptadores/migrações explícitos; nunca deixar duas autoridades para a mesma regra.
+- Usar cenas para peças instanciáveis, Resources para definições/configuração, referências exportadas para ligações visíveis e sinais/mediação apenas onde reduzirem dependências reais. Construção manual e WFC devem partilhar definições e validação. Não impor ECS, um mediador global ou plugin próprio sem necessidade medida.
+- O proprietário aprovou a reformulação completa e autorizou alterações locais. Não voltar a pedir aprovação para esta arquitetura; continua proibido fazer commit/push sem pedido explícito. Ver [Plano de arquitetura editável — Godot e Oficina CTM](docs/PLANO_ARQUITETURA_EDITAVEL_GODOT.md).
+
+## Direção visual do jogo
+
+- Trate as imagens de referência enviadas pelo utilizador como conceitos, não como arte final a copiar.
+- Antes de alterar personagens, inimigos ou cenário, confira a perspetiva e a escala na execução real do jogo.
+- Lia é uma esfera com o mesmo volume, luz, acabamento e linguagem facial do jogador; use a paleta rosa e violeta e nunca a transforme numa personagem humana ou humanoide.

@@ -1,0 +1,12 @@
+[gd_scene format=3 uid="uid://q0dtuxyobipr"]
+
+[ext_resource type="Script" uid="uid://dskcwqbgphtjp" path="res://components/level_blueprint.gd" id="1_ik4me"]
+
+[node name="CampaignFloor004" type="Node2D" unique_id=2077610628]
+script = ExtResource("1_ik4me")
+mission_title = "Fase 004"
+level_id = "campaign_floor_004"
+campaign_floor = 1
+grid_size = Vector2i(37, 23)
+start_cell = Vector2i(1, 11)
+portal_cell = Vector2i(35, 11)

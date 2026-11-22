@@ -1,0 +1,31 @@
+[gd_resource type="Resource" format=3 uid="uid://cvjffb8t8moht"]
+
+[ext_resource type="Script" uid="uid://ddnq1rp3bt56k" path="res://content/game_content_catalog.gd" id="1_script"]
+[ext_resource type="Resource" path="res://content/definitions/boss_pawn.tres" id="2"]
+[ext_resource type="Resource" path="res://content/definitions/boss_rook.tres" id="3"]
+[ext_resource type="Resource" path="res://content/definitions/boss_knight.tres" id="4"]
+[ext_resource type="Resource" path="res://content/definitions/boss_bishop.tres" id="5"]
+[ext_resource type="Resource" path="res://content/definitions/boss_queen.tres" id="6"]
+[ext_resource type="Resource" path="res://content/definitions/boss_king.tres" id="7"]
+[ext_resource type="Resource" path="res://content/definitions/powerup_speed.tres" id="8"]
+[ext_resource type="Resource" path="res://content/definitions/powerup_magnet.tres" id="9"]
+[ext_resource type="Resource" path="res://content/definitions/powerup_blink.tres" id="10"]
+[ext_resource type="Resource" path="res://content/definitions/powerup_time_freeze.tres" id="11"]
+[ext_resource type="Resource" path="res://content/definitions/biome_neon_ruins.tres" id="12"]
+[ext_resource type="Resource" path="res://content/definitions/biome_glass_garden.tres" id="13"]
+[ext_resource type="Resource" path="res://content/definitions/biome_violet_furnace.tres" id="14"]
+[ext_resource type="Resource" path="res://content/definitions/biome_ice_cathedral.tres" id="15"]
+[ext_resource type="Resource" path="res://content/definitions/biome_warden_throne.tres" id="16"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_hunter.tres" id="17"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_sentry.tres" id="18"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_wisp.tres" id="19"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_rusher.tres" id="20"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_patrol.tres" id="21"]
+[ext_resource type="Resource" path="res://content/definitions/enemy_mirror.tres" id="22"]
+
+[resource]
+script = ExtResource("1_script")
+biomes = Array[Resource]([ExtResource("12"), ExtResource("13"), ExtResource("14"), ExtResource("15"), ExtResource("16")])
+bosses = Array[Resource]([ExtResource("2"), ExtResource("3"), ExtResource("4"), ExtResource("5"), ExtResource("6"), ExtResource("7")])
+powerups = Array[Resource]([ExtResource("8"), ExtResource("9"), ExtResource("10"), ExtResource("11")])
+enemies = Array[Resource]([ExtResource("17"), ExtResource("18"), ExtResource("19"), ExtResource("20"), ExtResource("21"), ExtResource("22")])

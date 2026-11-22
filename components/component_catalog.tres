@@ -1,0 +1,13 @@
+[gd_resource type="Resource" load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://components/component_catalog.gd" id="1_script"]
+[ext_resource type="Resource" path="res://components/definitions/crate.tres" id="2_crate"]
+[ext_resource type="Resource" path="res://components/definitions/pressure_plate.tres" id="3_plate"]
+[ext_resource type="Resource" path="res://components/definitions/gate.tres" id="4_gate"]
+[ext_resource type="Resource" path="res://components/definitions/power_source.tres" id="5_power"]
+[ext_resource type="Resource" path="res://components/definitions/circuit_relay.tres" id="6_relay"]
+[ext_resource type="Resource" path="res://components/definitions/circuit_receiver.tres" id="7_receiver"]
+
+[resource]
+script = ExtResource("1_script")
+definitions = Array[Resource]([ExtResource("2_crate"), ExtResource("3_plate"), ExtResource("4_gate"), ExtResource("5_power"), ExtResource("6_relay"), ExtResource("7_receiver")])

@@ -1,0 +1,86 @@
+[gd_scene format=3 uid="uid://cqjqhr8vq5x8q"]
+
+[ext_resource type="Script" uid="uid://dskcwqbgphtjp" path="res://components/level_blueprint.gd" id="1_blueprint"]
+[ext_resource type="PackedScene" path="res://components/crate.tscn" id="2_crate"]
+[ext_resource type="PackedScene" path="res://components/pressure_plate.tscn" id="3_plate"]
+[ext_resource type="PackedScene" path="res://components/gate.tscn" id="4_gate"]
+[ext_resource type="PackedScene" path="res://components/power_source.tscn" id="5_source"]
+[ext_resource type="PackedScene" path="res://components/circuit_relay.tscn" id="6_relay"]
+[ext_resource type="PackedScene" path="res://components/circuit_receiver.tscn" id="7_receiver"]
+
+[node name="EditableComponentDemo" type="Node2D" unique_id=154633662]
+script = ExtResource("1_blueprint")
+level_id = "pressure-and-power-links"
+wall_cells = Array[Vector2i]([Vector2i(8, 1), Vector2i(8, 3), Vector2i(8, 5), Vector2i(8, 7), Vector2i(1, 5), Vector2i(1, 7), Vector2i(1, 1)])
+
+[node name="WoodCrate" parent="." unique_id=1940346774 instance=ExtResource("2_crate")]
+position = Vector2(196, 140)
+component_id = "crate_wood"
+cell = Vector2i(3, 2)
+output_ids = PackedStringArray()
+
+[node name="MetalCrate" parent="." unique_id=341991469 instance=ExtResource("2_crate")]
+position = Vector2(196, 252)
+crate_material = "metal"
+component_id = "crate_metal"
+cell = Vector2i(3, 4)
+output_ids = PackedStringArray()
+
+[node name="WoodPlate" parent="." unique_id=2024149990 instance=ExtResource("3_plate")]
+position = Vector2(308, 140)
+component_id = "plate_wood"
+cell = Vector2i(5, 2)
+output_ids = PackedStringArray("gate_wood")
+
+[node name="MetalPlate" parent="." unique_id=182362959 instance=ExtResource("3_plate")]
+position = Vector2(308, 252)
+required_material = "metal"
+component_id = "plate_metal"
+cell = Vector2i(5, 4)
+output_ids = PackedStringArray("gate_metal")
+
+[node name="PoweredPlate" parent="." unique_id=1228711767 instance=ExtResource("3_plate")]
+position = Vector2(308, 364)
+required_material = "powered"
+component_id = "plate_powered"
+cell = Vector2i(5, 6)
+output_ids = PackedStringArray("gate_power")
+
+[node name="WoodGate" parent="." unique_id=4085480 instance=ExtResource("4_gate")]
+position = Vector2(476, 140)
+input_mode = "any"
+component_id = "gate_wood"
+cell = Vector2i(8, 2)
+output_ids = PackedStringArray()
+
+[node name="Generator" parent="." unique_id=1690522576 instance=ExtResource("5_source")]
+position = Vector2(84, 364)
+component_id = "generator_a"
+cell = Vector2i(1, 6)
+output_ids = PackedStringArray("relay_a")
+
+[node name="MetalGate" parent="." unique_id=1080499973 instance=ExtResource("4_gate")]
+position = Vector2(476, 252)
+input_mode = "any"
+component_id = "gate_metal"
+cell = Vector2i(8, 4)
+output_ids = PackedStringArray()
+
+[node name="PoweredGate" parent="." unique_id=1814220093 instance=ExtResource("4_gate")]
+position = Vector2(476, 364)
+input_mode = "any"
+component_id = "gate_power"
+cell = Vector2i(8, 6)
+output_ids = PackedStringArray()
+
+[node name="Relay" parent="." unique_id=1975250612 instance=ExtResource("6_relay")]
+position = Vector2(196, 364)
+component_id = "relay_a"
+cell = Vector2i(3, 6)
+output_ids = PackedStringArray("receiver_a")
+
+[node name="Receiver" parent="." unique_id=1186988819 instance=ExtResource("7_receiver")]
+position = Vector2(308, 364)
+component_id = "receiver_a"
+cell = Vector2i(5, 6)
+output_ids = PackedStringArray()
